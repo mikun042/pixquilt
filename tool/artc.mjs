@@ -16,6 +16,7 @@
 import { mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
+import { inflateSync } from 'node:zlib'
 import { fileURLToPath } from 'node:url'
 
 import { runPipeline } from '../src/core/pipeline.ts'
@@ -24,6 +25,7 @@ import { DEFAULT_PARAMS, coerceParams, normalizeHex, sanitizeParams, STYLE_PRESE
 import { PRESETS, getPreset, isPresetId, parseHexPalette, serializeHexPalette } from '../src/core/palettes.ts'
 import { artHash, encodePixBin, layoutSheet, parseProjectFile, pixelJSONString } from '../src/core/export.ts'
 import { beadListCsv, beadReport, beadSvg } from '../src/core/bead.ts'
+import { beadPdfNode } from '../src/io/node-pdf.ts'
 import { countTransparent, countUsage } from '../src/core/stats.ts'
 import { describeAll, OP_SPECS } from '../src/core/spec.ts'
 import { decodePngNode } from '../src/io/node-png.ts'
@@ -41,7 +43,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
  */
 const BOOL_FLAGS = new Set([
   'help', 'selftest', 'describe', 'dry-run', 'json', 'bead', 'alpha', 'transparent',
-  'sheet', 'pixbin', 'no-cleanup', 'quiet', 'lock-palette', 'blank-transparent', 'progress',
+  'sheet', 'pixbin', 'no-cleanup', 'quiet', 'lock-palette', 'blank-transparent', 'progress', 'pdf',
 ])
 /** 可选值开关：后面跟的值不以 -- 开头才算值（`--sheet` 与 `--sheet 4` 都合法） */
 const OPTIONAL_VALUE_FLAGS = new Set(['sheet', 'bead'])
@@ -328,7 +330,7 @@ export function sanitizeName(s) {
 
 /* ------------------------------------------------------------------ 单张处理 */
 
-function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wantSheet, wantPixbin, nameTemplate, index }) {
+function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wantSheet, wantPixbin, wantPdf, nameTemplate, index }) {
   const image = loadImageNode(src)
   const { art: rendered, overflow, paletteSource, cleanup } = runPipeline({ width: image.width, height: image.height, data: image.data }, params)
   const applied = ops.length ? applyOps(rendered, ops, { allowApproxColor: !params.lockPalette }) : { art: rendered, changes: [], applied: false }
@@ -361,6 +363,7 @@ function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wa
     pixbin: wantPixbin ? encodePixBin(art) : null,
     beadCsv: null,
     beadSvg: null,
+    beadPdfBytes: null,
     beadSummary: null,
   }
 
@@ -368,6 +371,9 @@ function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wa
     const opts = { codes, ...beadingOptions }
     result.beadCsv = beadListCsv(art, opts)
     result.beadSvg = beadSvg(art, { ...opts, title: `${vars.name} 拼豆图纸 ${art.width}×${art.height}` })
+    // PDF 标题只能用 ASCII：标准 14 字体是 WinAnsi 编码，塞中文会变成 ???（见 core/pdf.ts）。
+    // 文件名走 `${base}_拼豆图纸.pdf`，中文标题在那里保留。
+    result.beadPdfBytes = wantPdf ? beadPdfNode(art, { ...opts, title: `Bead Pattern ${art.width}x${art.height}` }) : null
     const rep = beadReport(art, opts)
     result.beadSummary = {
       colorCount: rep.colorCount,
@@ -683,6 +689,27 @@ async function selftest() {
     return `${lines.length} 行`
   })
 
+  check('拼豆：可打印 PDF 结构合法且内容真的被压缩', () => {
+    const { params } = sanitizeParams({ paletteMode: 'preset', presetPaletteId: 'beads16', longEdge: 40, lockPalette: true })
+    const { art } = runPipeline(makeFixture(), params)
+    const bytes = beadPdfNode(art, { codes: getPreset('beads16').codes })
+    const text = Buffer.from(bytes).toString('latin1')
+    assert(text.startsWith('%PDF-1.4'), 'PDF 头缺失')
+    assert(text.trimEnd().endsWith('%%EOF'), 'PDF 尾缺失')
+    // xref 的 startxref 必须指向 xref 表本身（手写 PDF 最常见的错处）
+    const xrefIdx = text.search(/^xref$/m)
+    const startxref = Number(/^startxref\r?\n(\d+)/m.exec(text)?.[1])
+    eq(startxref, xrefIdx, 'startxref 应指向 xref 表')
+    // 声明压缩的流必须真能解开——防"声称 FlateDecode 却写明文"
+    const streamAt = text.search(/^stream$/m)
+    assert(streamAt > 0, '没有内容流')
+    const body = bytes.subarray(streamAt + 7, text.indexOf('\nendstream', streamAt))
+    eq(body[0], 0x78, 'zlib 容器首字节应为 0x78')
+    const inflated = inflateSync(Buffer.from(body))
+    assert(inflated.includes('Tj'), '解压后应是绘制指令')
+    return `${Math.round(bytes.length / 1024)} KB，解压 ${Math.round(inflated.length / 1024)} KB`
+  })
+
   check('CLI：参数解析（布尔 / 可选值 / 缺值报错）', () => {
     const a = parseArgs(['--in', 'x', '--alpha', '--sheet', '4', '--json'])
     eq(a.in, 'x', '--in 应取值')
@@ -947,6 +974,12 @@ async function main() {
       const svg = beadSvg(art, { codes, ...beadingOptions, title: `${base} 拼豆图纸` })
       writeFileSync(join(outDir, `${base}_图纸.svg`), svg, 'utf8')
       writeFileSync(join(outDir, `${base}_缺口清单.csv`), csv, 'utf8')
+      if (args.pdf) {
+        writeFileSync(
+          join(outDir, `${base}_拼豆图纸.pdf`),
+          beadPdfNode(art, { codes, ...beadingOptions, title: `Bead Pattern ${art.width}x${art.height}` }),
+        )
+      }
       row.bead = beadReport(art, beadingOptions).totalBeads
     }
     results.push(row)
@@ -980,6 +1013,7 @@ async function main() {
           beadingOptions,
           wantSheet,
           wantPixbin: !!args.pixbin,
+          wantPdf: !!args.pdf,
           nameTemplate,
           index: i + 1,
         })
@@ -991,6 +1025,7 @@ async function main() {
           writeFileSync(join(outDir, `${r.base}_缺口清单.csv`), r.beadCsv, 'utf8')
           writeFileSync(join(outDir, `${r.base}_图纸.svg`), r.beadSvg, 'utf8')
         }
+        if (r.beadPdfBytes) writeFileSync(join(outDir, `${r.base}_拼豆图纸.pdf`), r.beadPdfBytes)
         results.push({
           file: `${r.base}.png`,
           src: basename(src),
@@ -1102,6 +1137,7 @@ function printHelp() {
   --sheet [列数]          额外输出 _sheet.json 图集坐标表（帧等尺寸 + offsetX/offsetY）
   --pixbin                额外输出 .pixbin（二进制像素数据，大画布往返更快）
   --bead [每板格数]       拼豆模式：输出 *_图纸.svg 与 *_缺口清单.csv（默认每板 58 格）
+  --pdf                   额外输出 *_拼豆图纸.pdf（A4 分页可打印；需同时用 --bead）
   --bead-mm <n>           单颗直径 mm（默认 5）  --bead-gram <n> 单颗重量 g（默认 0.08）
   --board <n>             每板格数（默认 58）
 

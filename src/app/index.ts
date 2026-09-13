@@ -14,6 +14,7 @@ import { PRESETS, getPreset, parseHexPalette, serializeHexPalette } from '../cor
 import { EXPORT_SCALES } from '../core/limits.ts'
 import { pixelJSONString, projectJSONString, safeFileBase } from '../core/export.ts'
 import { artToPngBlob, artToPngDataURL, artToPngDataURLSync } from './canvas-png.ts'
+import { beadPdfBrowser } from './pdf.ts'
 import { runPipeline } from '../core/pipeline.ts'
 import { applyOps, blankArt } from '../core/ops.ts'
 import { artStats } from '../core/stats.ts'
@@ -23,6 +24,7 @@ import { clear, el, store } from './store.ts'
 import { decodeToRgba, imageFromClipboard, makeThumbnail, looksLikeImage } from './decode.ts'
 import { createCanvas } from './ui/canvas.ts'
 import { createColorPicker, type ColorPickerApi } from './ui/colorpicker.ts'
+import { iconEl } from './ui/icons.ts'
 import { installAutomationApi } from './automation.ts'
 
 const MODE_PRESETS: Record<string, Partial<ConvertParams>> = {
@@ -231,11 +233,17 @@ let redoBtn: HTMLButtonElement | null = null
 let regenerateBtn: HTMLButtonElement | null = null
 let newBtn: HTMLButtonElement | null = null
 
-const TOOL_META: Record<string, { icon: string; name: string; key: string }> = {
+/**
+ * 工具按钮的图标。`icon` 是字符兜底，`svg` 指定时优先用内联 SVG。
+ *
+ * 取色用 SVG 吸管：Unicode 里没有吸管符号，原先用 `⌖`（准星）——
+ * 用户反馈"看上去不像吸管"。图标语义错了会让人根本找不到这个工具。
+ */
+const TOOL_META: Record<string, { icon: string; svg?: 'eyedropper'; name: string; key: string }> = {
   pencil: { icon: '✎', name: '画笔', key: 'B' },
   selection: { icon: '⬚', name: '选区', key: 'M' },
   bucket: { icon: '▨', name: '填充', key: 'G' },
-  picker: { icon: '⌖', name: '取色', key: 'I' },
+  picker: { icon: '⌖', svg: 'eyedropper', name: '取色', key: 'I' },
   rect: { icon: '▭', name: '矩形', key: 'U' },
   ellipse: { icon: '◯', name: '椭圆', key: 'O' },
 }
@@ -246,17 +254,20 @@ function renderTools(): void {
   for (const id of TOOLS) {
     const meta = TOOL_META[id]
     const active = store.get('tool') === id
-    grid.append(
-      el('button', {
-        class: `tool-btn${active ? ' active' : ''}`,
-        'aria-pressed': active ? 'true' : 'false',
-        title: `${meta.name}（${meta.key}）`,
-        onclick: () => {
-          store.set('tool', id)
-          renderAll()
-        },
-      }, [`${meta.icon} ${meta.name}`]),
-    )
+    const btn = el('button', {
+      class: `tool-btn${active ? ' active' : ''}`,
+      'aria-pressed': active ? 'true' : 'false',
+      title: `${meta.name}（${meta.key}）`,
+      onclick: () => {
+        store.set('tool', id)
+        renderAll()
+      },
+    })
+    const svg = meta.svg ? iconEl(meta.svg) : null
+    if (svg) btn.append(svg)
+    else btn.append(document.createTextNode(meta.icon))
+    btn.append(el('span', { class: 'tool-name' }, [meta.name]))
+    grid.append(btn)
   }
   leftRail.append(grid)
 
@@ -820,6 +831,34 @@ function exportBeadFiles(): void {
   toast(`图纸与清单已导出：${rep.colorCount} 色 / ${rep.totalBeads} 颗 / ${rep.totalGrams} g`)
 }
 
+/**
+ * 导出可打印的拼豆图纸 PDF（A4 分页，每块板一页）。
+ *
+ * 浏览器侧用 `CompressionStream('deflate')` 提供压缩——与 Node 侧注入 `node:zlib`
+ * 是同一个契约（见 core/pdf.ts 与 io/node-pdf.ts）。**没有它就不能静默降级成
+ * "导出个空文件"**：`CompressionStream` 在 2023+ 的 Chrome/Edge 都有，
+ * 缺失时明确告诉用户换浏览器，而不是给一份打不开的文件。
+ */
+async function exportBeadPdf(): Promise<void> {
+  if (!app.art) return toast('还没有画布', 'warn')
+  if (typeof CompressionStream === 'undefined') {
+    return toast('当前浏览器不支持 CompressionStream，无法生成 PDF。请用较新的 Chrome/Edge，或改用「图纸 SVG」。', 'error')
+  }
+  const codes = getPreset(app.params.presetPaletteId)?.codes
+  const base = safeFileBase(app.sourceName || 'beads')
+  try {
+    const bytes = await beadPdfBrowser(app.art, { codes, title: `Bead Pattern ${app.art.width}x${app.art.height}` })
+    // 用 bytes.buffer 而不是 bytes 本身：TS 5.7 起 Uint8Array 的底层可能是
+    // SharedArrayBuffer，不能直接当 BlobPart（类型上会报，运行期也无意义）
+    download(new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' }), `${base}_拼豆图纸.pdf`)
+    const rep = beadReport(app.art, { codes })
+    const boards = rep.board.columns * rep.board.rows
+    toast(`可打印图纸已导出：${boards} 块板 / ${rep.totalBeads} 颗`)
+  } catch (err) {
+    toast(`PDF 导出失败：${(err as Error)?.message ?? err}`, 'error')
+  }
+}
+
 function exportPixelJSON(): void {
   if (!app.art) return
   download(new Blob([pixelJSONString(app.art)], { type: 'application/json' }), `${safeFileBase(app.sourceName)}_像素数据.json`)
@@ -1152,6 +1191,10 @@ function renderExportMenu(menu: HTMLElement): void {
       closeExportMenu()
       exportBeadFiles()
     }, { disabled: !hasArt, testid: 'export-bead' }),
+    item('可打印图纸 PDF（A4 分页）', '每块板一页，含号色与图例；打印/送人比 SVG 稳', () => {
+      closeExportMenu()
+      void exportBeadPdf()
+    }, { disabled: !hasArt, testid: 'export-bead-pdf' }),
   )
 
   menu.append(el('div', { class: 'dropdown-group' }, ['数据']))

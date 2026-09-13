@@ -8,6 +8,7 @@
 | 你的任务 | 怎么做 |
 |---|---|
 | **产出像素素材**（精灵图 / 拼豆图纸 / 图标 / 图集） | `node tool/artc.mjs --help`，或先 `node tool/quickstart.mjs` |
+| **要可打印的拼豆图纸** | 拼豆命令加 `--pdf` → A4 分页、每块板一页（见 `docs/AGENT-QUICKSTART.md` 配方 2） |
 | **操作界面**（Playwright / CDP 驱动已打开的页面） | 看 [`docs/AGENT-QUICKSTART.md`](docs/AGENT-QUICKSTART.md) 第五节的页内 API |
 | **测试本项目**（出测试报告） | 读 [`docs/TESTING-GUIDE.md`](docs/TESTING-GUIDE.md) |
 | **改本项目代码** | 读 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)（先看「铁律」与「验证链」两节） |
@@ -18,7 +19,7 @@
 `src/` 零第三方依赖。下面这些**开箱即用**：
 
 ```bash
-node tool/artc.mjs --selftest     # 31 项链路自检，不需要素材、不需要装依赖
+node tool/artc.mjs --selftest     # 32 项链路自检，不需要素材、不需要装依赖
 node tool/artc.mjs --describe     # 打印全部能力/算子/参数（JSON，冷启动先读这个）
 node tool/quickstart.mjs          # 全链路跑一遍并产出真实文件
 node tool/artc.mjs --in 素材目录 --out 输出 ...   # 直接批量出图

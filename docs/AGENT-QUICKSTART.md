@@ -15,7 +15,7 @@ node tool/quickstart.mjs        # 一条命令跑通全链路，产出落在 .qu
 ```
 1. 自省           apiLevel 2 · 画布上限 2048 格 / 色板 256 色 · 算子 12 类 · 参数 19 项
                   预置色卡：pico8 / gameboy / nes / cga / beads16(带号色) / beads24(带号色)
-                  自检：31/31 通过
+                  自检：32/32 通过
 2. 造素材         自己生成 hero.png / slime.png（96×96，带透明背景）——不依赖仓库里有没有图
 3. 批量出资产     2 张 → 每张精确 32×32、同一套 16 色、透明 484 格；_sheet.json 帧互不相交
 4. 拼豆图纸       缺口清单 14 行（号色 B01/B05/P01… 全部来自色卡）；图纸 SVG 606 KB
@@ -68,6 +68,16 @@ node tool/artc.mjs --in 图片.png --out 输出 --preset beads16 --long-edge 58 
 - `--long-edge 58` → 58×58 格 = 29×29 孔的大方板
 - `--bead` → 产出 `*_图纸.svg`（格内印号色、板编号、图例）+ `*_缺口清单.csv`
 - 缺省自动**锁定色板**（`lockPalette`），保证图纸上不出现色卡外的颜色
+- 加 `--pdf` → 额外产出 `*_拼豆图纸.pdf`：**A4 分页、每块板一页**，含格内号色与图例，可直接打印
+
+```bash
+# 要打印出来照着拼就用这个
+node tool/artc.mjs --in 图片.png --out 输出 --preset beads16 --long-edge 58 --bead --pdf --json
+```
+
+> PDF 的**页内标题是英文**（`Bead Pattern 58x58`）：PDF 内置字体只支持 ASCII，中文会变乱码。
+> 文件名仍是中文。格内号色与 SVG / CSV **完全一致**（同一套色卡），三者可混用。
+> 120×120 的画布会得到 9 页（3×3 块板），每页一块板。
 
 缺口清单长这样（实测）：
 

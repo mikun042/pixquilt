@@ -11,6 +11,7 @@
  */
 import { strict as assert } from 'node:assert'
 import { describe, it } from 'node:test'
+import { deflateSync, inflateSync } from 'node:zlib'
 
 import { runPipeline, computeCropRect, computeGridSize, medianCut, quantize } from '../core/pipeline.ts'
 import { applyOps, blankArt, brushCells, lineCells, rasterizeEllipse, rasterizeRect, anchorOffset, type EditOp } from '../core/ops.ts'
@@ -23,6 +24,8 @@ import { hardenAlpha } from '../core/png.ts'
 import { decodePngNode, encodePngNode } from '../io/node-png.ts'
 import { artToPngBytesNode } from '../io/node-export.ts'
 import { beadListCsv, beadReport, beadSvg } from '../core/bead.ts'
+import { beadPdf } from '../core/bead-pdf.ts'
+import { buildPdf, buildPdfAsync } from '../core/pdf.ts'
 import { OP_SPECS } from '../core/spec.ts'
 import { hexToRgb, rgbToHex, rgbToOklab, oklabToRgb, gradientPalette } from '../core/color.ts'
 
@@ -686,4 +689,185 @@ describe('拼豆（Bead Mode）', () => {
     assert.ok(lines.some((l) => l.startsWith('合计,')))
     assert.ok(lines.some((l) => l.startsWith('透明格,')))
   })
+
+  it('拼豆 PDF：结构合法，且 xref 偏移逐条指向真实对象', () => {
+    const art = build()
+    const bytes = beadPdf(art, { codes: beadCodes(), deflate: deflateRaw })
+    const text = new TextDecoder('latin1').decode(bytes)
+
+    assert.ok(text.startsWith('%PDF-1.4'), 'PDF 头缺失')
+    assert.ok(text.trimEnd().endsWith('%%EOF'), 'PDF 尾缺失')
+    assert.ok(/\/Type \/Catalog/.test(text) && /\/Type \/Pages/.test(text), '缺少 Catalog/Pages')
+
+    /*
+     * 这是本文件最要紧的一条断言：xref 的偏移必须逐字节精确。
+     * 手写 PDF 最常见的错误就是偏移算错——而"用阅读器能打开"往往仍然成立
+     * （阅读器会容错重建），所以只测"能解析"抓不到它。
+     */
+    const xrefAt = /^xref$/m.exec(text)
+    assert.ok(xrefAt, '缺少 xref 表')
+    const startxref = Number(/^startxref\r?\n(\d+)/m.exec(text)?.[1])
+    assert.equal(startxref, xrefAt.index, 'startxref 没有指向 xref 表')
+
+    const count = Number(/^xref\r?\n0 (\d+)/m.exec(text)?.[1])
+    const trailerAt = /^trailer$/m.exec(text)
+    assert.ok(trailerAt, '缺少 trailer')
+    const region = text.slice(xrefAt.index, trailerAt.index)
+    const entries = [...region.matchAll(/(\d{10}) (\d{5}) ([nf])/g)]
+    assert.equal(entries.length, count, `xref 记录数应等于声明值：${entries.length} != ${count}`)
+
+    for (let i = 1; i < entries.length; i++) {
+      const off = Number(entries[i][1])
+      assert.ok(
+        text.startsWith(`${i} 0 obj`, off),
+        `xref[${i}] 指向 ${off}，那里是 ${JSON.stringify(text.slice(off, off + 16))}`,
+      )
+    }
+  })
+
+  it('拼豆 PDF：格内号色与清单一致，且不含乱码（标准字体只能 ASCII）', () => {
+    const art = build()
+    const codes = beadCodes()
+    const report = beadReport(art, { codes })
+    const bytes = beadPdf(art, { codes, deflate: deflateRaw })
+    const content = inflateSync(firstStream(bytes)).toString('latin1')
+
+    // 每个不透明格都应有号色文字；透明格留空
+    const opaque = art.indices.length - report.transparentCells
+    const codeTexts = [...content.matchAll(/\(([A-Z]\d+)\) Tj/g)].map((m) => m[1])
+    assert.equal(codeTexts.length, opaque, `格内号色数应等于不透明格数：${codeTexts.length} != ${opaque}`)
+
+    // 号色必须来自色卡（图纸上不能出现买不到的编号）
+    const allowed = new Set(report.rows.map((r) => r.code))
+    for (const c of new Set(codeTexts)) {
+      assert.ok(allowed.has(c), `图纸上出现了清单里没有的号色：${c}`)
+    }
+    // 非 ASCII 会被替换成 '?'，那种图纸等于废纸
+    assert.ok(!/[^\x00-\x7f]/.test(content), 'PDF 内容流里出现了非 ASCII 字符（会显示成乱码）')
+  })
+
+  it('拼豆 PDF：分板跨页时每块板各占一页，页数 = 板数', () => {
+    const art = build({ longEdge: 120 })
+    const report = beadReport(art, { boardCells: 58 })
+    const boards = report.board.columns * report.board.rows
+    assert.ok(boards >= 4, `本用例需要多块板才能验证分页，实际 ${boards}`)
+    const text = new TextDecoder('latin1').decode(beadPdf(art, { boardCells: 58, deflate: deflateRaw }))
+    assert.equal(Number(/\/Type \/Pages \/Count (\d+)/.exec(text)?.[1]), boards, '页数应等于板数')
+    assert.equal([...text.matchAll(/\/Type \/Page[^s]/g)].length, boards, 'Page 对象数应等于板数')
+  })
 })
+
+describe('PDF 生成器（core/pdf.ts）', () => {
+  const page = (text: string) => ({
+    width: 200,
+    height: 100,
+    nodes: [{ kind: 'txt' as const, x: 10, y: 20, size: 10, text }],
+  })
+
+  it('不注入压缩器也能产出合法 PDF（未压缩流）', () => {
+    // 这条守住"deflate 是可选的"：忘了传压缩器不该报错，只该文件更大
+    const bytes = buildPdf([page('hello')])
+    const text = new TextDecoder('latin1').decode(bytes)
+    assert.ok(text.startsWith('%PDF-1.4'))
+    assert.ok(text.trimEnd().endsWith('%%EOF'))
+    assert.ok(text.includes('(hello) Tj'), '文字应写进内容流')
+    assert.ok(!/\/Filter/.test(text), '未注入压缩器时不应声明 Filter')
+  })
+
+  it('多页时页数与 Kids 一致，且坐标按 PDF 取向翻转', () => {
+    const bytes = buildPdf([page('A'), page('B'), page('C')], { deflate: deflateRaw })
+    const text = new TextDecoder('latin1').decode(bytes)
+    assert.equal(Number(/\/Type \/Pages \/Count (\d+)/.exec(text)?.[1]), 3)
+    assert.equal([...text.matchAll(/\/Type \/Page[^s]/g)].length, 3)
+    // 屏幕 y=20（页高 100）→ PDF y=80。算错方向的表现是整页上下颠倒
+    const content = inflateSync(firstStream(bytes)).toString('latin1')
+    assert.ok(/10 80 Td/.test(content), `y 应向 PDF 坐标翻转（期望 10 80 Td），实际内容：${content}`)
+  })
+
+  it('非 ASCII 字符降级为 ?（标准 14 字体只有 WinAnsi，塞中文会乱码）', () => {
+    const bytes = buildPdf([page('拼豆 B01')])
+    const content = new TextDecoder('latin1').decode(firstStream(bytes))
+    assert.ok(content.includes('(?? B01) Tj'), `中文应显式降级为 ?，实际：${content}`)
+  })
+
+  it('空页列表报错而不是产出坏文件', () => {
+    assert.throws(() => buildPdf([]), /至少需要一页/)
+  })
+
+  it('声明了 FlateDecode 的流必须真的能解压（防"声称压缩却写明文"）', () => {
+    /*
+     * 这条是一次真实事故的回归防线：异步路径曾用 `Map<Uint8Array, Uint8Array>` 做压缩缓存，
+     * 而 `assemble` 每趟都新建 Uint8Array，Map 按**引用**比较必然未命中，
+     * 于是压缩器原样返回明文，产出"字典写着 /Filter /FlateDecode、内容却是明文"的 PDF。
+     *
+     * 表现极具欺骗性：文件能生成、体积正常、xref 偏移全对、甚至"能解析"。
+     * 只有**真去解压**才会发现。所以这里对每个声明了 Filter 的流都解一遍。
+     */
+    const bytes = buildPdf([page('BT (B01) Tj ET')], { deflate: deflateRaw })
+    const text = new TextDecoder('latin1').decode(bytes)
+    const declared = [...text.matchAll(/\/Filter \/FlateDecode/g)].length
+    assert.ok(declared > 0, '本用例需要至少一个被声明为压缩的流')
+
+    const streams = allStreams(bytes)
+    assert.equal(streams.length, declared, `声明压缩的流数（${declared}）与实际流数（${streams.length}）不符`)
+    for (const { start, end } of streams) {
+      const data = bytes.subarray(start, end)
+      assert.equal(data[0] === 0x78 || (data[0] & 0x0f) === 8, true, `流首字节 ${data[0]} 不像 zlib/deflate`)
+      let out: Buffer
+      try {
+        out = inflateSync(Buffer.from(data))
+      } catch (e) {
+        throw new Error(`声明压缩却解不开：${(e as Error).message}`)
+      }
+      assert.ok(out.length > 0, '解压结果为空')
+    }
+  })
+
+  it('异步压缩路径（buildPdfAsync）产出与同步路径一致的压缩流', async () => {
+    // 浏览器只有 CompressionStream（异步），这条保证异步路径不会退化成"写明文"
+    const pages = [page('BT (B01) Tj ET')]
+    const bytes = await buildPdfAsync(pages, { deflate: async (d) => deflateRaw(d) })
+    const text = new TextDecoder('latin1').decode(bytes)
+    assert.ok(/\/Filter \/FlateDecode/.test(text), '应声明压缩')
+    const streams = allStreams(bytes)
+    for (const { start, end } of streams) {
+      const out = inflateSync(Buffer.from(bytes.subarray(start, end)))
+      assert.ok(out.toString('latin1').includes('B01'), `解压后应含原文，实际：${out.toString('latin1').slice(0, 60)}`)
+    }
+  })
+})
+
+/**
+ * 取出 PDF 里所有 stream 的原始字节。
+ *
+ * 必须按**整行**匹配 `stream`：用 `lastIndexOf('stream\n')` 会命中文件末尾
+ * `startxref\n` 里的子串（"start-xref" 不含 stream，但 "startxref" 之后的字节里
+ * 仍可能撞上；更稳的做法是只认独立成行的 stream 标记）。我第一版就踩了这个坑。
+ */
+function allStreams(bytes: Uint8Array): { start: number; end: number }[] {
+  const text = new TextDecoder('latin1').decode(bytes)
+  const out: { start: number; end: number }[] = []
+  const re = /^stream$/gm
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text))) {
+    const start = m.index + 'stream'.length + 1 // 跳过随后的换行
+    const end = text.indexOf('\nendstream', start)
+    if (end < 0) continue
+    out.push({ start, end })
+    re.lastIndex = end
+  }
+  return out
+}
+
+/** 第一个 stream（首页内容流） */
+function firstStream(bytes: Uint8Array): Uint8Array {
+  const { start, end } = allStreams(bytes)[0]
+  return bytes.subarray(start, end)
+}
+
+/**
+ * 测试用的压缩器：与 `src/io/node-pdf.ts` 一样注入 zlib。
+ * `node:zlib` 的 deflateSync 产出 **zlib 格式**（含 2 字节头 + adler32），
+ * 正好对应 PDF 的 `/FlateDecode`，所以读回来要用 `inflateSync`（不是 inflateRawSync）。
+ */
+const deflateRaw = (data: Uint8Array): Uint8Array => new Uint8Array(deflateSync(data, { level: 9 }))

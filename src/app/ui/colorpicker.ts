@@ -40,6 +40,7 @@
 import { colorTextOn, hexToRgb, hsvToRgb, rgbToHex, rgbToHsv } from '../../core/color.ts'
 import { normalizeHex } from '../../core/types.ts'
 import { clear, el } from '../store.ts'
+import { iconEl } from './icons.ts'
 
 export interface ColorPickerCallbacks {
   /** 拖动过程中持续回调（实时预览，不进撤销栈） */
@@ -253,8 +254,15 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
   const pickerBtn = el(
     'button',
     { class: 'cp-icon-btn', type: 'button', title: '吸管：点这里，然后到画布上点一格取色', onclick: () => cb.onPickFromCanvas() },
-    ['⌖'],
+    [],
   )
+  {
+    // 吸管用内联 SVG：Unicode 里没有吸管符号，原先的 `⌖` 是准星（用户反馈"不像吸管"）。
+    // 没有图标时回退到字符——绝不产出空按钮，空按钮点不动是最难查的一类问题。
+    const svg = iconEl('eyedropper')
+    if (svg) pickerBtn.append(svg)
+    else pickerBtn.append(document.createTextNode('⌖'))
+  }
   const hexRow = el('div', { class: 'cp-hexrow' }, [el('span', { class: 'cp-hex-label' }, ['Hex']), hexInput, pickerBtn])
 
   /* ---- 色板 ---- */

@@ -22,7 +22,8 @@
     "shoot": "node tool/shoot.mjs",
     "ref:analyze": "node tool/ref-analysis.mjs",
     "dev": "node tool/serve.mjs",
-    "verify": "npm run typecheck && npm run test && npm run build && node tool/artc.mjs --selftest && npm run e2e && npm run e2e:picker && npm run e2e:slider && npm run e2e:regressions"
+    "verify": "npm run typecheck && npm run test && npm run build && node tool/artc.mjs --selftest && npm run e2e && npm run e2e:picker && npm run e2e:slider && npm run e2e:regressions && npm run e2e:pdf",
+    "e2e:pdf": "node tool/e2e-pdf.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",

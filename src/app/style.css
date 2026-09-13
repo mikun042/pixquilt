@@ -479,6 +479,20 @@ input[type="color"] {
 .cp-icon-btn:hover { background: var(--cp-fill); color: #fff; }
 
 /*
+ * 内联 SVG 图标（见 src/app/ui/icons.ts）。
+ * 尺寸由 CSS 定，**不写元素上的 width/height 属性**——写死了以后改样式不生效，
+ * 是最容易白费一轮的一类坑。`currentColor` 让图标跟着文字色走，
+ * 悬停/激活态自动变色，不必为每个状态各写一份。
+ */
+.icon-svg {
+  width: 17px;
+  height: 17px;
+  display: block;
+  flex: none;
+}
+.tool-btn .icon-svg { width: 16px; height: 16px; }
+
+/*
  * Alpha 行的滑条轨道：未填充槽用棋盘格——本工具的 alpha 是"透明色"开关，
  * 0.000 时能一眼看出是透明；1.000 时填充全蓝，与参考图一致。
  */
