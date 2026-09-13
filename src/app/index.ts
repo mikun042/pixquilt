@@ -22,6 +22,7 @@ import { colorTextOn } from '../core/color.ts'
 import { clear, el, store } from './store.ts'
 import { decodeToRgba, imageFromClipboard, makeThumbnail, looksLikeImage } from './decode.ts'
 import { createCanvas } from './ui/canvas.ts'
+import { createColorPicker, type ColorPickerApi } from './ui/colorpicker.ts'
 import { installAutomationApi } from './automation.ts'
 
 const MODE_PRESETS: Record<string, Partial<ConvertParams>> = {
@@ -295,12 +296,140 @@ function openPicker(target: 'primary' | 'bg'): void {
   renderAll()
 }
 
+/** 取色器实例（按 Blender 取色界面的结构实现，见 ui/colorpicker.ts） */
+let picker: ColorPickerApi | null = null
+
+/** 颜色变化：拖动中只预览，提交才进撤销栈（一次拖动 = 一条撤销） */
+function handlePickerPreview(hex: string): void {
+  if (pickerTarget === 'primary') store.set('primary', hex)
+  else store.set('bg', hex)
+  renderAll()
+}
+
+function handlePickerCommit(hex: string): void {
+  if (pickerTarget === 'primary') {
+    store.setMany({ primary: hex, transparent: false })
+    addRecent(hex)
+  } else {
+    store.setMany({ bg: hex, transparent: false })
+  }
+  renderAll()
+  canvasApi.redraw()
+}
+
+function ensurePicker(host: HTMLElement): ColorPickerApi {
+  const currentValue = pickerTarget === 'primary' ? store.get('primary') : store.get('bg')
+  if (!picker) {
+    picker = createColorPicker(host, {
+      target: pickerTarget,
+      value: currentValue,
+      groups: pickerGroups(),
+    }, {
+      onPreview: handlePickerPreview,
+      onCommit: handlePickerCommit,
+      onTransparent: () => {
+        store.setMany({ transparent: true, tool: 'pencil' })
+        renderAll()
+      },
+      isTransparent: () => store.get('transparent'),
+      onPickFromCanvas: () => {
+        store.set('tool', 'picker')
+        toast('吸管已就绪：到画布上点一格即可取色（Esc 取消）')
+        renderAll()
+      },
+      onClose: () => {
+        store.set('showPicker', false)
+        renderAll()
+      },
+    })
+  }
+  return picker
+}
+
+/** 取色器下方的色板分组：预置色卡（含拼豆号色）+ 最近使用 + 工作色板 */
+function pickerGroups(): { name: string; colors: string[] }[] {
+  const rows = readRecents()
+  const preset = getPreset(app.params.presetPaletteId)
+  const work = app.art?.palette ?? []
+  return [
+    { name: '本图', colors: work.slice(0, 32) },
+    { name: '最近', colors: rows.slice(0, 16) },
+    { name: preset?.name ?? '预置', colors: (preset?.colors ?? []).slice(0, 32) },
+    { name: 'PICO-8', colors: (getPreset('pico8')?.colors ?? []).slice(0, 16) },
+  ].filter((g) => g.colors.length > 0)
+}
+
+/** 最近使用色（localStorage 持久化） */
+const RECENT_KEY = 'pixel-build.recents'
+function readRecents(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY)
+    const arr = raw ? (JSON.parse(raw) as unknown) : []
+    return Array.isArray(arr) ? (arr.filter((c) => typeof c === 'string') as string[]) : []
+  } catch {
+    return []
+  }
+}
+function addRecent(hex: string): void {
+  const norm = hex.toLowerCase()
+  const next = [norm, ...readRecents().filter((c) => c !== norm)].slice(0, 24)
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(next))
+  } catch {
+    /* 无痕模式等场景忽略 */
+  }
+}
+
+/**
+ * 取色器面板（Blender 结构）。两条踩过的坑写在这里，避免以后重犯：
+ *  1. **必须在"没有画布"的提前 return 之前挂载**：曾经放在 return 之后，导致"还没导入图片时点主色块没反应"。
+ *  2. **宿主元素必须跨渲染持久化**：面板每次渲染都重建 DOM，若宿主也跟着重建，取色器实例的 DOM
+ *     仍挂在旧宿主上，表现为"打开正常、一拖动就消失"（拖动会触发一次重渲染）。
+ */
+let pickerHost: HTMLElement | null = null
+
+function renderPickerPanel(): void {
+  if (!store.get('showPicker')) {
+    if (picker) {
+      // 收起时释放全局监听（pointerup / blur），避免监听器越积越多
+      picker.dispose()
+      picker = null
+    }
+    pickerHost?.remove()
+    return
+  }
+  if (!pickerHost) {
+    pickerHost = el('div', { class: 'picker-wrap' })
+    palettePanel.append(pickerHost)
+  }
+  try {
+    const instance = ensurePicker(pickerHost)
+    instance.update({
+      target: pickerTarget,
+      value: pickerTarget === 'primary' ? store.get('primary') : store.get('bg'),
+      groups: pickerGroups(),
+    })
+  } catch (err) {
+    // 构建失败不能静默：否则表现为"点了没反应"，排查要花很久（这里踩过一次）
+    const target = document.getElementById('canvas-host')
+    if (target) target.dataset.pickerError = (err as Error)?.message ?? String(err)
+    console.error('[取色器] 构建失败：', err)
+    clear(pickerHost)
+    pickerHost.append(el('div', { class: 'hint' }, [`取色器不可用：${(err as Error)?.message ?? err}`]))
+  }
+}
+
 function renderPalette(): void {
-  clear(palettePanel)
+  // 只移除色板自己的子节点，**保留取色器宿主**（宿主必须跨渲染存活，见上面注释）
+  for (const child of [...palettePanel.children]) {
+    if (child !== pickerHost) child.remove()
+  }
+  renderPickerPanel()
+
   const art = app.art
   palettePanel.append(el('div', { class: 'panel-title' }, ['工作色板']))
   if (!art || art.palette.length === 0) {
-    palettePanel.append(el('p', { class: 'hint' }, ['导入图片后显示']))
+    palettePanel.append(el('p', { class: 'hint' }, ['导入图片后显示；现在也可以用上方取色器手选颜色']))
     return
   }
 
@@ -333,41 +462,8 @@ function renderPalette(): void {
     )
   }
   palettePanel.append(grid)
-
-  if (store.get('showPicker')) {
-    const value = pickerTarget === 'primary' ? store.get('primary') : store.get('bg')
-    palettePanel.append(
-      el('div', { class: 'picker-wrap' }, [
-        el('div', { class: 'row' }, [
-          el('span', { class: 'hint' }, [`编辑${pickerTarget === 'primary' ? '主色' : '背景'}：`]),
-          el('input', {
-            type: 'color',
-            value,
-            oninput: (e: Event) => {
-              const hex = (e.target as HTMLInputElement).value.toLowerCase()
-              if (pickerTarget === 'primary') store.set('primary', hex)
-              else store.set('bg', hex)
-              renderAll()
-            },
-          }),
-          el('input', {
-            class: 'hex-input',
-            value,
-            maxlength: '7',
-            oninput: (e: Event) => {
-              const raw = (e.target as HTMLInputElement).value.trim()
-              if (!/^#[0-9a-fA-F]{6}$/.test(raw)) return
-              const hex = raw.toLowerCase()
-              if (pickerTarget === 'primary') store.set('primary', hex)
-              else store.set('bg', hex)
-              renderAll()
-            },
-          }),
-          el('button', { class: 'btn tiny', onclick: () => { store.set('showPicker', false); renderAll() } }, ['收起']),
-        ]),
-      ]),
-    )
-  }
+  // 取色器宿主永远排在面板末尾：保证"色板在上、调色器在下"的稳定阅读顺序
+  if (pickerHost) palettePanel.append(pickerHost)
 }
 
 /** 参数面板：按模式分组，避免把 19 个参数全堆在一个长列表里 */
@@ -861,6 +957,7 @@ function showHelp(): void {
     ['空格+拖动 / 中键拖动', '平移画布'],
     ['Ctrl+Z / Ctrl+Y', '撤销 / 重做'],
     ['Ctrl+S', '导出 PNG（1 倍）'],
+    ['点主色/背景色块', '打开取色器（Blender 结构：色轮 + 明度条 + 透明度条 + RGB/HSV/Hex）'],
     ['右上角「导出 ▾」', 'PNG 各倍数 / 拼豆图纸 / 像素与项目 JSON'],
   ]
   const table = el('table')

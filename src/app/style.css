@@ -370,7 +370,149 @@ input[type="color"] {
   color: #d8dbe4;
 }
 
-.picker-wrap { margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-3); }
+.picker-wrap { margin-top: 8px; }
+
+/* ------------------------------------------------------------------ 取色器（Blender 结构） */
+
+.cp {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #202430;
+}
+
+/* 顶部色彩模型标签（RGB / HSV / Hex） */
+.cp-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: #171a22;
+}
+.cp-tab {
+  flex: 1;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cp-tab:hover { color: var(--text); }
+.cp-tab.active { background: var(--accent-2); color: #fff; }
+
+/* 色轮 + 右侧明度竖条 */
+.cp-wheel-row { display: flex; gap: 8px; align-items: flex-start; justify-content: center; }
+.cp-wheel-wrap { position: relative; flex: none; }
+.cp-wheel { display: block; border-radius: 50%; cursor: crosshair; touch-action: none; }
+
+/* 游标：一个空心圆环 + 中心点，和 Blender 一样能在任意背景上看清 */
+.cp-cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #000a, inset 0 0 0 1px #0006;
+  pointer-events: none;
+}
+
+.cp-bar-col { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.cp-bar-wrap { position: relative; border-radius: 4px; overflow: hidden; cursor: ns-resize; touch-action: none; }
+.cp-bar { display: block; }
+.cp-vknob {
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  height: 3px;
+  margin-top: -1.5px;
+  background: #fff;
+  border: 1px solid #0008;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.cp-icon-btn {
+  width: 22px;
+  height: 22px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cp-icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 透明度横条：左侧棋盘（透明）→ 右侧当前色 */
+.cp-alpha {
+  position: relative;
+  height: 18px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: ew-resize;
+  touch-action: none;
+  background-image: linear-gradient(to right, transparent, var(--alpha-color, #000)),
+    repeating-conic-gradient(#3a3d47 0 25%, #2c2f38 0 50%) 0 0 / 10px 10px;
+}
+.cp-knob {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 4px;
+  margin-left: -2px;
+  background: #fff;
+  border: 1px solid #0008;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* 数值行 */
+.cp-fields { display: flex; gap: 6px; }
+.cp-field { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.cp-field-label { font-size: 10px; color: var(--dim); }
+.cp-num {
+  width: 100%;
+  padding: 3px 5px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+/* 色板 */
+.cp-swatches { display: flex; flex-direction: column; gap: 5px; }
+.cp-swatch-row { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.cp-swatch-name { width: 34px; flex: none; font-size: 10px; color: var(--dim); }
+.cp-swatch {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid #00000066;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.cp-swatch:hover { outline: 2px solid var(--accent); outline-offset: -1px; }
+.cp-swatch.transparent {
+  width: 24px;
+  background: repeating-conic-gradient(#3a3d47 0 25%, #2c2f38 0 50%) 0 0 / 8px 8px;
+  color: #d8dbe4;
+  font-size: 11px;
+  line-height: 14px;
+}
+.cp-swatch.transparent.active { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.cp-foot { display: flex; justify-content: flex-end; }
 
 /* ------------------------------------------------------------------ 提示与模态 */
 
