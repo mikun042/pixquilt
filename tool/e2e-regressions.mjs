@@ -655,6 +655,61 @@ await check('桌面宽度：工具/参数按钮真的折叠侧栏（不再"按�
   return `工具列 ${r.before.rail}→0→${r.restored.rail}；参数列 ${r.before.right}→0→${r.final.right}`
 })
 
+await check('桌面宽度：工具/参数按钮各自独立折叠，能同时收起（不再互相顶开）', async () => {
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false })
+  await sleep(300)
+  /*
+   * 用户报的现象：收起工具列后再点「参数」，工具列又会弹回来（反之亦然）。
+   * 根因是折叠状态存成了单个三值变量 'none' | 'tools' | 'panel'，
+   * 四个组合里"两边都收起"不可达——赋值 'panel' 顺手把 'no-rail' 摘掉了。
+   * 所以这条断言必须成对检查"另一个没被顶开"，只测单独折叠是抓不到的。
+   */
+  const r = JSON.parse(await cdp.eval(`(() => {
+    const tools = document.querySelector('[data-testid="drawer-tools"]')
+    const panel = document.querySelector('[data-testid="drawer-panel"]')
+    const rail = document.getElementById('rail-left')
+    const right = document.querySelector('.right')
+    const main = document.querySelector('.main')
+    const host = document.getElementById('canvas-host')
+    const w = (e) => Math.round(e.getBoundingClientRect().width)
+    const snap = () => ({ rail: w(rail), right: w(right), host: w(host), main: w(main) })
+    const out = { initial: snap() }
+    tools.click(); out.afterTools = snap()
+    panel.click(); out.bothHidden = snap()          // ← 这里曾把工具列顶回来
+    panel.click(); out.panelBack = snap()
+    tools.click(); out.restored = snap()
+    // 反向顺序：先关参数再关工具
+    panel.click(); out.panelOnly = snap()
+    tools.click(); out.bothHidden2 = snap()          // ← 反向也要能同时收起
+    tools.click(); out.toolsBack = snap()
+    panel.click(); out.restored2 = snap()
+    out.cls = document.body.className
+    return JSON.stringify(out)
+  })()`))
+
+  const base = r.initial
+  assert(base.rail > 0 && base.right > 0, `桌面下两侧栏应可见：${JSON.stringify(base)}`)
+
+  assert(r.afterTools.rail === 0, `点「工具」应收起工具列，实际 ${r.afterTools.rail}`)
+  assert(r.afterTools.right > 0, '收起工具列不该连带收起参数列')
+
+  // 核心回归点：关第二个不该把第一个顶回来
+  assert(r.bothHidden.rail === 0, `两边同时收起时工具列必须仍为 0（曾被顶回 ${r.bothHidden.rail}）`)
+  assert(r.bothHidden.right === 0, `两边同时收起时参数列必须为 0，实际 ${r.bothHidden.right}`)
+  assert(r.bothHidden.host >= r.bothHidden.main - 4, `两栏收起后画布应占满：canvas ${r.bothHidden.host} / main ${r.bothHidden.main}`)
+
+  assert(r.panelBack.right > 0 && r.panelBack.rail === 0, '单独恢复参数列时工具列应保持收起')
+  assert(r.restored.rail > 0 && r.restored.right > 0, '两次恢复后两侧都应回到可见')
+
+  assert(r.panelOnly.right === 0 && r.panelOnly.rail > 0, '先关参数：参数列为 0、工具列保持可见')
+  assert(r.bothHidden2.rail === 0, `反向顺序也要能同时收起工具列，实际 ${r.bothHidden2.rail}`)
+  assert(r.bothHidden2.right === 0, `反向顺序也要能同时收起参数列，实际 ${r.bothHidden2.right}`)
+  assert(r.toolsBack.rail > 0 && r.toolsBack.right === 0, '单独恢复工具列时参数列应保持收起')
+  assert(r.restored2.rail > 0 && r.restored2.right > 0, '反向恢复后两侧都应回到可见')
+
+  return `正向 ${base.rail}/${base.right} → 双收 ${r.bothHidden.rail}/${r.bothHidden.right} → 还原；反向亦然`
+})
+
 /* ---------------------------------------------- 结果 */
 
 const passed = results.filter((r) => r.ok).length

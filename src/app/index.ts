@@ -984,14 +984,22 @@ function buildHeader(): void {
      */
     const NARROW = 980
     const isNarrow = (): boolean => window.innerWidth <= NARROW
-    /** 桌面折叠状态（跨 renderAll 保留，折叠是用户偏好，不该被一次重绘重置） */
-    let desktopHidden: 'none' | 'tools' | 'panel' = 'none'
+    /*
+     * 桌面折叠状态：**两侧各自独立**，跨 renderAll 保留（折叠是用户偏好，不该被一次重绘重置）。
+     *
+     * 这里原先是单个 'none' | 'tools' | 'panel' 三值状态，导致四个组合里有一个**不可达**：
+     * 收起了工具列再收参数列时，赋值 'panel' 顺手把 'no-rail' 摘掉了，
+     * 于是"想关第二个、第一个又弹回来"——用户看到的就是这个现象。
+     * 两个布尔量才能表达"两边都收起"，CSS 里的 `body.no-rail.no-panel` 也才有意义。
+     */
+    let railHidden = false
+    let panelHidden = false
 
     const applyDesktopCollapse = (): void => {
-      document.body.classList.toggle('no-rail', desktopHidden === 'tools')
-      document.body.classList.toggle('no-panel', desktopHidden === 'panel')
-      drawerToolsBtn.setAttribute('aria-pressed', desktopHidden === 'tools' ? 'true' : 'false')
-      drawerPanelBtn.setAttribute('aria-pressed', desktopHidden === 'panel' ? 'true' : 'false')
+      document.body.classList.toggle('no-rail', railHidden)
+      document.body.classList.toggle('no-panel', panelHidden)
+      drawerToolsBtn.setAttribute('aria-pressed', railHidden ? 'true' : 'false')
+      drawerPanelBtn.setAttribute('aria-pressed', panelHidden ? 'true' : 'false')
       canvasApi.redraw()
     }
 
@@ -1012,14 +1020,14 @@ function buildHeader(): void {
     const toggleTools = (): void => {
       if (isNarrow()) setDrawer(currentDrawer() === 'tools' ? 'none' : 'tools')
       else {
-        desktopHidden = desktopHidden === 'tools' ? 'none' : 'tools'
+        railHidden = !railHidden
         applyDesktopCollapse()
       }
     }
     const togglePanel = (): void => {
       if (isNarrow()) setDrawer(currentDrawer() === 'panel' ? 'none' : 'panel')
       else {
-        desktopHidden = desktopHidden === 'panel' ? 'none' : 'panel'
+        panelHidden = !panelHidden
         applyDesktopCollapse()
       }
     }

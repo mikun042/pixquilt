@@ -687,10 +687,15 @@ input[type="color"] {
  */
 @media (min-width: 981px) {
   body.no-rail .main { grid-template-columns: 1fr 300px; }
-  body.no-rail .rail { display: none; }
   body.no-panel .main { grid-template-columns: 232px 1fr; }
-  body.no-panel .right { display: none; }
-  body.no-rail.no-panel .main { grid-template-columns: 1fr; }
+  body.no-rail .rail, body.no-panel .right { display: none; }
+  /*
+   * 两边同时收起。这条必须比上面两条更"重"才有确定的胜负：
+   * 早期写成同权重的 `body.no-rail.no-panel .main`，靠源码顺序取胜——
+   * 顺序一变就静默失配（两栏都隐藏了、网格却还留着 300px 的空列）。
+   * 加 `.main` 提高一级特异性，就不再看顺序。
+   */
+  body.no-rail.no-panel .main.main { grid-template-columns: 1fr; }
 }
 
 /*
