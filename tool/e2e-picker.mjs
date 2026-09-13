@@ -333,11 +333,8 @@ check('色板点选：点击色块即设为主色', () => {
 
 // Alpha 行：最左 = 透明色（0.000 / 填充 0%），拖回右侧 = 恢复实色
 const alpha = await cdp.eval(`(() => {
-  // 拖动几何基准是滑条轨道（.cp-row-track）：数字框已移到滑条右侧、标签不参与拖动，
-  // 所以这里必须按 track 计算位置——按整行算会把"点在标签上"误当成拖动。
   const row = document.querySelector('.cp-alpha')
-  const track = row.querySelector('.cp-row-track')
-  const rect = track.getBoundingClientRect()
+  const rect = row.getBoundingClientRect()
   const mk = (type, x) => new PointerEvent(type, { clientX: x, clientY: rect.top + rect.height / 2, bubbles: true, pointerId: 3, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
   // 落在左端死区内即视为"拖到最左"（亚像素取整让"精确 1px"不可达）
   const at = (frac) => rect.left + Math.max(1, rect.width * frac)
@@ -346,10 +343,10 @@ const alpha = await cdp.eval(`(() => {
     val: document.querySelector('.cp-alpha .cp-num').value,
     fill: Math.round(parseFloat(document.querySelector('.cp-alpha .cp-row-fill').style.width)),
   })
-  track.dispatchEvent(mk('pointerdown', at(0.02)))
+  row.dispatchEvent(mk('pointerdown', at(0.02)))
   window.dispatchEvent(mk('pointerup', at(0.02)))
   const left = snap()
-  track.dispatchEvent(mk('pointerdown', at(0.9)))
+  row.dispatchEvent(mk('pointerdown', at(0.9)))
   window.dispatchEvent(mk('pointerup', at(0.9)))
   const right = snap()
   return JSON.stringify({ left, right })

@@ -113,12 +113,11 @@ npm run ref:analyze -- "C:\Users\<用户名>\Pictures\Screenshots\屏幕截图 2
     │       └── .cp-vknob           ← 明度滑块（top 百分比）
     ├── .cp-fields              ← 数值行组（圆角 3px + overflow hidden）
     │   ├── .cp-row × 3         ← 红/绿/蓝（RGB 段）或 色相/饱和度/明度（HSV 段），data-row=R/G/B/H/S/V
-    │   │   ├── .cp-row-label   ← 固定 34px，pointer-events:none（不抢拖动）
-    │   │   ├── .cp-row-track   ← **唯一接收拖动的元素**（flex:1），内含
-    │   │   │   └── .cp-row-fill  ← 绝对定位填充层，宽度 = 数值比例（只铺在轨道内）
-    │   │   └── input.cp-num    ← 固定 48px、右对齐、无边框；拖动开始时会被 blur()
+    │   │   ├── .cp-row-fill    ← 绝对定位填充层，**铺满整行**，宽度 = 数值比例
+    │   │   ├── .cp-row-label   ← flex:1，叠在填充层之上（必须 position:relative）
+    │   │   └── input.cp-num    ← 宽 66px、右对齐、无边框，同样叠在填充层之上
     │   └── .cp-row.cp-alpha    ← Alpha 行（同结构；**类名保持 .cp-alpha，自动化断言依赖它**）
-    │       └── .cp-row-track   ← 轨道底为棋盘格（表示"未填充 = 透明"）
+    │       └── 行底为棋盘格（表示"未填充 = 透明"）
     ├── .cp-hexrow              ← 常驻：.cp-hex-label + input.cp-num + .cp-icon-btn（吸管）
     ├── .cp-swatches            ← 色板（本工具特有；参考图没有）
     │   └── .cp-swatch-row
@@ -166,9 +165,12 @@ npm run ref:analyze -- "C:\Users\<用户名>\Pictures\Screenshots\屏幕截图 2
 5. **`window.addEventListener('pointerup' / 'pointercancel' / 'blur')` 的兜底不能删。**
    它保证"拖到窗口外松手"不会让拖拽状态悬挂。新增的全局监听都必须在 `dispose()` 里成对移除。
 
-6. **拖动几何基准是 `.cp-row-track`，不是整行。**
-   数字框在滑条右侧、标签 `pointer-events: none`——这是为了防误触（拖滑条时点到输入框会变成编辑文本）。
-   若要调整行布局，务必保持"只有轨道接收指针事件"，并在 `tool/e2e-slider.mjs` 里同步 `[data-row] .cp-row-track` 选择器。
+6. **数值行是"整行滑条"：拖动几何基准 = 整行（`[data-row]`）。**
+   填充层 `position:absolute` 铺满整行，标签与数字输入框叠在它之上（因此两者都必须 `position:relative`）。
+   输入框也在行内，点它是正常编辑；拖动时不要 `blur()` 它，否则点数字会立刻失焦——
+   拖动结果与输入框显示值的冲突由 `endDrag()` 里的一次 `paintFields()` 回写解决。
+   > 试过把布局改成"标签 | 滑条 | 数字框"三段式来彻底分开拖动与输入，但**外观偏离参考图，已被回退**；
+   > 若将来还要做防误触，请在不改变外观的前提下想办法（例如只在指针移动超过阈值后才进入拖动）。
 
 7. **提交时机不能改。**
    拖动中只 `onPreview()`（实时预览，不进撤销栈）；松手 / 数值输入 / 点色块才 `onCommit()`。
