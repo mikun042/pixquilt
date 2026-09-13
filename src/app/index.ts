@@ -505,11 +505,30 @@ function renderStatusbar(): void {
   for (const b of bits.filter(Boolean)) statusbar.append(el('span', {}, [b]))
 }
 
+/** 空状态：**按需插入**（有画布时必须移除，否则会盖住画好的内容） */
+function renderEmptyState(): void {
+  const host = canvasHost
+  const existing = host.querySelector('.empty-state')
+  if (app.art) {
+    existing?.remove()
+    return
+  }
+  if (existing) return
+  host.append(
+    el('div', { class: 'empty-state' }, [
+      el('div', { class: 'empty-icon' }, ['▦']),
+      el('div', { class: 'empty-title' }, ['拖入图片，或用顶栏「导入图片」']),
+      el('div', { class: 'empty-hint' }, ['支持 PNG / JPG / WebP / GIF / BMP / AVIF / ICO / SVG · 也可 Ctrl+V 粘贴']),
+    ]),
+  )
+}
+
 function renderAll(): void {
   renderTools()
   renderPalette()
   renderParams()
   renderStatusbar()
+  renderEmptyState()
   canvasApi.redraw()
 }
 

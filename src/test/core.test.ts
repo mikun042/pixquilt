@@ -12,7 +12,7 @@
 import { strict as assert } from 'node:assert'
 import { describe, it } from 'node:test'
 
-import { runPipeline, computeCropRect, computeGridSize, medianCut } from '../core/pipeline.ts'
+import { runPipeline, computeCropRect, computeGridSize, medianCut, quantize } from '../core/pipeline.ts'
 import { applyOps, blankArt, brushCells, lineCells, rasterizeEllipse, rasterizeRect, anchorOffset, type EditOp } from '../core/ops.ts'
 import { DEFAULT_PARAMS, coerceParams, sanitizeParams, sanitizePrefs } from '../core/types.ts'
 import { getPreset, parseHexPalette, serializeHexPalette, paletteCodes } from '../core/palettes.ts'
@@ -26,8 +26,51 @@ import { beadListCsv, beadReport, beadSvg } from '../core/bead.ts'
 import { OP_SPECS } from '../core/spec.ts'
 import { hexToRgb, rgbToHex, rgbToOklab, oklabToRgb, gradientPalette } from '../core/color.ts'
 
-/** 合成测试图：渐变 + 半透明块 + 纯色块，覆盖取色/透明/平均三条路径 */
-function fixture(w = 64, h = 48) {
+/**
+ * 生成一张"已经降采样到目标格数"的平滑渐变像素缓冲。
+ * 用途：把量化器单独拎出来测（不经过采样的抗锯齿影响），让缓存路径与无缓存路径可被逐位比对。
+ */
+function gradientGrid(width: number, height: number): Uint8ClampedArray {
+  const data = new Uint8ClampedArray(width * height * 4)
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const o = (y * width + x) * 4
+      data[o] = Math.round((x / Math.max(1, width - 1)) * 255)
+      data[o + 1] = Math.round((y / Math.max(1, height - 1)) * 255)
+      data[o + 2] = 80
+      data[o + 3] = 255
+    }
+  }
+  return data
+}
+
+/** 无缓存的参考实现：逐格直接算 OKLab 最近色（独立于 core 的缓存代码路径） */
+function directNearestIndices(data: Uint8ClampedArray, palette: string[]): number[] {
+  const labs = palette.map((hex) => {
+    const n = parseInt(hex.slice(1), 16)
+    return rgbToOklab((n >> 16) & 255, (n >> 8) & 255, n & 255)
+  })
+  const out: number[] = []
+  for (let i = 0; i < data.length; i += 4) {
+    const lab = rgbToOklab(data[i], data[i + 1], data[i + 2])
+    let best = 0
+    let bestD = Infinity
+    for (let k = 0; k < labs.length; k++) {
+      const dl = labs[k].L - lab.L
+      const da = labs[k].a - lab.a
+      const db = labs[k].b - lab.b
+      const d = dl * dl + da * da + db * db
+      if (d < bestD) {
+        bestD = d
+        best = k
+      }
+    }
+    out.push(best)
+  }
+  return out
+}
+
+/** 合成测试图：渐变 + 半透明块 + 纯色块，覆盖取色/透明/平均三条路径 */function fixture(w = 64, h = 48) {
   const data = new Uint8ClampedArray(w * h * 4)
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
@@ -164,6 +207,35 @@ describe('像素化管线', () => {
     const allowed = new Set(preset.colors.map((c) => c.toLowerCase()))
     for (const c of art.palette) assert.ok(allowed.has(c), `${c} 不应出现在锁定的色板里`)
     for (let i = 0; i < art.indices.length; i++) assert.ok(art.indices[i] < art.palette.length, '索引越界')
+  })
+
+  it('固定色板 + 关抖动：缓存路径不能塌成单色（真实缺陷回归防线）', () => {
+    // 曾经的实现只按坐标取模当缓存槽、命中即复用索引，导致不同颜色撞槽后拿到错误索引，
+    // 表现为"整幅图只剩一种颜色"且**不报错**。这条断言用 core 的公开量化器做无缓存对照：
+    //   ① 带缓存的 quantize 与"逐格直接算最近色"必须逐位一致；
+    //   ② 渐变图在 16 色固定色板下必须用到多种颜色。
+    const preset = getPreset('beads16')
+    assert.ok(preset, 'beads16 必须存在')
+    const base = { paletteMode: 'preset' as const, presetPaletteId: 'beads16', longEdge: 40, lockPalette: true }
+    const params = coerceParams(base)
+
+    // 取管线采样后的像素，再分别用两条路径量化同一份输入
+    const sampled = { data: gradientGrid(40, 30), width: 40, height: 30 }
+    const palette = getPreset('beads16')!.colors.map((c) => c.toLowerCase())
+    const cached = quantize(sampled.data, sampled.width, sampled.height, palette, params, null).indices
+    const direct = directNearestIndices(sampled.data, palette)
+
+    assert.deepEqual([...cached], [...direct], '缓存路径与逐格直接匹配必须逐位一致')
+    const used = new Set(cached)
+    assert.ok(used.size >= 4, `渐变图在 16 色固定色板下应用到多种颜色，实际只用了 ${used.size} 种`)
+    for (const i of used) assert.ok(i < palette.length, '索引越界')
+  })
+
+  it('透明模式不影响不透明区域的量化结果（键控只改导出，不改像素）', () => {
+    const none = runPipeline(fixture(), coerceParams({ transparent: 'none', paletteMode: 'auto', paletteK: 12, longEdge: 32, matteColor: '#ffffff' })).art
+    const key = runPipeline(fixture(), coerceParams({ transparent: 'key', paletteMode: 'auto', paletteK: 12, longEdge: 32, matteColor: '#ffffff' })).art
+    // key 模式在管线里同样把透明像素合成到 matteColor（只是导出时再变透明），因此索引矩阵应逐位一致
+    assert.equal(artHash(none), artHash(key), 'key 与 none 的像素结果应一致（差异只应出现在导出阶段）')
   })
 
   it('确定性：同图同参 → 同一指纹', () => {

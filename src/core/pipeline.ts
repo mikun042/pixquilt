@@ -336,10 +336,21 @@ export function quantize(
 
   // 抖动与清理互斥由调用方（runPipeline）强制，这里只负责映射本身
   const useCache = dither === 'none'
-  const CACHE_BITS = 15
-  const CACHE_SIZE = 1 << (CACHE_BITS * 1) // 32768 槽，够覆盖常见照片的重复色
-  const cache = useCache ? new Int16Array(CACHE_SIZE).fill(-1) : null
-  const cacheMask = CACHE_SIZE - 1
+  /**
+   * RGB→索引 的直接映射缓存（三个平行数组，命中条件一句话说清：**完整 RGB 完全相同**）。
+   *
+   *  - `slotKeys`：截断键（每通道 5 bit）→ 决定落在哪个槽，纯粹为了寻址快；
+   *  - `fullKeys`：完整 24 位 RGB → **命中时校验的是它**，避免"键前缀相同但颜色不同"被错误复用；
+   *  - `cacheIdx`：该颜色对应的最近色索引。
+   *
+   * 早先的版本用"截断键"当唯一身份，导致 top-5-bit 相同的两个颜色拿到同一个索引，
+   * 表现为"固定色板下整幅图只剩几种颜色"且完全静默（实测 1200 格里错 4 格、极端情况下只剩 1 色）。
+   */
+  const CACHE_BITS = 5
+  const CACHE_SIZE = 1 << (CACHE_BITS * 3)
+  const slotKeys = useCache ? new Int32Array(CACHE_SIZE).fill(-1) : null
+  const fullKeys = useCache ? new Int32Array(CACHE_SIZE) : null
+  const cacheIdx = useCache ? new Uint8Array(CACHE_SIZE) : null
 
   const work = new Float32Array(data.length)
   for (let i = 0; i < data.length; i++) work[i] = data[i]
@@ -364,22 +375,26 @@ export function quantize(
         b += t
       }
 
+      // 先夹到 0–255 并取整：缓存键与色距计算都用这份夹紧后的整数颜色
+      const ri = Math.max(0, Math.min(255, Math.round(r)))
+      const gi = Math.max(0, Math.min(255, Math.round(g)))
+      const bi = Math.max(0, Math.min(255, Math.round(b)))
+
       let idx: number
-      if (useCache && cache) {
-        const rq = Math.max(0, Math.min(255, r | 0)) >> (8 - CACHE_BITS)
-        const gq = Math.max(0, Math.min(255, g | 0)) >> (8 - CACHE_BITS)
-        const bq = Math.max(0, Math.min(255, b | 0)) >> (8 - CACHE_BITS)
-        const key = ((rq << (CACHE_BITS * 2)) | (gq << CACHE_BITS) | bq) & cacheMask
-        const hit = cache[key]
-        if (hit >= 0) {
-          idx = hit
+      if (slotKeys && fullKeys && cacheIdx) {
+        const full = (ri << 16) | (gi << 8) | bi
+        const slot = ((ri >> (8 - CACHE_BITS)) << (CACHE_BITS * 2)) | ((gi >> (8 - CACHE_BITS)) << CACHE_BITS) | (bi >> (8 - CACHE_BITS))
+        if (slotKeys[slot] === slot && fullKeys[slot] === full) {
+          idx = cacheIdx[slot]
         } else {
-          const lab = rgbToOklab(Math.max(0, Math.min(255, r)), Math.max(0, Math.min(255, g)), Math.max(0, Math.min(255, b)))
+          const lab = rgbToOklab(ri, gi, bi)
           idx = nearestColorIndex(labs, lab.L, lab.a, lab.b)
-          cache[key] = idx
+          slotKeys[slot] = slot
+          fullKeys[slot] = full
+          cacheIdx[slot] = idx
         }
       } else {
-        const lab = rgbToOklab(Math.max(0, Math.min(255, r)), Math.max(0, Math.min(255, g)), Math.max(0, Math.min(255, b)))
+        const lab = rgbToOklab(ri, gi, bi)
         idx = nearestColorIndex(labs, lab.L, lab.a, lab.b)
       }
 

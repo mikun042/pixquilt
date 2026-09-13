@@ -26,11 +26,10 @@
     <section class="center">
       <div class="canvas-host" id="canvas-host">
         <canvas id="board"></canvas>
-        <div class="empty-state" id="empty-state">
-          <div class="empty-icon">▦</div>
-          <div class="empty-title">拖入图片，或用顶栏「导入图片」</div>
-          <div class="empty-hint">支持 PNG / JPG / WebP / GIF / BMP / AVIF / ICO / SVG · 也可 Ctrl+V 粘贴</div>
-        </div>
+        <!--
+          空状态提示**不写死在模板里**：它由 UI 在"没有画布"时才插入、一旦有画布就移除。
+          写死会导致它一直盖在画好的画布上——表现为"导入图片没反应"（曾真实发生）。
+        -->
         <div class="magnifier" id="magnifier">
           <canvas id="magnifier-canvas" width="116" height="116"></canvas>
           <div class="mag-label">原图对照</div>

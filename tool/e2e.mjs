@@ -371,6 +371,61 @@ async function main() {
       return v.fixed.map((f) => f.key).join(', ')
     })
 
+    // 真实用户路径：造一张 PNG 当作用户图片导入 → 必须真的转换并显示出来。
+    // 这条断言是为了锁住一个真实缺陷：空状态提示常驻在模板里且自带不透明背景，
+    // 导入成功后没被移除，于是它一直盖在画好的画布上，表现为"导入图片转换不出来"。
+    const importFlow = await cdp.eval(`(async () => {
+      const c = document.createElement('canvas')
+      c.width = 64; c.height = 64
+      const ctx = c.getContext('2d')
+      for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+        ctx.fillStyle = 'rgb(' + Math.round(x * 4) + ',' + Math.round(y * 4) + ',80)'
+        ctx.fillRect(x, y, 1, 1)
+      }
+      const blob = await new Promise((res) => c.toBlob(res, 'image/png'))
+      const file = new File([blob], '用户图片.png', { type: 'image/png' })
+      const info = await window.pixelArtStudio.importImage(file)
+      return JSON.stringify({ info })
+    })()`)
+    check('导入图片：API 报告导入成功并完成转换', () => {
+      const r = JSON.parse(importFlow)
+      assert(r.info.width === 64 && r.info.height === 64, `原图尺寸不对：${JSON.stringify(r.info)}`)
+      return `${r.info.name} ${r.info.width}×${r.info.height}`
+    })
+
+    let imported = ''
+    for (let i = 0; i < 40; i++) {
+      imported = await cdp.eval(`(() => {
+        const c = document.getElementById('board')
+        const ctx = c.getContext('2d')
+        const d = ctx.getImageData(0, 0, c.width, c.height).data
+        let nonEmpty = 0
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) nonEmpty++
+        const info = window.pixelArtStudio.getInfo()
+        const host = document.getElementById('canvas-host')
+        const overlay = host.querySelector('.empty-state')
+        return JSON.stringify({
+          hasArt: info.hasArt, artW: info.width, artH: info.height, paletteSize: info.paletteSize,
+          nonEmpty, overlayPresent: !!overlay,
+          overlayDisplay: overlay ? getComputedStyle(overlay).display : 'none',
+          drawError: c.dataset.drawError || '',
+          status: document.getElementById('statusbar').textContent
+        })
+      })()`)
+      const parsed = JSON.parse(imported)
+      if (parsed.nonEmpty > 500 && !parsed.overlayPresent) break
+      await new Promise((r) => setTimeout(r, 150))
+    }
+    check('导入图片：转换结果真的显示出来，且空状态已移除', () => {
+      const r = JSON.parse(imported)
+      assert(r.hasArt, '导入后没有画布')
+      assert(r.paletteSize > 1, `转换后色板只有 ${r.paletteSize} 色，可能是 1×1 或失败`)
+      assert(!r.drawError, `绘制抛错：${r.drawError}`)
+      assert(!r.overlayPresent, '「拖入图片」空状态提示仍盖在画布上（有画布时必须移除）')
+      assert(r.nonEmpty > 500, `画布内容为空：${r.nonEmpty} 个不透明像素（状态栏：${r.status}）`)
+      return `${r.artW}×${r.artH} / ${r.paletteSize} 色 / ${r.nonEmpty} 像素`
+    })
+
     check('运行期无控制台错误', () => {
       assert(consoleErrors.length === 0, `控制台报错 ${consoleErrors.length} 条：${consoleErrors.slice(0, 2).join(' | ')}`)
       return '0 条'
