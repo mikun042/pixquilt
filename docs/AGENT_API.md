@@ -290,7 +290,9 @@ ps.hasAlpha()  ps.countTransparent()  ps.artHash()
 ### 导出（返回字符串/字节，不触发下载）
 
 ```js
-ps.exportPNG(scale, { transparentBg })   // → dataURL
+ps.exportPNG(scale, { transparentBg, bgHex })   // → dataURL
+//   transparentBg: true 时按「单色键控」把某个颜色导出为透明；bgHex 省略则自动用
+//   当前参数的 matteColor（键控色就是它），所以通常只传 transparentBg 即可
 ps.exportPixelJSON()                     // 每格颜色 + 每色用量（拼豆原料清单）
 ps.exportPaletteHex()                    // → .hex 文本
 ps.exportProject()                       // → 项目 JSON（参数+色板+像素，不含原图）

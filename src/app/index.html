@@ -19,12 +19,15 @@
         右侧 = 其余全部操作：撤销 / 重做 / 重新转换 / 新建 / 导入 / 导出，最右侧是「? 快捷键」
       依据是桌面软件的肌肉记忆：动作按钮集中在右上角，左侧只放"当前处于什么状态"；
       帮助类入口放在最边缘（离其它按钮远一点，避免误触）。
+      窄屏（≤980px）时侧栏被收成抽屉，因此最左边会出现「工具」「参数」两个开关按钮。
     -->
     <div class="header-left">
       <div class="logo">▦ 像素画工作台</div>
       <div class="header-mode" id="header-mode"></div>
     </div>
     <div class="header-right">
+      <button class="btn narrow-only" id="btn-drawer-tools" type="button"></button>
+      <button class="btn narrow-only" id="btn-drawer-panel" type="button"></button>
       <div class="header-actions" id="header-actions"></div>
       <button class="btn" id="btn-import" type="button"></button>
       <div class="menu-anchor" id="export-anchor">
@@ -36,7 +39,7 @@
   </header>
 
   <div class="main">
-    <aside class="rail">
+    <aside class="rail" id="rail-left">
       <div id="rail-tools"></div>
       <div class="panel" id="panel-palette"></div>
     </aside>
@@ -62,10 +65,12 @@
       <footer class="statusbar" id="statusbar"></footer>
     </section>
 
-    <aside class="right">
+    <aside class="right" id="rail-right">
       <div class="panel" id="panel-params"></div>
     </aside>
   </div>
+  <!-- 窄屏抽屉遮罩：点它关闭抽屉（桌面宽度下不显示） -->
+  <div class="drawer-scrim" id="drawer-scrim" hidden></div>
 </div>
 <div class="toast-stack" id="toasts" role="status" aria-live="polite"></div>
 <script type="module">/*__SCRIPT__*/</script>

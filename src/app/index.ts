@@ -10,7 +10,7 @@
  *   asset  游戏资产：精确尺寸 + 锚点 + 图集/引擎元数据
  */
 import { DEFAULT_PARAMS, DEFAULT_PREFS, STYLE_PRESETS, TOOLS, sanitizePrefs, type ConvertParams, type EditorPrefs, type PixelArt } from '../core/types.ts'
-import { PRESETS, getPreset } from '../core/palettes.ts'
+import { PRESETS, getPreset, parseHexPalette, serializeHexPalette } from '../core/palettes.ts'
 import { EXPORT_SCALES } from '../core/limits.ts'
 import { pixelJSONString, projectJSONString, safeFileBase } from '../core/export.ts'
 import { artToPngBlob, artToPngDataURL, artToPngDataURLSync } from './canvas-png.ts'
@@ -47,6 +47,17 @@ const app: AppState = {
   refImage: null,
 }
 
+/** 历史快照用的深拷贝：索引/色板/alpha 都必须复制，否则会被后续就地编辑污染 */
+function cloneArt(art: PixelArt): PixelArt {
+  return {
+    width: art.width,
+    height: art.height,
+    indices: art.indices.slice(),
+    palette: [...art.palette],
+    alphaMask: art.alphaMask ? art.alphaMask.slice() : null,
+  }
+}
+
 /**
  * 撤销栈：存 `PixelArt` 快照（索引是 Uint8Array，浅拷贝即可）。
  * 上限 50 步 + 由 core/limits 的常量约束；全不透明的 alphaMask 在提交前已被 core 归一为 null，
@@ -62,7 +73,10 @@ function resetHistory(): void {
 /** 一次编辑的提交入口（UI 绘制与自动化接口共用）：进撤销栈后写回并重绘 */
 function commitWithHistory(indices: Uint8Array, palette: string[], alphaMask: Uint8Array | null): void {
   if (!app.art) return
-  history.past.push(app.art)
+  // 入栈必须是**快照**而不是活对象引用：canvas 在提交时会就地改写 art.palette
+  // （src/app/ui/canvas.ts 的 `art.palette = palette`），若入栈共享同一对象，
+  // 已撤销的颜色会残留在色板里，artHash 与导出的 .hex/项目 JSON 随之被污染（测试报告 P2-05）。
+  history.past.push(cloneArt(app.art))
   if (history.past.length > 50) history.past.shift()
   history.future = []
   app.art = { ...app.art, indices, palette, alphaMask }
@@ -72,6 +86,7 @@ function commitWithHistory(indices: Uint8Array, palette: string[], alphaMask: Ui
 
 function undo(): void {
   const prev = history.past.pop()
+
   if (!prev || !app.art) return
   history.future.push(app.art)
   app.art = prev
@@ -81,7 +96,7 @@ function undo(): void {
 function redo(): void {
   const next = history.future.pop()
   if (!next || !app.art) return
-  history.past.push(app.art)
+  history.past.push(cloneArt(app.art))
   app.art = next
   resetCanvasTo(next)
 }
@@ -473,6 +488,95 @@ function renderPalette(): void {
 }
 
 /** 参数面板：按模式分组，避免把 19 个参数全堆在一个长列表里 */
+/**
+ * 自定义 / .hex 色板编辑区。
+ *
+ * 为什么需要它：`paletteMode: 'custom'` 与 `customPalette` 一直是 core 与 CLI/页内 API 支持的能力
+ * （CLI 的 `--palette xxx.hex` 就是走它），但**参数面板从来没有对应控件**——
+ * 《使用说明》却写了"支持导入 .hex"，于是用户选中"自定义 / .hex"后什么也做不了，
+ * 转换还静默按自动取色进行。这是"文档说支持、界面不支持"的典型，测试报告里列为 P1。
+ *
+ * 输入兼容两种 .hex 行式（见 core/palettes.ts 的 parseHexPalette）：
+ *   `#rrggbb` 每行一个；或 `S12 #ff8800` 两列带号色（拼豆图纸用）。
+ */
+function renderCustomPaletteField(p: ConvertParams): HTMLElement {
+  const count = p.customPalette.length
+  const fileInput = el('input', {
+    type: 'file',
+    accept: '.hex,.txt,text/plain',
+    style: { display: 'none' },
+    onchange: (e: Event) => {
+      const f = (e.target as HTMLInputElement).files?.[0]
+      ;(e.target as HTMLInputElement).value = ''
+      if (!f) return
+      void f.text().then((text) => {
+        const parsed = parseHexPalette(text)
+        if (parsed.colors.length === 0) {
+          toast('这个文件里没有解析出颜色（需要每行一个 #rrggbb，或「编号 #rrggbb」两列）', 'warn')
+          return
+        }
+        patchParams({ paletteMode: 'custom', customPalette: parsed.colors })
+        toast(`已载入 ${parsed.colors.length} 个颜色${parsed.truncated ? `（超出 256 的部分已截断）` : ''}${parsed.skipped ? `，跳过 ${parsed.skipped} 行无法解析的内容` : ''}`)
+      })
+    },
+  })
+
+  const textarea = el('textarea', {
+    class: 'hex-textarea',
+    spellcheck: 'false',
+    rows: '5',
+    placeholder: '#0f380f\n#306230\n或带号色：S12 #ff8800',
+    onchange: (e: Event) => {
+      const parsed = parseHexPalette((e.target as HTMLTextAreaElement).value)
+      if (parsed.colors.length === 0) {
+        toast('没有解析出颜色：每行一个 #rrggbb，或「编号 #rrggbb」两列', 'warn')
+        return
+      }
+      patchParams({ customPalette: parsed.colors })
+      toast(`自定义色板已更新为 ${parsed.colors.length} 色`)
+    },
+  })
+
+  const row = el('div', { class: 'row wrap' })
+  row.append(
+    el('button', { class: 'btn tiny', type: 'button', onclick: () => fileInput.click() }, ['导入 .hex 文件']),
+    el('button', {
+      class: 'btn tiny',
+      type: 'button',
+      title: '把当前画布色板填进上面的输入框（便于改几个色再导入）',
+      disabled: app.art ? false : true,
+      onclick: () => {
+        if (!app.art) return
+        textarea.value = serializeHexPalette(app.art.palette).trim()
+        toast('已填入当前画布色板，改完按回车（或在别处点一下）生效')
+      },
+    }, ['填入当前画布色板']),
+    el('button', {
+      class: 'btn tiny',
+      type: 'button',
+      disabled: count === 0 ? true : false,
+      onclick: () => {
+        textarea.value = ''
+        patchParams({ customPalette: [] })
+      },
+    }, ['清空']),
+  )
+
+  textarea.value = count > 0 ? serializeHexPalette(p.customPalette).trim() : ''
+
+  return el('div', { class: 'field-inner' }, [
+    el('span', { class: 'hint' }, [
+      count > 0
+        ? `当前自定义色板：${count} 色（超 256 截断，空色板会退回自动取色）`
+        : '⚠ 自定义色板为空：此时会退回「自动取色」，请在下面输入颜色或导入 .hex 文件',
+    ]),
+    textarea,
+    row,
+    el('span', { class: 'hint' }, ['每行一个 #rrggbb；也可用「编号 #rrggbb」两列（拼豆号色，图纸与清单会带上编号）']),
+    fileInput,
+  ])
+}
+
 function renderParams(): void {
   clear(paramsPanel)
   const mode = store.get('mode')
@@ -514,6 +618,25 @@ function renderParams(): void {
     )
   }
 
+  // 裁剪比例：core 与 CLI（--crop）一直支持，但参数面板此前没有入口——
+  // 用户只能靠 CLI/API 设置（测试报告 B6）。这里补上四档选择。
+  paramsPanel.append(
+    field(
+      '裁剪比例',
+      selectInput(
+        p.cropRatio,
+        [
+          ['free', '保持原比例'],
+          ['1:1', '1:1 方形'],
+          ['4:3', '4:3'],
+          ['16:9', '16:9'],
+        ],
+        (v) => patchParams({ cropRatio: v as ConvertParams['cropRatio'] }),
+      ),
+      '按所选比例从中心裁剪原图（拼豆常用 1:1，游戏资产常用 1:1）',
+    ),
+  )
+
   paramsPanel.append(
     field('色板', selectInput(p.paletteMode, [['auto', '自动提取'], ['preset', '预置色卡'], ['custom', '自定义 / .hex']], (v) => patchParams({ paletteMode: v as ConvertParams['paletteMode'] }))),
   )
@@ -528,6 +651,9 @@ function renderParams(): void {
   }
   if (p.paletteMode === 'auto') {
     paramsPanel.append(field('颜色数', numberInput(p.paletteK, 2, 64, (v) => patchParams({ paletteK: v }))))
+  }
+  if (p.paletteMode === 'custom') {
+    paramsPanel.append(renderCustomPaletteField(p))
   }
 
   paramsPanel.append(
@@ -674,6 +800,15 @@ function exportPixelJSON(): void {
   download(new Blob([pixelJSONString(app.art)], { type: 'application/json' }), `${safeFileBase(app.sourceName)}_像素数据.json`)
 }
 
+/** 导出色板 .hex：与 CLI 的 `<名字>.hex` 产物、页内 API 的 `exportPaletteHex()` 对齐 */
+function exportPaletteHex(): void {
+  if (!app.art) return
+  const preset = getPreset(app.params.presetPaletteId)
+  const text = serializeHexPalette(app.art.palette, preset?.codes)
+  download(new Blob([text], { type: 'text/plain' }), `${safeFileBase(app.sourceName)}_色板.hex`)
+  toast(`已导出 ${app.art.palette.length} 色调色板`)
+}
+
 function exportProject(): void {
   if (!app.art) return
   download(new Blob([projectJSONString(app.art, app.params, true)], { type: 'application/json' }), `${safeFileBase(app.sourceName)}_项目.json`)
@@ -784,6 +919,49 @@ function buildHeader(): void {
     helpBtn.setAttribute('aria-label', '快捷键速查')
     helpBtn.dataset.testid = 'help'
     helpBtn.addEventListener('click', showHelp)
+  }
+
+  /* ---- 窄屏抽屉开关：≤980px 时侧栏被收成抽屉，必须有开关才能打开（测试报告 P2-06） ---- */
+  const drawerToolsBtn = document.getElementById('btn-drawer-tools') as HTMLButtonElement | null
+  const drawerPanelBtn = document.getElementById('btn-drawer-panel') as HTMLButtonElement | null
+  const scrim = document.getElementById('drawer-scrim') as HTMLElement | null
+
+  if (drawerToolsBtn && drawerPanelBtn) {
+    drawerToolsBtn.textContent = '☰ 工具'
+    drawerToolsBtn.title = '打开工具与色板面板（窄屏）'
+    drawerToolsBtn.setAttribute('aria-label', '打开工具与色板面板')
+    drawerToolsBtn.dataset.testid = 'drawer-tools'
+    drawerPanelBtn.textContent = '⚙ 参数'
+    drawerPanelBtn.title = '打开参数面板（窄屏）'
+    drawerPanelBtn.setAttribute('aria-label', '打开参数面板')
+    drawerPanelBtn.dataset.testid = 'drawer-panel'
+
+    const setDrawer = (kind: 'none' | 'tools' | 'panel'): void => {
+      document.body.classList.toggle('drawer-open', kind !== 'none')
+      document.body.classList.toggle('drawer-tools', kind === 'tools')
+      document.body.classList.toggle('drawer-panel', kind === 'panel')
+      document.body.dataset.drawer = kind
+      if (scrim) scrim.hidden = kind === 'none'
+      drawerToolsBtn.setAttribute('aria-pressed', kind === 'tools' ? 'true' : 'false')
+      drawerPanelBtn.setAttribute('aria-pressed', kind === 'panel' ? 'true' : 'false')
+      // 抽屉是浮层，开合会改变画布可视区域：重绘一次，避免画布停在屏幕外
+      canvasApi.redraw()
+    }
+    const currentDrawer = (): 'none' | 'tools' | 'panel' =>
+      document.body.classList.contains('drawer-tools') ? 'tools' : document.body.classList.contains('drawer-panel') ? 'panel' : 'none'
+
+    // 初始状态写进 dataset，便于自动化断言与调试
+    document.body.dataset.drawer = 'none'
+    drawerToolsBtn.addEventListener('click', () => setDrawer(currentDrawer() === 'tools' ? 'none' : 'tools'))
+    drawerPanelBtn.addEventListener('click', () => setDrawer(currentDrawer() === 'panel' ? 'none' : 'panel'))
+    scrim?.addEventListener('click', () => setDrawer('none'))
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && currentDrawer() !== 'none') setDrawer('none')
+    })
+    // 回到桌面宽度时收起抽屉：避免留下"看不见但开着"的状态
+    window.addEventListener('resize', () => {
+      if (window.innerWidth > 980) setDrawer('none')
+    })
   }
   actionsHost.append(undoBtn, redoBtn, regenerateBtn, newBtn)
 
@@ -898,6 +1076,10 @@ function renderExportMenu(menu: HTMLElement): void {
     item('像素数据 JSON', '每格颜色 + 每色用量表（原料清单）', () => {
       closeExportMenu()
       exportPixelJSON()
+    }, { disabled: !hasArt }),
+    item('色板 .hex', '当前画布用到的颜色，可导入 Lospec 等工具', () => {
+      closeExportMenu()
+      exportPaletteHex()
     }, { disabled: !hasArt }),
     item('项目 JSON', '参数 + 色板 + 像素，不含原图，可分享继续编辑', () => {
       closeExportMenu()
@@ -1065,6 +1247,18 @@ function boot(): void {
     timer = window.setTimeout(() => writePrefs(s), 400)
   })
 
+  /**
+   * 状态栏的实时刷新。
+   *
+   * 这几个字段（选区格数 / 悬停坐标 / 缩放百分比 / 已复制）由画布回调直接写进 store，
+   * 不经过任何 `renderAll()`，所以原先**要等下一次无关重绘才会显示**：表现为"框选后状态栏
+   * 没有已选格数、悬停没有坐标、滚轮缩放后百分比不动"（测试报告 P2-04）。
+   * 这里只重绘状态栏而不是 renderAll，保持 store「按 key 精确通知」的既定性能设计。
+   */
+  store.subscribe(['selectedCount', 'hoverText', 'zoomPct', 'clipboardHas', 'hasEdits'], () => {
+    renderStatusbar()
+  })
+
   // 自动化接口（window.pixelArtStudio）——与 UI 共用同一份 core
   installAutomationApi({
     getParams: () => app.params,
@@ -1089,6 +1283,7 @@ function boot(): void {
     redo,
     toast,
     exportPNG: (scale, opts) => (app.art ? artToPngDataURLSync(app.art, scale, opts) : ''),
+    // 注意：canvas 编码路径与 core/raster.ts 共用同一份 artToImageData，键控语义一致
     pngDataURL: (art, scale, opts) => artToPngDataURL(art, scale, opts),
     setPrefs: (patch) => {
       store.setMany(patch)

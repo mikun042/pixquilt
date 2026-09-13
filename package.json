@@ -17,10 +17,11 @@
     "e2e": "node tool/e2e.mjs",
     "e2e:picker": "node tool/e2e-picker.mjs",
     "e2e:slider": "node tool/e2e-slider.mjs",
+    "e2e:regressions": "node tool/e2e-regressions.mjs",
     "shoot": "node tool/shoot.mjs",
     "ref:analyze": "node tool/ref-analysis.mjs",
     "dev": "node tool/serve.mjs",
-    "verify": "npm run typecheck && npm run test && npm run build && node tool/artc.mjs --selftest && npm run e2e && npm run e2e:picker && npm run e2e:slider"
+    "verify": "npm run typecheck && npm run test && npm run build && node tool/artc.mjs --selftest && npm run e2e && npm run e2e:picker && npm run e2e:slider && npm run e2e:regressions"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",

@@ -653,10 +653,37 @@ input[type="color"] {
 }
 @media (max-width: 980px) {
   .main { grid-template-columns: 1fr; }
-  .rail, .right { position: absolute; top: 0; bottom: 0; width: min(300px, 88vw); z-index: 60; box-shadow: 0 0 32px #000a; display: none; }
+  /*
+   * 窄屏：侧栏收成抽屉。
+   * 必须**有开关**——早先只写了 display:none 却没有展开机制，于是窄窗口下
+   * 工具与参数面板完全不可达（测试报告 P2-06）。开关是顶栏两个 `.narrow-only` 按钮，
+   * 展开态由 `body.drawer-open` 驱动。
+   */
+  .rail, .right {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: min(300px, 88vw);
+    z-index: 80;
+    box-shadow: 0 0 32px #000a;
+    display: none;
+  }
   .rail { left: 0; }
   .right { right: 0; }
+  body.drawer-open .rail, body.drawer-open .right { display: block; }
+  /* 抽屉打开时用遮罩挡住画布，点遮罩关闭——避免"看起来还能点画布" */
+  body.drawer-open .drawer-scrim { display: block; }
 }
+
+/* 窄屏抽屉遮罩（桌面宽度下不产生可见效果） */
+.drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: #00000066;
+  display: none;
+}
+.drawer-scrim[hidden] { display: none; }
 @media (max-width: 720px) {
   .header { padding: 6px 8px; gap: 6px; }
   .header-left { gap: 6px; }

@@ -369,7 +369,14 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
 
   function commit(): void {
     if (!art) return
-    art.palette = palette
+    /**
+     * **不要在这里写 `art.palette = palette`。**
+     *
+     * canvas 持有的 `art` 可能正是被压进撤销栈的那个对象（例如 `newCanvas()` 之后的基线），
+     * 而 canvas 内部的 `palette` 会随落笔就地扩容。一旦写回，历史快照里的色板数组就被同步改写——
+     * 表现为"撤销后像素对了、但色板多出已撤销的颜色，artHash 也不再回到初始值"（测试报告 P2-05）。
+     * 提交只通过 `onCommit` 传出**拷贝**，由上层决定新的画布对象。
+     */
     callbacks.onCommit(indices.slice(), [...palette], alpha ? alpha.slice() : null)
   }
 
@@ -445,6 +452,13 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
     } else {
       paintCellsWithColor(brushCells(art.width, art.height, cell.x, cell.y, store.get('brushSize')), color, erase)
     }
+    /**
+     * 每次落笔都推进"上次落笔点"锚点。
+     *
+     * 必须在这里（而不是只在 pointermove 里）推进：否则"按住 L 连续点击"永远从最初那一笔的终点发散
+     * （画出来是一束扇形而不是链式折线）——这是测试报告里的 P2-03。
+     */
+    lastStrokeCell = cell
     artDirty = true
     scheduleDraw()
   }

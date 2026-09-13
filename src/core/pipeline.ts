@@ -529,8 +529,14 @@ export function runPipeline(src: SourceImage, params: ConvertParams): RunPipelin
   preprocess(data, params.brightness, params.contrast, params.saturation)
 
   const palette = resolvePalette(data, alpha, params)
+  // 如实报告色板来源：custom 模式但色板为空时会退回自动取色（resolvePalette 的兜底），
+  // 此时必须报 'auto'——否则日志与 --json 会声称用了自定义色板，排查时被误导。
   const paletteSource: RunPipelineResult['paletteSource'] =
-    params.paletteMode === 'preset' ? 'preset' : params.paletteMode === 'custom' ? 'custom' : 'auto'
+    params.paletteMode === 'preset'
+      ? 'preset'
+      : params.paletteMode === 'custom' && params.customPalette.length > 0
+        ? 'custom'
+        : 'auto'
 
   // 抖动与清理互斥：以抖动为准（用户显式开了抖动，说明要那个纹理）
   const effective: ConvertParams = params.dither !== 'none' ? { ...params, cleanup: false } : params

@@ -33,7 +33,8 @@ export interface AutomationDeps {
   undo: () => void
   redo: () => void
   toast: (msg: string, kind?: 'info' | 'warn' | 'error') => void
-  exportPNG: (scale: number, opts?: { transparentBg?: boolean }) => string
+  /** 导出当前画布为 PNG dataURL。键控透明需要同时给出键控色：bgHex 缺省时由注入方补 matteColor */
+  exportPNG: (scale: number, opts?: { transparentBg?: boolean; bgHex?: string }) => string
   /** 把临时画布编码成 PNG dataURL（由平台层注入：浏览器走 canvas，Node 走 zlib），
    *  这样 core 的导出模块就不必依赖任何平台 API —— 浏览器包才不会被 node:zlib 拖住。 */
   pngDataURL: (art: PixelArt, scale: number, opts?: { transparentBg?: boolean; bgHex?: string }) => Promise<string>
@@ -186,9 +187,12 @@ export function installAutomationApi(deps: AutomationDeps): void {
     artHash: (): string => artHash(requireArt()),
 
     /* ---------------------------------------------------------- 导出（返回字符串/字节，不触发下载） */
-    exportPNG: (scale = 1, opts?: { transparentBg?: boolean }): string => {
+    exportPNG: (scale = 1, opts?: { transparentBg?: boolean; bgHex?: string }): string => {
       requireArt()
-      return deps.exportPNG(scale, opts)
+      // 键控（transparentBg）必须配合键控色才有意义：core/raster.ts 里 keyOut 需要两者同时具备。
+      // 原先只透传 transparentBg，导致"按文档调用 API 却拿到不透明的图"——这里补上 matteColor 兜底。
+      const merged = opts?.transparentBg ? { ...opts, bgHex: opts.bgHex ?? deps.getParams().matteColor } : opts
+      return deps.exportPNG(scale, merged)
     },
     exportPaletteHex: (): string => {
       const art = requireArt()
