@@ -229,7 +229,7 @@ async function main() {
       params: !!document.getElementById('panel-params'),
       palette: !!document.getElementById('panel-palette'),
       status: !!document.getElementById('statusbar'),
-      rightActions: document.querySelectorAll('.header-right #header-actions button').length,
+      rightActions: document.querySelectorAll('.header-right button').length,
       leftButtons: document.querySelectorAll('.header-left button').length,
       importBtn: document.getElementById('btn-import')?.textContent || '',
       exportBtn: document.getElementById('btn-export')?.textContent || '',
@@ -246,7 +246,8 @@ async function main() {
       assert(u.board, 'canvas 缺失')
       assert(u.tools === 6, `工具按钮应为 6，实际 ${u.tools}`)
       assert(u.params && u.palette && u.status, '面板或状态栏缺失')
-      assert(u.rightActions >= 5, `右上角动作按钮过少：${u.rightActions}`)
+      // 右上角应包含：撤销 / 重做 / 重新转换 / 新建 / 导入 / 导出 / 快捷键 = 7 个
+      assert(u.rightActions >= 7, `右上角动作按钮过少：${u.rightActions}（应为撤销/重做/重新转换/新建/导入/导出/快捷键）`)
       assert(u.importBtn.includes('导入'), `右上角缺「导入图片」按钮：${u.importBtn}`)
       assert(u.exportBtn.includes('导出'), `右上角缺「导出」按钮：${u.exportBtn}`)
       assert(u.modeOptions === 3, `模式切换应有 3 个选项，实际 ${u.modeOptions}`)
@@ -265,6 +266,33 @@ async function main() {
         assert(!u.leftText.includes(word), `左侧仍残留「${word}」`)
       }
       return '左侧仅品牌 + 模式切换'
+    })
+
+    const orderProbe = await cdp.eval(`(() => {
+      const right = document.querySelector('.header-right')
+      const kids = [...right.children]
+      const last = kids[kids.length - 1]
+      const help = document.getElementById('btn-help')
+      // 用屏幕位置复核（DOM 顺序与视觉顺序不一致时以视觉为准）
+      const rect = (elm) => { const r = elm.getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right) } }
+      const all = [...right.querySelectorAll('button')].map((b) => ({ id: b.id, ...rect(b) }))
+      const exportBtn = document.getElementById('btn-export')
+      return JSON.stringify({
+        lastChildId: last ? last.id : '',
+        helpExists: !!help,
+        helpIsLast: help ? help === last : false,
+        helpRight: help ? rect(help).right : 0,
+        exportRight: rect(exportBtn).right,
+        maxRightId: all.reduce((m, x) => (x.right > m.right ? x : m), all[0]).id
+      })
+    })()`)
+    check('顶栏顺序：快捷键按钮在最右侧', () => {
+      const o = JSON.parse(orderProbe)
+      assert(o.helpExists, '找不到「? 快捷键」按钮')
+      assert(o.helpIsLast, `快捷键应是右上角最后一个元素，实际最后一个是 ${o.lastChildId || '(无 id)'}`)
+      assert(o.maxRightId === 'btn-help', `屏幕最右侧的按钮应是 btn-help，实际 ${o.maxRightId}`)
+      assert(o.helpRight >= o.exportRight, '快捷键按钮不应排到导出按钮左侧')
+      return `最后一个元素 = ${o.lastChildId}，屏幕最右 = ${o.maxRightId}`
     })
 
     // 导出菜单：点开应出现条目、再点收起（并且不能被一次重渲染冲掉）

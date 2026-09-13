@@ -674,12 +674,16 @@ function buildHeader(): void {
     },
     [el('span', { class: 'act-icon' }, ['✚']), el('span', { class: 'act-label' }, ['新建'])],
   )
-  const helpBtn = el(
-    'button',
-    { class: 'btn act', title: '快捷键速查（?）', 'aria-label': '快捷键速查', onclick: showHelp },
-    [el('span', { class: 'act-icon' }, ['?']), el('span', { class: 'act-label' }, ['快捷键'])],
-  )
-  actionsHost.append(undoBtn, redoBtn, regenerateBtn, newBtn, helpBtn)
+  const helpBtn = document.getElementById('btn-help') as HTMLButtonElement | null
+  if (helpBtn) {
+    // 「? 快捷键」放在顶栏最右侧：与其它按钮拉开距离，避免误触
+    helpBtn.append(el('span', { class: 'act-icon' }, ['?']), el('span', { class: 'act-label' }, ['快捷键']))
+    helpBtn.title = '快捷键速查（按 ? 也能打开）'
+    helpBtn.setAttribute('aria-label', '快捷键速查')
+    helpBtn.dataset.testid = 'help'
+    helpBtn.addEventListener('click', showHelp)
+  }
+  actionsHost.append(undoBtn, redoBtn, regenerateBtn, newBtn)
 
   /* ---- 右上角：导入图片 ---- */
   importBtn.textContent = '导入图片'

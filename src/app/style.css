@@ -81,6 +81,18 @@ html, body {
 .act .act-icon { font-size: 13px; line-height: 1; }
 .act .act-label { margin-left: 4px; }
 
+/* 最右侧的独立入口（快捷键速查）：与其它按钮拉开距离，降低误触 */
+.btn.edge { margin-left: 8px; }
+.btn.edge::before {
+  content: '';
+  display: inline-block;
+  width: 1px;
+  height: 18px;
+  margin-right: 8px;
+  vertical-align: middle;
+  background: var(--line);
+}
+
 /* ------------------------------------------------------------------ 导出下拉菜单 */
 
 .menu-anchor { position: relative; display: inline-flex; }

@@ -16,8 +16,9 @@
     <!--
       顶栏分两组：
         左侧 = 品牌 + 模式切换（工作模式的锚点，位置固定不动）
-        右侧 = 其余全部操作：撤销 / 重做 / 重新转换 / 新建 / 快捷键 / 导入 / 导出
-      依据是桌面软件的肌肉记忆：动作按钮集中在右上角，左侧只放"当前处于什么状态"。
+        右侧 = 其余全部操作：撤销 / 重做 / 重新转换 / 新建 / 导入 / 导出，最右侧是「? 快捷键」
+      依据是桌面软件的肌肉记忆：动作按钮集中在右上角，左侧只放"当前处于什么状态"；
+      帮助类入口放在最边缘（离其它按钮远一点，避免误触）。
     -->
     <div class="header-left">
       <div class="logo">▦ 像素画工作台</div>
@@ -30,6 +31,7 @@
         <button class="btn primary" id="btn-export" type="button" aria-haspopup="menu" aria-expanded="false"></button>
         <div class="dropdown" id="export-menu" role="menu" hidden></div>
       </div>
+      <button class="btn act edge" id="btn-help" type="button"></button>
     </div>
   </header>
 
