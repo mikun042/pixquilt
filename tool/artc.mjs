@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url'
 import { runPipeline } from '../src/core/pipeline.ts'
 import { applyOps, blankArt } from '../src/core/ops.ts'
 import { DEFAULT_PARAMS, coerceParams, normalizeHex, sanitizeParams, STYLE_PRESETS } from '../src/core/types.ts'
-import { getPreset, isPresetId, parseHexPalette, serializeHexPalette } from '../src/core/palettes.ts'
+import { PRESETS, getPreset, isPresetId, parseHexPalette, serializeHexPalette } from '../src/core/palettes.ts'
 import { artHash, encodePixBin, layoutSheet, parseProjectFile, pixelJSONString } from '../src/core/export.ts'
 import { beadListCsv, beadReport, beadSvg } from '../src/core/bead.ts'
 import { countTransparent, countUsage } from '../src/core/stats.ts'
@@ -138,6 +138,20 @@ export function buildParams(args) {
     notes.push(r.source ? `色板 ${r.source}` : `色板 ${args.palette}`)
   }
 
+  /**
+   * `--preset <id>` 单独使用时也应切到该预置卡。
+   *
+   * 原先它只在 `--palette preset` 的分支里被读取，单独写 `--preset beads16` 时
+   * `paletteMode` 仍是 auto——用户以为选了色卡，实际还是自动取色（号色当然也取不到）。
+   * 显式给了 `--palette` 时以 `--palette` 为准，不覆盖用户的明确选择。
+   */
+  if (args.preset !== undefined && !args.palette) {
+    const id = String(args.preset)
+    if (!isPresetId(id)) throw new Error(`未知预置色卡：${id}（可选 ${PRESETS.map((p) => p.id).join(' / ')}）`)
+    params = { ...params, paletteMode: 'preset', presetPaletteId: id }
+    notes.push(`色板 预置卡 ${id}`)
+  }
+
   if (args['long-edge'] !== undefined) params.longEdge = Number(args['long-edge'])
   if (args.size !== undefined) {
     const spec = parseBlankSpec(args.size)
@@ -165,6 +179,22 @@ export function buildParams(args) {
   if (args.bead && params.paletteMode !== 'auto') params.lockPalette = true
 
   const { params: clean, fixed } = sanitizeParams(params)
+
+  /**
+   * 号色（图纸/清单上的编号）来源。
+   *
+   * 预置色卡自带号色（beads16/beads24 都有），但必须**在这里显式取出**：
+   * 预置卡的 `resolvePaletteFlag` 分支原先直接 return、不带 codes，
+   * 于是 `--palette beads16 --bead` 出的清单里印的是自动编号 C1/C2…，
+   * 预置卡的号色（B01/R01…）被丢掉了——图纸上"编号"与色卡的对应关系就断了。
+   * 同时覆盖只用 `--preset beads16`（不带 --palette）的写法。
+   */
+  if (!codes) {
+    const presetCodes =
+      clean.paletteMode === 'preset' ? getPreset(clean.presetPaletteId)?.codes : undefined
+    if (presetCodes) codes = presetCodes
+  }
+
   return { params: clean, fixed, notes, codes }
 }
 
@@ -529,6 +559,21 @@ async function selftest() {
     return `${svg.length} 字节 / ${rects} 个矩形`
   })
 
+  check('拼豆：预置色卡的号色必须被用上（不是自动编号 C1/C2）', () => {
+    // 回归防线：resolvePaletteFlag 对 .hex 会返回 codes，但预置卡分支曾经直接 return、不带 codes，
+    // 于是 `--palette beads16 --bead` 的清单印出 C1/C2…，预置卡的 B01/G02… 被丢掉。
+    const a = buildParams({ palette: 'beads16' })
+    assert(a.codes && a.codes.length > 0, '通过 --palette beads16 应取到预置卡号色')
+    assert(a.codes[0] === 'B01', `首个号色应为 B01，实际 ${a.codes[0]}`)
+    // 只用 --preset（不带 --palette）时同样要能取到
+    const b = buildParams({ preset: 'beads16' })
+    assert(b.params.presetPaletteId === 'beads16' && b.codes && b.codes[0] === 'B01', '--preset beads16 也应取到号色')
+    // 自动取色没有号色可言，不应伪造
+    const c = buildParams({ palette: 'auto' })
+    assert(!c.codes, 'auto 模式不应带号色')
+    return `--palette beads16 → ${a.codes.slice(0, 3).join('/')}…`
+  })
+
   check('拼豆：缺口清单 CSV 表头与合计行', () => {
     const { params } = sanitizeParams({ paletteMode: 'preset', presetPaletteId: 'beads16', longEdge: 40, lockPalette: true })
     const { art } = runPipeline(makeFixture(), params)
@@ -767,6 +812,8 @@ function printHelp() {
   --crop <r>              free | 1:1 | 4:3 | 16:9
   --palette <v>           auto | 预置 id | *.hex 文件 | #aabbcc,#112233
                           预置 id：${[...new Set([...describeAll().presets.map((p) => p.id)])].join(' / ')}
+  --preset <id>           只指定预置色卡（等价于 --palette <预置 id>；带号色的卡会把号色写进
+                          图纸/清单/.hex/像素 JSON，拼豆出图请用它）
   --palette-k <n>         自动取色颜色数（2–64）
   --style <id>            先套风格预设：${STYLE_PRESETS.map((s) => s.id).join(' / ')}
   --dither <m>            none | floyd | bayer
