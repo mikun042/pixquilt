@@ -113,10 +113,12 @@ npm run ref:analyze -- "C:\Users\<用户名>\Pictures\Screenshots\屏幕截图 2
     │       └── .cp-vknob           ← 明度滑块（top 百分比）
     ├── .cp-fields              ← 数值行组（圆角 3px + overflow hidden）
     │   ├── .cp-row × 3         ← 红/绿/蓝（RGB 段）或 色相/饱和度/明度（HSV 段），data-row=R/G/B/H/S/V
-    │   │   ├── .cp-row-fill    ← 绝对定位填充层，宽度 = 数值比例
-    │   │   ├── .cp-row-label
-    │   │   └── input.cp-num    ← 右对齐、无边框，浮在填充层之上
-    │   └── .cp-row.cp-alpha    ← Alpha 行（**类名保持 .cp-alpha，自动化断言依赖它**）
+    │   │   ├── .cp-row-label   ← 固定 34px，pointer-events:none（不抢拖动）
+    │   │   ├── .cp-row-track   ← **唯一接收拖动的元素**（flex:1），内含
+    │   │   │   └── .cp-row-fill  ← 绝对定位填充层，宽度 = 数值比例（只铺在轨道内）
+    │   │   └── input.cp-num    ← 固定 48px、右对齐、无边框；拖动开始时会被 blur()
+    │   └── .cp-row.cp-alpha    ← Alpha 行（同结构；**类名保持 .cp-alpha，自动化断言依赖它**）
+    │       └── .cp-row-track   ← 轨道底为棋盘格（表示"未填充 = 透明"）
     ├── .cp-hexrow              ← 常驻：.cp-hex-label + input.cp-num + .cp-icon-btn（吸管）
     ├── .cp-swatches            ← 色板（本工具特有；参考图没有）
     │   └── .cp-swatch-row
