@@ -32,6 +32,7 @@ const r = await page.evaluate(() => window.pixelArtStudio.render(png, { longEdge
 ```
 
 完整接口手册：`docs/AGENT_API.md`（**由代码生成**，不会与实现漂移）。
+Agent 上手（推荐先跑这个）：`node tool/quickstart.mjs` → 见 `docs/AGENT-QUICKSTART.md`。
 
 ## 两个主要用途
 
@@ -47,13 +48,17 @@ src/core/              ← 纯逻辑：零 DOM、零框架、Node 可 import（�
 src/io/                ← Node 侧平台绑定（PNG 编解码、文件读取）
 src/app/               ← 浏览器侧：UI、画布、页内 API、平台绑定
 tool/artc.mjs          ← 批处理 CLI（agent 主入口）
+tool/quickstart.mjs    ← Agent 快速上手：一条命令跑通「自省→造素材→批量→拼豆→页内 API」
 tool/build.mjs         ← 单文件构建（内联 CSS + JS）
 tool/describe.mjs      ← 由 src/core/spec.ts 生成 docs/AGENT_API.md
 tool/e2e.mjs           ← 真浏览器端到端冒烟测试（19 项）
-tool/e2e-picker.mjs    ← 取色器专项验证（11 项：几何方向、标签、色板、透明度）
+tool/e2e-picker.mjs    ← 取色器专项验证（17 项：几何方向、标签、色板、透明度）
+tool/e2e-slider.mjs    ← 数值滑条专项验证（12 项：逐行拖动、输入、防误触）
+tool/e2e-regressions.mjs ← 已修缺陷的回归防线（13 项：真实鼠标/键盘输入）
 tool/shoot.mjs         ← 截图工具：产出取色器现状截图（与参考图并排比较用）
 tool/ref-analysis.mjs  ← 参考图/截图结构分析（主色直方图、字符画、横向条带）
-docs/                  ← AGENT_API.md（生成）· ARCHITECTURE.md · USAGE.md · UI-COLOR-PICKER.md
+docs/                  ← AGENT-QUICKSTART.md · AGENT_API.md（生成）· TESTING-GUIDE.md
+                          · ARCHITECTURE.md · USAGE.md · UI-COLOR-PICKER.md
 重构计划.md             ← 本次重写的设计与决策记录（含可维护性验收门）
 ```
 

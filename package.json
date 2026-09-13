@@ -14,6 +14,7 @@
     "test": "node --test \"src/test/*.test.ts\"",
     "describe": "node tool/describe.mjs --write",
     "selftest": "node tool/artc.mjs --selftest",
+    "quickstart": "node tool/quickstart.mjs",
     "e2e": "node tool/e2e.mjs",
     "e2e:picker": "node tool/e2e-picker.mjs",
     "e2e:slider": "node tool/e2e-slider.mjs",

@@ -9,6 +9,8 @@ out/
 samples-out/
 # 截图工具（tool/shoot.mjs）的输出：用于"看图改 UI"时与参考图并排比较，不入库
 .tmp-shots/
+# Agent 快速上手（tool/quickstart.mjs）的产出：全部是生成物，不入库
+.quickstart/
 .git-msg.tmp
 
 # 编辑器 / 系统
