@@ -185,7 +185,7 @@ async function main() {
     console.log(`✔ 整页截图：${fullPath}（${decoded.width}×${decoded.height}）`)
     console.log(`✔ 取色器区域：${cropPath}（${cropped.width}×${cropped.height}）`)
     console.log('  取色器位置：' + JSON.stringify({ x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.w), h: Math.round(box.h) }))
-    console.log('  提示：与参考图并排比较；定量分析可用 node tool/_ref-analysis.mjs <png>')
+    console.log('  提示：与参考图并排比较；定量分析可用 node tool/ref-analysis.mjs <png>')
   } finally {
     cdp.ws.close()
     child.kill()

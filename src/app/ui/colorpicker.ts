@@ -159,10 +159,18 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
 
   const wheelRow = el('div', { class: 'cp-wheel-row', style: { gap: `${WHEEL_GAP}px` } }, [wheelWrap, valueBar])
 
-  /* ---- 数值行（整行滑条：填充宽度 = 数值比例，**整行可拖动**） ---- */
+  /**
+   * 数值行：**标签 + 滑条 + 右侧数字框**（三段式）。
+   *
+   * 为什么把数字框移出滑条：原先输入框压在滑条上、且整行都是拖拽区，
+   * 想拖滑条很容易点在输入框上（变成编辑文本），想改数字又容易误触拖动。
+   * 现在拖动只作用于 `[data-row]` 里的 `.cp-row-track`，输入框在它右侧、不参与拖动。
+   */
   const fieldsHost = el('div', { class: 'cp-fields' })
   const fieldInputs = new Map<string, HTMLInputElement>()
   const rowNodes = new Map<string, HTMLElement>()
+  /** 滑块（真正接收拖动的是它，不是整行） */
+  const rowTracks = new Map<string, HTMLElement>()
   const rowFills = new Map<string, HTMLElement>()
   /** 六个数值行（R/G/B/H/S/V）按模型切换显隐；它们都是可拖动滑条 */
   const sliderKeys = new Set(['R', 'G', 'B', 'H', 'S', 'V'])
@@ -176,9 +184,15 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
       onchange: (e: Event) => applyNumberField(key, (e.target as HTMLInputElement).value),
     })
     const fill = el('div', { class: 'cp-row-fill' })
-    const row = el('div', { class: 'cp-row cp-field', dataset: { row: key } }, [fill, el('span', { class: 'cp-row-label' }, [label]), input])
+    const track = el('div', { class: 'cp-row-track' }, [fill])
+    const row = el('div', { class: 'cp-row cp-field', dataset: { row: key } }, [
+      el('span', { class: 'cp-row-label' }, [label]),
+      track,
+      input,
+    ])
     fieldInputs.set(key, input)
     rowNodes.set(key, row)
+    rowTracks.set(key, track)
     rowFills.set(key, fill)
     return row
   }
@@ -193,8 +207,14 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     onchange: (e: Event) => applyNumberField('Alpha', (e.target as HTMLInputElement).value),
   })
   const alphaFill = el('div', { class: 'cp-row-fill' })
-  const alphaRow = el('div', { class: 'cp-row cp-alpha' }, [alphaFill, el('span', { class: 'cp-row-label' }, ['Alpha']), alphaInput])
+  const alphaTrack = el('div', { class: 'cp-row-track' }, [alphaFill])
+  const alphaRow = el('div', { class: 'cp-row cp-alpha' }, [
+    el('span', { class: 'cp-row-label' }, ['Alpha']),
+    alphaTrack,
+    alphaInput,
+  ])
   fieldInputs.set('Alpha', alphaInput)
+  rowTracks.set('Alpha', alphaTrack)
   rowFills.set('Alpha', alphaFill)
   fieldsHost.append(alphaRow)
 
@@ -543,14 +563,16 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
   }
 
   /**
-   * 数值行的拖动：与 Alpha 行同一套写法。
-   * 之所以要有它：这些行看上去就是滑条（整行填充 + 数字），但只有 Alpha 绑了指针事件时，
+   * 数值行的拖动：几何基准是**滑块元素 `[data-row] > .cp-row-track`**，不是整行。
+   * 这样右侧的数字框不参与拖动（点它只进文本编辑），也就不会"拖滑条误点到输入框"。
+   *
+   * 之所以要有这段：这些行看上去就是滑条，但当初只有 Alpha 绑了指针事件时，
    * 另外六行"能看不能拖"——用户反馈的"RGB / HSV 滑条划不动"就是这个原因。
    */
   const rowFromEvent = (key: string) => (e: PointerEvent): void => {
-    const node = rowNodes.get(key)
-    if (!node) return
-    const rect = node.getBoundingClientRect()
+    const track = rowTracks.get(key)
+    if (!track) return
+    const rect = track.getBoundingClientRect()
     if (!(rect.width > 0)) return // 不可见时 rect 全 0，继续算会除零产生 NaN
     setChannelRatio(key, (e.clientX - rect.left) / rect.width)
     cb.onPreview(currentHex)
@@ -558,23 +580,23 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
   }
 
   for (const key of sliderKeys) {
-    const node = rowNodes.get(key)
-    if (!node) continue
+    const track = rowTracks.get(key)
+    if (!track) continue
     const handler = rowFromEvent(key)
-    node.addEventListener('pointerdown', (e: PointerEvent) => {
+    track.addEventListener('pointerdown', (e: PointerEvent) => {
       dragging = key
-      safeCapture(node, e.pointerId)
+      safeCapture(track, e.pointerId)
       // 拖动时让数值输入框失焦：否则松手时的 change 事件会用输入框旧值把结果盖回去
       fieldInputs.get(key)?.blur()
       handler(e)
     })
-    node.addEventListener('pointermove', (e: PointerEvent) => {
+    track.addEventListener('pointermove', (e: PointerEvent) => {
       if (dragging === key) handler(e)
     })
   }
 
   const alphaFromEvent = (e: PointerEvent): void => {
-    const rect = alphaRow.getBoundingClientRect()
+    const rect = alphaTrack.getBoundingClientRect()
     if (!(rect.width > 0)) return
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
     alphaOpaque = ratio > ALPHA_ZERO_ZONE
@@ -582,12 +604,13 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     else cb.onTransparent()
     refresh()
   }
-  alphaRow.addEventListener('pointerdown', (e: PointerEvent) => {
+  alphaTrack.addEventListener('pointerdown', (e: PointerEvent) => {
     dragging = 'alpha'
-    safeCapture(alphaRow, e.pointerId)
+    safeCapture(alphaTrack, e.pointerId)
+    alphaInput.blur()
     alphaFromEvent(e)
   })
-  alphaRow.addEventListener('pointermove', (e: PointerEvent) => {
+  alphaTrack.addEventListener('pointermove', (e: PointerEvent) => {
     if (dragging === 'alpha') alphaFromEvent(e)
   })
 

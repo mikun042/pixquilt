@@ -129,14 +129,17 @@ async function dragRow(key, pos) {
   return await cdp.eval(`(() => {
     const row = document.querySelector('[data-row="${key}"]')
     if (!row) return JSON.stringify({ error: '找不到行 ' + '${key}' })
-    const rect = row.getBoundingClientRect()
+    // 拖动几何基准是滑条轨道（数字框在它右侧、不参与拖动）
+    const track = row.querySelector('.cp-row-track')
+    if (!track) return JSON.stringify({ error: '行里没有滑条轨道' })
+    const rect = track.getBoundingClientRect()
     if (!(rect.width > 0)) return JSON.stringify({ error: '行没有布局宽度' })
     const before = window.pixelArtStudio.getInfo().primary
     const x = rect.left + rect.width * ${pos}
     const y = rect.top + rect.height / 2
     const mk = (type) => new PointerEvent(type, { clientX: x, clientY: y, bubbles: true, pointerId: 11, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
-    row.dispatchEvent(mk('pointerdown'))
-    row.dispatchEvent(mk('pointermove'))
+    track.dispatchEvent(mk('pointerdown'))
+    track.dispatchEvent(mk('pointermove'))
     window.dispatchEvent(mk('pointerup'))
     const input = row.querySelector('input')
     return JSON.stringify({ before, after: window.pixelArtStudio.getInfo().primary, shown: input ? input.value : '', fillW: row.querySelector('.cp-row-fill')?.style.width || '' })
@@ -239,10 +242,11 @@ check('数值输入与拖动两条路径都能改（输入 0.3 生效）', () =>
 /* ---------------- 拖动过程中不进撤销栈的中间态 ---------------- */
 const noSpam = await cdp.eval(`(() => {
   const row = document.querySelector('[data-row="S"]')
-  const rect = row.getBoundingClientRect()
+  const track = row.querySelector('.cp-row-track')
+  const rect = track.getBoundingClientRect()
   const mk = (type, x) => new PointerEvent(type, { clientX: x, clientY: rect.top + rect.height / 2, bubbles: true, pointerId: 12, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
-  row.dispatchEvent(mk('pointerdown', rect.left + rect.width * 0.2))
-  for (let i = 0; i < 15; i++) row.dispatchEvent(mk('pointermove', rect.left + rect.width * (0.2 + i * 0.04)))
+  track.dispatchEvent(mk('pointerdown', rect.left + rect.width * 0.2))
+  for (let i = 0; i < 15; i++) track.dispatchEvent(mk('pointermove', rect.left + rect.width * (0.2 + i * 0.04)))
   window.dispatchEvent(mk('pointerup', rect.left + rect.width * 0.8))
   return JSON.stringify({ ok: true, primary: window.pixelArtStudio.getInfo().primary })
 })()`)
@@ -254,15 +258,68 @@ check('连续拖动 15 次不报错、最终值落在终点附近', () => {
   return `S=${s.toFixed(2)}`
 })
 
+/* ---------------- 防误触：数字框与标签都不参与拖动 ---------------- */
+// 必须先切回 RGB：前面的 HSV 测试把 R/G/B 行设成了 display:none，
+// 元素尺寸为 0 时"不重叠"会假通过——这类断言必须同时要求尺寸非零。
+await cdp.eval(`(() => { const tabs = [...document.querySelectorAll('.cp-tab')]; const rgb = tabs.find((t) => t.textContent.includes('RGB')); if (rgb) rgb.click(); return true })()`)
+await new Promise((r) => setTimeout(r, 200))
+
+const inputSafe = await cdp.eval(`(() => {
+  const row = document.querySelector('[data-row="R"]')
+  const input = row.querySelector('input.cp-num')
+  const track = row.querySelector('.cp-row-track')
+  const before = window.pixelArtStudio.getInfo().primary
+  const ir = input.getBoundingClientRect()
+  const tr = track.getBoundingClientRect()
+  // 点数字框：应只聚焦，不改颜色
+  const mk = (type, x, y) => new PointerEvent(type, { clientX: x, clientY: y, bubbles: true, pointerId: 21, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
+  input.dispatchEvent(mk('pointerdown', ir.left + ir.width / 2, ir.top + ir.height / 2))
+  window.dispatchEvent(mk('pointerup', ir.left + ir.width / 2, ir.top + ir.height / 2))
+  const afterInputClick = window.pixelArtStudio.getInfo().primary
+  return JSON.stringify({
+    before, afterInputClick,
+    inputRightOfTrack: ir.left >= tr.right - 1,
+    overlap: !(ir.left >= tr.right || tr.left >= ir.right),
+    trackW: Math.round(tr.width), inputW: Math.round(ir.width)
+  })
+})()`)
+check('防误触：点数字框只聚焦、不改颜色；且数字框在滑条右侧且不重叠', () => {
+  const r = JSON.parse(inputSafe)
+  assert(r.trackW > 40, `滑条必须有实际宽度（实测 ${r.trackW}px）——否则"不重叠"是假通过`)
+  assert(r.inputW > 30, `数字框必须有实际宽度（实测 ${r.inputW}px）`)
+  assert(r.afterInputClick === r.before, `点数字框不应改颜色：${r.before} → ${r.afterInputClick}`)
+  assert(r.inputRightOfTrack, '数字框应在滑条右侧')
+  assert(!r.overlap, '数字框与滑条不应重叠')
+  return `滑条 ${r.trackW}px / 数字框 ${r.inputW}px，点输入框未改色`
+})
+
+const labelSafe = await cdp.eval(`(() => {
+  const row = document.querySelector('[data-row="G"]')
+  const label = row.querySelector('.cp-row-label')
+  const rowRect = row.getBoundingClientRect()
+  const lr = label.getBoundingClientRect()
+  const before = window.pixelArtStudio.getInfo().primary
+  const mk = (type) => new PointerEvent(type, { clientX: lr.left + 4, clientY: rowRect.top + rowRect.height / 2, bubbles: true, pointerId: 22, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
+  label.dispatchEvent(mk('pointerdown'))
+  window.dispatchEvent(mk('pointerup'))
+  return JSON.stringify({ before, after: window.pixelArtStudio.getInfo().primary, labelW: Math.round(lr.width) })
+})()`)
+check('防误触：点行首文字标签不改变颜色', () => {
+  const r = JSON.parse(labelSafe)
+  assert(r.labelW > 10, `标签必须有实际宽度（实测 ${r.labelW}px）`)
+  assert(r.after === r.before, `点标签不应改颜色：${r.before} → ${r.after}`)
+  return `标签宽 ${r.labelW}px，未改色`
+})
+
 /* ---------------- 零尺寸免疫（侧栏收起时拖动不应产生 NaN） ---------------- */
 const degenerate = await cdp.eval(`(() => {
   const rail = document.querySelector('.rail')
   const old = rail.style.display
   rail.style.display = 'none'          // 模拟面板不可见（窄屏抽屉收起）
-  const row = document.querySelector('[data-row="R"]')
+  const track = document.querySelector('[data-row="R"] .cp-row-track')
   const mk = (type) => new PointerEvent(type, { clientX: 100, clientY: 100, bubbles: true, pointerId: 13, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
   const before = window.pixelArtStudio.getInfo().primary
-  row.dispatchEvent(mk('pointerdown'))
+  track.dispatchEvent(mk('pointerdown'))
   window.dispatchEvent(mk('pointerup'))
   rail.style.display = old
   const after = window.pixelArtStudio.getInfo().primary

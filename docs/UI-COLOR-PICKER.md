@@ -164,7 +164,11 @@ npm run ref:analyze -- "C:\Users\<用户名>\Pictures\Screenshots\屏幕截图 2
 5. **`window.addEventListener('pointerup' / 'pointercancel' / 'blur')` 的兜底不能删。**
    它保证"拖到窗口外松手"不会让拖拽状态悬挂。新增的全局监听都必须在 `dispose()` 里成对移除。
 
-6. **提交时机不能改。**
+6. **拖动几何基准是 `.cp-row-track`，不是整行。**
+   数字框在滑条右侧、标签 `pointer-events: none`——这是为了防误触（拖滑条时点到输入框会变成编辑文本）。
+   若要调整行布局，务必保持"只有轨道接收指针事件"，并在 `tool/e2e-slider.mjs` 里同步 `[data-row] .cp-row-track` 选择器。
+
+7. **提交时机不能改。**
    拖动中只 `onPreview()`（实时预览，不进撤销栈）；松手 / 数值输入 / 点色块才 `onCommit()`。
    若改成拖动中提交，一次拖动会产生几十条撤销记录。
 
