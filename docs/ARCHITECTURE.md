@@ -1,0 +1,100 @@
+# 架构与决策记录
+
+> 本文件面向**后续维护者**。改代码前读它，能省掉一次返工。
+
+## 1. 分层（唯一允许的依赖方向）
+
+```
+src/core/*        ←  纯逻辑：零 DOM、零框架、零 node: 内置模块，可被单测与 CLI 直接 import
+   ↑
+src/io/*          ←  Node 平台绑定（node:zlib / node:fs）——**只允许出现在这里**
+src/app/*         ←  浏览器：UI、画布、页内 API、canvas 编码
+   ↑
+tool/*.mjs        ←  命令行入口（artc 批处理 / build / describe / e2e / serve）
+```
+
+**为什么这条线是硬约束**：浏览器包由 `src/app/index.ts` 出发打包。历史上（本项目重写过程中真实发生过）
+`core/export.ts` 里放了 PNG 编码，结果它 import 了 `node:zlib`，浏览器构建直接失败。
+教训写进规则：**core 里出现 `node:` 前缀就是缺陷**。
+
+验证方式：
+
+```bash
+node tool/describe.mjs --write   # 顺带可用 tool 里的依赖链检查（见下）
+npx esbuild src/app/index.ts --bundle --platform=browser --outfile=/dev/null
+```
+
+第二条命令只要报 `Could not resolve "node:..."` 就说明有人破坏了分层。
+
+## 2. 数据模型
+
+```ts
+PixelArt = { width, height, indices: Uint8Array, palette: string[], alphaMask?: Uint8Array | null, frames?: Frame[] | null }
+ConvertParams = { longEdge, downsample, cropRatio, paletteMode, paletteK, presetPaletteId, customPalette,
+                  dither, ditherStrength, cleanup, cleanupMinSize, brightness, contrast, saturation,
+                  transparent: 'none' | 'key' | 'alpha', matteColor, exactWidth?, exactHeight?, lockPalette? }
+```
+
+- 索引是 `Uint8Array` → **色板上限 256**，所有色板入口都必须截断（否则重排会回绕出错误颜色）。
+- `alphaMask` 为 `null` 表示全不透明（省内存、项目文件回到简洁形态）；全不透明的 mask 会被归一为 `null`。
+- `transparent` 三态取代了旧版的 `alpha: boolean` + 独立导出开关：`none` 合成到底色、`key` 单色键控、`alpha` 真透明。
+  读取旧文件时 `alpha: true → 'alpha'`，并保留 `alpha` 字段的迁移记录（`sanitizeParams` 会报告）。
+
+## 3. 像素化管线的四条顺序约束（改动前必读）
+
+1. **预处理在降采样之后**：亮度/对比度/饱和度是逐像素仿射运算，与区域平均可交换，在小图上做能省 90%+ 计算。
+2. **抖动必须并入量化映射步**：Floyd–Steinberg 要按扫描序把误差扩散给"尚未量化"的邻居，事后处理拿不到那个中间状态。
+3. **杂色清理与抖动互斥**：抖动的单像素点正是"杂色"，同时开会把抖动结果吞掉；由 `runPipeline` 强制关闭 cleanup。
+4. **OKLab 匹配缓存在抖动开启时必须关闭**：误差扩散后每格的实际输入色带累计误差，缓存会算出错误结果。
+
+## 4. 关键决策（ADR 摘要）
+
+| 决策 | 结论 | 理由 |
+|---|---|---|
+| 是否保留 React | **不用框架**，vanilla TS + 极简 store | 主体是 canvas + 指针事件 + 直写 DOM；框架的整树协调在这里是纯开销。旧版取色器拖动本来就要绕开 React 直写 DOM |
+| 抖动/清理的互斥由谁负责 | `runPipeline` 强制，而非 UI 禁用 | 只要有一条入口（CLI / API）忘了校验，结果就会错；放在管线里对所有入口生效 |
+| 色板满时怎么办 | 自由模式退化为 OKLab 最近色并记 `note`；`lockPalette`（拼豆/资产）则**报错** | 拼豆用户不可能买到图纸上没有的颜色，"悄悄换色"是不可接受的 |
+| PNG 编码放哪 | Node 在 `src/io/node-png.ts`；浏览器在 `src/app/canvas-png.ts` | 见 §1 的分层教训 |
+| 算子放 core 还是 API | core 纯函数 + API 只做校验/提交 | 旧版把 `replaceColor` 的业务逻辑在 UI 与 API 各写了一遍（40 行逐行同构），且行为已分叉 |
+| 文档怎么保证不漂移 | `docs/AGENT_API.md` 由 `src/core/spec.ts` 生成，测试比对逐字节一致 | 旧版的算子表只活在 Markdown 里，代码改了文档没改，agent 会按错的信息干活 |
+| 绘制调度 | rAF + 定时器双保险 | 后台标签页/无头环境下 rAF 可能永不回调；只用 rAF 会让画布永远空白（端到端测试真实抓到过） |
+| 图集帧尺寸 | **恒等**，用 `offsetX/offsetY` 表达内容偏移，不裁边 | 引擎按固定尺寸切片最省事；帧尺寸不等会让导出侧与引擎侧都要额外处理 |
+
+## 5. 限额与预算（单一出处：`src/core/limits.ts`）
+
+| 常量 | 值 | 为什么 |
+|---|---|---|
+| `MAX_CANVAS_SIDE` | 2048 | 2048² ≈ 419 万格，索引约 4MB，浏览器仍可交互 |
+| `PALETTE_MAX` | 256 | 索引是 Uint8Array |
+| `HISTORY_MAX_FRAMES` / `_BYTES` | 50 / 64MB | 只按帧数封顶会让内存随画布面积线性膨胀 |
+| `MAX_EXPORT_SIDE` / `MAX_EXPORT_PIXELS` | 16384 / 64M | Chromium 硬上限附近，按面积再夹一道 |
+| `ALPHA_THRESHOLD` | 128 | 全项目唯一的透明判定口径 |
+| `MEDIAN_CUT_SAMPLE_LIMIT` | 250k | 切分是统计性聚类，几百万像素只会让盒内排序白白变慢 |
+
+## 6. 性能
+
+- 取色对 >250k 格抽样（固定散列步长，保证"同图同参 → 同色板"）。
+- 量化在关抖动时使用直接映射缓存（≤2^15 槽），开抖动时禁用。
+- 绘制：笔画期间只改本地副本，抬笔才提交一次（一条撤销）；画布内容缓存进离屏 canvas，只在内容变化时重建。
+- 大画布往返用 `.pixbin`（12 字节头 + 索引 + 可选 mask），比 base64 项目 JSON 快一个量级。
+
+## 7. 怎么验证一个改动是安全的
+
+```bash
+npm run typecheck && npm test && npm run build && node tool/artc.mjs --selftest && npm run e2e
+```
+
+**测试有效性的判断标准**（比数量重要）：故意改坏一处，看测试是否变红。本项目已用这个方法验证过的断言包括：
+
+- 无副作用的 `render()` 不继承主色 → 改成继承后，`--selftest` 的"无副作用路径"相关断言会失败；
+- `changed` 漏判"只改 alpha 的挖洞" → 单测与自检都会红；
+- 抖动与清理不互斥 → 单测"抖动开启时清理被强制关闭"会红；
+- 绘制只依赖 rAF → e2e 的"画布真的画出了内容"会红（headless 下 rAF 不产帧时）；
+- 算子表与实现漂移 → 单测"spec.ts 列出的算子与实现完全一致"会红。
+
+## 8. 仍未做的事（诚实清单）
+
+- 多帧动画（数据模型已预留 `frames`，UI/API/导出均未暴露）。
+- Node 端只直接解码 PNG；JPEG/WebP/GIF/AVIF/BMP/ICO/SVG 需走浏览器通道或先转格式。
+- `getInfo().hasEdits` 目前恒为 `false`（UI 的"有编辑"标记由 store 维护，尚未接进 API）——这是一个已知缺口，接上后需要同步 `docs/AGENT_API.md`。
+- 拼豆品牌色卡是**通用近似色**，不是任何品牌的官方色号；用户应导出/导入自己的 `.hex`（支持 `编号 #rrggbb` 两列格式）。

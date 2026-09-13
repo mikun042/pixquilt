@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>像素画工作台 · 拼豆图纸与游戏资产</title>
+<!--
+  单文件交付：构建时会把样式与脚本全部内联进这里（见 tool/build.mjs），
+  因此这份 HTML 双击即可用，不需要服务器、不需要 Node、不联网。
+-->
+<style>/*__STYLE__*/</style>
+</head>
+<body>
+<div class="app">
+  <header class="header">
+    <div class="logo">▦ 像素画工作台</div>
+    <div class="header-actions" id="header-actions"></div>
+  </header>
+
+  <div class="main">
+    <aside class="rail">
+      <div id="rail-tools"></div>
+      <div class="panel" id="panel-palette"></div>
+    </aside>
+
+    <section class="center">
+      <div class="canvas-host" id="canvas-host">
+        <canvas id="board"></canvas>
+        <div class="empty-state" id="empty-state">
+          <div class="empty-icon">▦</div>
+          <div class="empty-title">拖入图片，或用顶栏「导入图片」</div>
+          <div class="empty-hint">支持 PNG / JPG / WebP / GIF / BMP / AVIF / ICO / SVG · 也可 Ctrl+V 粘贴</div>
+        </div>
+        <div class="magnifier" id="magnifier">
+          <canvas id="magnifier-canvas" width="116" height="116"></canvas>
+          <div class="mag-label">原图对照</div>
+        </div>
+        <div class="view-toolbar" role="group" aria-label="视图操作">
+          <button class="btn tiny" id="view-fit" title="适配窗口（0）">适配</button>
+          <button class="btn tiny" id="view-100" title="1 格 = 1 像素">100%</button>
+          <button class="btn tiny" id="view-out" aria-label="缩小">−</button>
+          <button class="btn tiny" id="view-in" aria-label="放大">＋</button>
+        </div>
+      </div>
+      <footer class="statusbar" id="statusbar"></footer>
+    </section>
+
+    <aside class="right">
+      <div class="panel" id="panel-params"></div>
+    </aside>
+  </div>
+</div>
+<div class="toast-stack" id="toasts" role="status" aria-live="polite"></div>
+<script type="module">/*__SCRIPT__*/</script>
+</body>
+</html>

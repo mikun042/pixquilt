@@ -1,0 +1,26 @@
+{
+  "name": "pixel-art-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "像素画工作台（重写版）：图片→像素画转换、逐格精修、拼豆图纸与游戏资产批量导出；agent 可直接通过 CLI 与页内 API 驱动",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "build": "node tool/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"src/test/*.test.ts\"",
+    "describe": "node tool/describe.mjs --write",
+    "selftest": "node tool/artc.mjs --selftest",
+    "e2e": "node tool/e2e.mjs",
+    "dev": "node tool/serve.mjs",
+    "verify": "npm run typecheck && npm run test && npm run build && node tool/artc.mjs --selftest && npm run e2e"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.2"
+  }
+}

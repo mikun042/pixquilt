@@ -1,0 +1,15 @@
+# 依赖与构建产物（真正的交付物是根目录的单文件 HTML）
+node_modules/
+dist/
+.tmp/
+*.log
+
+# 本地试跑产物
+out/
+samples-out/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
