@@ -14,7 +14,7 @@ import { describe, it } from 'node:test'
 
 import { runPipeline, computeCropRect, computeGridSize, medianCut, quantize } from '../core/pipeline.ts'
 import { applyOps, blankArt, brushCells, lineCells, rasterizeEllipse, rasterizeRect, anchorOffset, type EditOp } from '../core/ops.ts'
-import { DEFAULT_PARAMS, coerceParams, sanitizeParams, sanitizePrefs } from '../core/types.ts'
+import { DEFAULT_PARAMS, STYLE_PRESETS, coerceParams, sanitizeParams, sanitizePrefs } from '../core/types.ts'
 import { getPreset, parseHexPalette, serializeHexPalette, paletteCodes } from '../core/palettes.ts'
 import { artHash, decodePixBin, encodePixBin, layoutSheet, parseProjectFile, pixelJSONString, projectJSONString } from '../core/export.ts'
 import { base64ToBytes, bytesToBase64 } from '../core/binary.ts'
@@ -353,6 +353,95 @@ describe('编辑算子', () => {
     assert.throws(() => applyOps(blankArt(2, 2, '#000000', false), bogus), /未知算子/)
   })
 
+  it('outline：只往空格描完整一圈，已有内容不被覆盖', () => {
+    // 8×8 透明画布中央一个 2×2 实心块
+    const base = applyOps(blankArt(8, 8, '#ffffff', true), [
+      { op: 'rect', x0: 3, y0: 3, x1: 4, y1: 4, color: '#e94560' },
+    ]).art
+    const outlined = applyOps(base, [{ op: 'outline', color: '#1a1a2e' }])
+    assert.equal(outlined.changes[0].changed, true)
+    // 默认 8 邻 = 完整外圈：4×4 外框 16 格减 4 格本体 = 12 格
+    assert.equal(outlined.changes[0].cells, 12, `完整外圈应为 12 格，实际 ${outlined.changes[0].cells}`)
+    // 本体颜色不被覆盖
+    assert.equal(outlined.art.palette[outlined.art.indices[3 * 8 + 3]], '#e94560', '描边不得覆盖已有内容')
+    // 再描一遍会把刚描的一圈当成内容继续往外扩——这是"扩张"语义的正确行为，不是缺陷；
+    // 真正要防的是"同一次调用里叠出双圈"（下面那条断言）。
+    const twice = applyOps(outlined.art, [{ op: 'outline', color: '#1a1a2e' }])
+    assert.ok(twice.changes[0].cells > 12, '再描一遍应向外扩，而不是原地重复')
+  })
+
+  it('outline：同一次调用里连写两次也只描一圈（不会叠出双圈）', () => {
+    const base = applyOps(blankArt(8, 8, '#ffffff', true), [
+      { op: 'rect', x0: 3, y0: 3, x1: 4, y1: 4, color: '#e94560' },
+    ]).art
+    const r = applyOps(base, [
+      { op: 'outline', color: '#1a1a2e' },
+      { op: 'outline', color: '#1a1a2e' },
+    ])
+    assert.equal(r.changes[0].cells, 12, `第一遍应描 12 格，实际 ${r.changes[0].cells}`)
+    assert.equal(r.changes[1].cells, 20, `第二遍会向外扩一圈（20 格），实际 ${r.changes[1].cells}`)
+    assert.equal(r.changes[1].changed, true, '扩张是真改动，必须如实报告')
+  })
+
+  it('outline：connectivity 决定斜角留不留空，offset 决定向外几圈', () => {
+    const base = applyOps(blankArt(9, 9, '#ffffff', true), [
+      { op: 'rect', x0: 4, y0: 4, x1: 4, y1: 4, color: '#e94560' },
+    ]).art
+    // 单个像素：4 邻只有上下左右四格；8 邻是一整圈八格
+    const c4 = applyOps(base, [{ op: 'outline', color: '#000000', connectivity: 4 }])
+    const c8 = applyOps(base, [{ op: 'outline', color: '#000000', connectivity: 8 }])
+    assert.equal(c4.changes[0].cells, 4, `4 邻应为 4 格，实际 ${c4.changes[0].cells}`)
+    assert.equal(c8.changes[0].cells, 8, `8 邻应为 8 格（完整一圈），实际 ${c8.changes[0].cells}`)
+    // 两圈 = 3×3 外框 8 格 + 5×5 外框 16 格 = 24（中心 1 格是本体，不算）
+    const two = applyOps(base, [{ op: 'outline', color: '#000000', offset: 2 }])
+    assert.equal(two.changes[0].cells, 24, `两圈应为 24 格，实际 ${two.changes[0].cells}`)
+  })
+
+  it('outline：画布已满时返回 changed=false（无处可描）', () => {
+    const full = blankArt(4, 4, '#ffffff', false)
+    const r = applyOps(full, [{ op: 'outline', color: '#000000' }])
+    assert.equal(r.applied, false, '没有空格可描时应报告无改动')
+  })
+
+  it('sprite 预设必须关掉杂色清理（否则 1px 高光/眼神会被当噪点吃掉）', () => {
+    const sprite = STYLE_PRESETS.find((s) => s.id === 'sprite')
+    assert.ok(sprite, 'sprite 预设必须存在')
+    assert.equal(sprite.params.cleanup, false, '像素资产预设不能开 cleanup：它会把 1px 细节并入邻色')
+    assert.equal(sprite.params.downsample, 'nearest', '像素资产应用最近邻，区域平均会造出源图没有的混合色')
+    assert.equal(sprite.params.transparent, 'alpha', '像素资产要保留原始透明')
+  })
+
+  it('mirror：原内容保留、副本贴边保持左右留白对称', () => {
+    // 内容贴在左边缘 2 格：镜像副本应贴右边缘 2 格，两侧留白相等
+    const base = applyOps(blankArt(10, 4, '#ffffff', true), [
+      { op: 'rect', x0: 0, y0: 1, x1: 1, y1: 2, color: '#e94560' },
+    ]).art
+    const r = applyOps(base, [{ op: 'mirror', kind: 'h', color: '#e94560' }])
+    assert.equal(r.changes[0].changed, true)
+    assert.equal(r.changes[0].cells, 4, `副本应为 4 格，实际 ${r.changes[0].cells}`)
+    const at = (x: number, y: number): number => r.art.indices[y * 10 + x]
+    assert.equal(r.art.palette[at(0, 1)], '#e94560', '原内容必须保留在原位')
+    assert.equal(r.art.palette[at(9, 1)], '#e94560', '副本应贴到右边缘（与左侧留白对称）')
+    assert.equal(r.art.palette[at(8, 1)], '#e94560', '副本宽 2 格')
+    assert.notEqual(r.art.palette[at(5, 1)], '#e94560', '中线附近不该被误填')
+  })
+
+  it('mirror：副本里的透明格不落笔（否则会把原内容抹掉一半）', () => {
+    // 左半有内容、右半全透明，中间竖着一条"洞"
+    const base = applyOps(blankArt(6, 2, '#ffffff', true), [
+      { op: 'rect', x0: 0, y0: 0, x1: 0, y1: 1, color: '#e94560' },
+      { op: 'rect', x0: 3, y0: 0, x1: 3, y1: 1, color: '#e94560' },
+    ]).art
+    const r = applyOps(base, [{ op: 'mirror', kind: 'h', color: '#e94560' }])
+    // 两列已有内容（x=0 与 x=3），镜像后落在 x=5 与 x=2：四列实色 = 8 格，其余 4 格透明
+    const transparent = countTransparent(r.art.indices, r.art.alphaMask)
+    assert.equal(transparent, 4, `6×2 共 12 格、四列实色，应余 4 格透明，实际 ${transparent}`)
+    const at = (x: number, y: number): number => r.art.indices[y * 6 + x]
+    assert.equal(r.art.palette[at(0, 0)], '#e94560', '原内容必须留着')
+    assert.equal(r.art.palette[at(5, 0)], '#e94560', '副本应落在 x=5')
+    assert.equal(r.art.palette[at(2, 0)], '#e94560', '副本应落在 x=2')
+  })
+
   it('spec.ts 列出的算子与实现完全一致（漂移会被这条抓住）', () => {
     // 每个 spec 里的算子都必须被实现接受（不抛「未知算子」）
     const art = blankArt(6, 6, '#ffffff', true)
@@ -366,7 +455,7 @@ describe('编辑算子', () => {
         // 其它错误（如色板里没有该色）是合理的参数问题，不算漂移
       }
     }
-    assert.equal(OP_SPECS.length, 10, '算子数量变化时必须同步文档与测试')
+    assert.equal(OP_SPECS.length, 12, '算子数量变化时必须同步文档与测试')
   })
 
   it('anchorOffset 给出内容相对画布中心的偏移', () => {
@@ -399,6 +488,10 @@ function sampleOp(op: string): EditOp {
       return { op: 'eraseColor', color: '#ffffff' }
     case 'replaceAny':
       return { op: 'replaceAny', color: '#ffffff', to: '#000000' }
+    case 'outline':
+      return { op: 'outline', color: '#000000' }
+    case 'mirror':
+      return { op: 'mirror', kind: 'h', color: '#000000' }
     default:
       // 只有 spec 与实现漂移时才会走到这里：返回一个必然报错的算子，让断言给出明确信息
       return { op } as unknown as EditOp

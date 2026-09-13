@@ -96,7 +96,7 @@ node tool/artc.mjs --blank 32x32 --blank-transparent --out 输出 \
 
 ---
 
-## 三、10 类算子（声明式编辑）
+## 三、12 类算子（声明式编辑）
 
 一条 `--ops` 或 `ps.edit(ops)` 就是**一个撤销单位**。算子表（同源信息用 `--describe` 拿）：
 
@@ -112,6 +112,8 @@ node tool/artc.mjs --blank 32x32 --blank-transparent --out 输出 \
 | `trim` | — | 裁掉四周透明边 |
 | `eraseColor` | `color` | 便捷：把某色全挖成透明（一键去白底） |
 | `replaceAny` | `color,to` | 便捷：全图换色（拼豆"没这个色，换一个看看"） |
+| `outline` | `color?,connectivity?,offset?` | 给内容外侧描一圈（默认完整一圈含斜角；`offset` 加粗）。只往空格写，不动已有内容 |
+| `mirror` | `kind,color?` | 以画布中线镜像**加一份**（原内容保留），做对称角色/倒影 |
 
 **注意**：无副作用路径（`render` / `renderBlank` / CLI 的 `--ops`）**不继承工作台主色**，
 绘画类算子**必须显式给 `color`**，否则结果不可复现（会直接报错）。
@@ -136,7 +138,19 @@ node tool/artc.mjs --in 底图.png --ops @ops.json  --out 输出 --json   # 等�
 ---
 
 ## 四、做**无损**像素素材（最容易踩的一条）
-默认参数面向"照片转像素"，对**已经画好的像素素材**是有损的。走这条路径必须显式给三个开关：
+
+默认参数面向"照片转像素"，对**已经画好的像素素材**是有损的。两条路可选：
+
+**路线 A：直接用 `sprite` 风格预设**（省事，先试这个）
+
+```bash
+node tool/artc.mjs --in 精灵.png --size 64x64 --style sprite --out 输出 --json
+```
+
+`--style sprite` = 最近邻 + **不做杂色清理** + 保留透明 + PICO-8 色板。其中"不做杂色清理"是关键：
+清理针对的是照片压缩噪点，而像素素材里的"小连通块"往往正是故意画的高光、眼神、描边断点。
+
+**路线 B：手动给全开关**（要精确控制色数时）
 
 ```bash
 node tool/artc.mjs --in 精灵.png --size 64x64 --alpha \

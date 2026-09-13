@@ -153,8 +153,11 @@ export const STYLE_PRESETS: StylePreset[] = [
   {
     id: 'sprite',
     name: '游戏精灵',
-    desc: '固定 32×32、PICO-8 色板、保留透明：游戏资产起步配置',
-    params: { paletteMode: 'preset', presetPaletteId: 'pico8', dither: 'none', cleanup: true, cleanupMinSize: 2, downsample: 'nearest', transparent: 'alpha', exactWidth: 32, exactHeight: 32 },
+    desc: '固定 32×32、PICO-8 色板、保留透明、不做杂色清理：像素资产起步配置（1px 细节原样保留）',
+    // cleanup: false 是这个预设的关键。杂色清理把"小连通块并入邻色"，而像素素材里的
+    // 小连通块往往正是**故意画的高光、眼神、描边断点**——实测 64×64 精灵过一遍默认参数，
+    // 1px 高光被整块吃掉。清理的目标是照片压缩噪点，像素素材本来就没有噪点。
+    params: { paletteMode: 'preset', presetPaletteId: 'pico8', dither: 'none', cleanup: false, downsample: 'nearest', transparent: 'alpha', exactWidth: 32, exactHeight: 32 },
   },
   {
     id: 'beads',

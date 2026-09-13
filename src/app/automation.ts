@@ -313,7 +313,7 @@ export function installAutomationApi(deps: AutomationDeps): void {
       opts: { width: number; height: number; color?: string; transparent?: boolean; ops?: EditOp[] },
       params?: Partial<ConvertParams>,
       scale = 1,
-      exp?: { transparentBg?: boolean },
+      exp?: { transparentBg?: boolean; ops?: unknown },
     ): Promise<{
       width: number
       height: number
@@ -326,6 +326,16 @@ export function installAutomationApi(deps: AutomationDeps): void {
       paletteHex: string
       hash: string
     }> => {
+      // renderBlank 的 ops 在**第 1 个参数**里，而 render 的 ops 在第 4 个——两者返回值形状却一样，
+      // 于是照 render 的样子调用会把算子静默丢掉：调用方拿到一张干净画布，还以为算子生效了。
+      // 这与"未知参数静默忽略"是同一类失败，必须点名报错而不是忍着。
+      if (exp && 'ops' in exp) {
+        throw new Error(
+          'renderBlank 的 ops 要放在第 1 个参数里（例如 renderBlank({ width, height, ops })），' +
+            '不是第 4 个——那是 render(src, params, scale, { ops }) 的写法。' +
+            '放在第 4 个会被静默忽略，所以这里直接报错。',
+        )
+      }
       const p = coerceParams({ ...DEFAULT_PARAMS, ...(params ?? {}) })
       const base = blankArt(opts.width, opts.height, opts.color ?? '#000000', !!opts.transparent)
       // 无副作用路径**不继承主色**：绘画类算子必须显式给 color，结果才与工作区状态无关

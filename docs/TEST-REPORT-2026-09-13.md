@@ -373,12 +373,27 @@ npm run verify
 - `artc --selftest`：26 → **31**
 - `e2e-regressions.mjs`：13 → **19**（CLI 断言均用临时目录，不污染仓库）
 
-### 9.4 验证（第二轮修复后）
+### 9.4 第二轮后续（收到"按你的意见继续修复"之后）
+
+回执里把两件事留给了需求方决定，随后按指示落地，并顺带查出两个新问题：
+
+| 事项 | 处置 |
+|---|---|
+| P1-1 的默认值 | **改的是 `sprite`「游戏精灵」预设**，不是全局默认——全局关掉会劣化"照片转像素"主用途。`--style sprite` 现在 = 最近邻 + 不做杂色清理 + 保留透明。实测该预设保留 1px 高光 `#ffd700`，而默认参数会把它吃掉。快速上手文档已把它列为无损路线 A |
+| P3-3 的 `outline`/`mirror` | 已实现并登记进 `OP_SPECS`/`EditOp`/e2e 样例表，算子总数 10 → **12**。语义：`outline` 默认 8 邻完整一圈、只往空格写、`offset` 控层数；`mirror` 保留原内容、副本透明格不落笔 |
+| 新发现：`renderBlank` 的 `ops` 位置 | `render` 的 ops 在第 4 参、`renderBlank` 在第 1 参，返回值形状却一样 → 照 `render` 写会**静默丢掉算子**。已加守卫报错并说明正确位置 |
+| 新发现：`outline` 空操作污染色板 | 先算格子再解析颜色：没有可描格时不该把描边色加进色板（否则"什么都没做"会报 `changed:true` 并污染 `.hex` 与拼豆清单颜色表） |
+| 失效断言 | e2e 里写死的 `describeOps().length === 10` 改成**逐个真调一次页面宣称的每个算子**。中间试过"比对核心 spec"，但那是同义反复（两边读同一份 `OP_SPECS`，变异测试证实改不红） |
+
+验证（第二轮后续）：
 
 ```
 npm run verify
-  typecheck 0 错 / 单测 55 / 构建哈希一致 / 自检 31
-  e2e 19 / e2e:picker 17 / e2e:slider 12 / e2e:regressions 19
+  typecheck 0 错 / 单测 62 / 构建哈希一致 / 自检 31
+  e2e 20 / e2e:picker 17 / e2e:slider 12 / e2e:regressions 19
 ```
 
-产物哈希：`ee4952b8…`（131.2 KB），与 `dist/index.html` 逐字节一致。
+新增断言均经变异测试确认能因缺陷而红（`mirror` 抛「未知算子」→ 页面算子可执行性断言变红）。
+
+产物哈希见 `git log -1` 对应提交的构建输出；单文件产物与 `dist/index.html` 必须逐字节一致
+（`npm run verify` 会校验）。

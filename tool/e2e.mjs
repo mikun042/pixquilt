@@ -217,10 +217,64 @@ async function main() {
       return `apiLevel ${c.apiLevel}`
     })
 
-    const opsCount = await cdp.eval('window.pixelArtStudio.describeOps().length')
-    check('自描述：describeOps() 返回 10 个算子', () => {
-      assert(opsCount === 10, `期望 10，实际 ${opsCount}`)
-      return `${opsCount} 个算子`
+    // 光比对 describeOps() 与核心 spec 是同义反复——两边读同一份 OP_SPECS，永远相等。
+    // 真正会漂移的是"spec 加了算子但 applyOps 的 switch 没接"，所以逐个真调一次：
+    // 未实现的算子会走进 default 分支报「未知算子」。
+    const opNames = JSON.parse(await cdp.eval('JSON.stringify(window.pixelArtStudio.describeOps().map(o => o.op))'))
+    const opSamples = {
+      fill: { op: 'fill', x: 1, y: 1, color: '#ff0000' },
+      setCells: { op: 'setCells', cells: [[1, 1]], color: '#ff0000' },
+      setAll: { op: 'setAll', color: '#ff0000' },
+      line: { op: 'line', x0: 1, y0: 1, x1: 5, y1: 5, color: '#ff0000' },
+      rect: { op: 'rect', x0: 1, y0: 1, x1: 5, y1: 5, color: '#ff0000' },
+      ellipse: { op: 'ellipse', x0: 1, y0: 1, x1: 5, y1: 5, color: '#ff0000' },
+      transform: { op: 'transform', kind: 'flipX' },
+      trim: { op: 'trim' },
+      eraseColor: { op: 'eraseColor', color: '#ff0000' },
+      replaceAny: { op: 'replaceAny', color: '#ff0000', to: '#00ff00' },
+      outline: { op: 'outline', color: '#000000' },
+      mirror: { op: 'mirror', kind: 'h', color: '#0000ff' },
+    }
+    const opMissing = opNames.filter((n) => !opSamples[n])
+    const opUnknown = []
+    for (const name of opNames) {
+      if (!opSamples[name]) continue
+      // eraseColor / replaceAny 只能作用于画布**已有**颜色，空画布上没有它们要的色。
+      // 先 setAll 铺一层 #ff0000 让这两个算子有作用对象——这不是为了迁就实现，
+      // 而是它们本来就定义在"已有颜色"上（报错信息也写明了）。
+      const pre = name === 'eraseColor' || name === 'replaceAny' ? [{ op: 'setAll', color: '#ff0000' }] : []
+      const ops = [...pre, opSamples[name]]
+      // ops 放第 1 个参数里（renderBlank 与 render 的 ops 位置不同，详见 automation.ts 的守卫）。
+      // renderBlank 是 async：不 await 就取不到 changes（会报 reading 'length'）。
+      const res = await cdp.eval(`(async () => {
+        try {
+          const r = await window.pixelArtStudio.renderBlank({ width: 12, height: 12, transparent: true, ops: ${JSON.stringify(ops)} },
+            { longEdge: 12, lockPalette: false })
+          return JSON.stringify({ ok: true, changes: (r.changes || []).length })
+        } catch (e) { return JSON.stringify({ ok: false, msg: e.message }) }
+      })()`)
+      const parsed = JSON.parse(res)
+      if (!parsed.ok) opUnknown.push(`${name} → ${parsed.msg}`)
+    }
+    check('自描述：页面宣称的每个算子都真的能执行（防"清单里有、实现没有"）', () => {
+      assert(opMissing.length === 0, `e2e 缺少这些算子的样例，请补：${opMissing.join(', ')}`)
+      assert(opUnknown.length === 0, `页面宣称但无法执行：${opUnknown.join('；')}`)
+      return `${opNames.length} 个算子全部可执行`
+    })
+
+    const opWrongSlot = await cdp.eval(`(async () => {
+      try {
+        await window.pixelArtStudio.renderBlank({ width: 8, height: 8 }, { longEdge: 8 }, 1, { ops: [{ op: 'setAll', color: '#ff0000' }] })
+        return 'no-throw'
+      } catch (e) { return e.message }
+    })()`)
+    check('renderBlank：ops 放错位置（第 4 参）必须报错，不能静默丢掉算子', () => {
+      // render 的 ops 在第 4 参、renderBlank 的 ops 在第 1 参，两者返回值形状却一样。
+      // 照 render 的样子调用 renderBlank 会拿到一张"算子完全没生效"的干净画布，
+      // 且没有任何信号——这与本项目反复出现的"静默失效"是同一类问题。
+      assert(opWrongSlot !== 'no-throw', 'ops 放第 4 参时应当报错，而不是静默忽略')
+      assert(/第 1 个参数/.test(opWrongSlot), `错误信息要说清正确位置，实际：${opWrongSlot}`)
+      return '明确报错并指出正确写法'
     })
 
     const ui = await cdp.eval(`JSON.stringify({

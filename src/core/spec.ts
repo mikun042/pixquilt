@@ -124,6 +124,35 @@ export const OP_SPECS: OpSpec[] = [
     ],
     notes: ['源色与目标色相同的等价情形返回 changed:false 而非报错'],
   },
+  {
+    op: 'outline',
+    desc: '描边：给不透明内容的边界外侧补一圈实色（像素画收尾常用）',
+    fields: [
+      { name: 'color', type: 'hex', required: false, default: '当前主色', desc: '描边色' },
+      { name: 'connectivity', type: 'enum', required: false, default: 8, desc: '8（默认，完整一圈含斜角） | 4（只描正交相邻那圈，四角留空）' },
+      { name: 'offset', type: 'number', required: false, default: 1, desc: '描边层数（向外扩几圈）' },
+    ],
+    notes: [
+      '只往空的（透明）格写，已有内容一律不被覆盖',
+      '描边是**扩张**操作：对同一张图再描一次会把刚描的一圈当成内容继续向外扩。想加粗请用 offset，不要在算子数组里连写两次',
+      '判定有无内容看 alpha 而非颜色索引：挖过洞的格子里仍留着旧索引，只看索引会贴着看不见的东西描',
+      '外侧没有空格时返回 changed:false，且**不会**把描边色加进色板（空操作不该污染颜色表）',
+    ],
+  },
+  {
+    op: 'mirror',
+    desc: '镜像加笔：把当前内容镜像到画布另一侧（对称角色/道具/装饰）',
+    fields: [
+      { name: 'kind', type: 'enum', required: true, desc: 'h（左右） | v（上下） | both（四向）' },
+      { name: 'color', type: 'hex', required: false, default: '当前主色', desc: '镜像副本的颜色（想做出"倒影"就用更暗的色）' },
+    ],
+    notes: [
+      '以画布中线为轴，原内容保留，镜像副本叠加上去',
+      '副本里的透明格不落笔（否则镜像一次会把原内容抹掉一半）',
+      '已有内容的格子不被覆盖，便于"先摆一半再镜像"',
+      '与 transform flipX 的区别：flipX 是把整幅翻转（原内容不在原位），mirror 是保留原内容再补一份',
+    ],
+  },
 ]
 
 /** 参数元数据：range/enum 与 sanitize 的实际行为必须一致（单测会抽样校验） */
