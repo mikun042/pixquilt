@@ -197,6 +197,12 @@ html, body {
 .empty-icon { font-size: 46px; opacity: 0.35; }
 .empty-title { font-size: 15px; }
 .empty-hint { font-size: 12px; opacity: 0.75; }
+/*
+ * 空状态里的操作按钮。`.empty-state` 整层是 `pointer-events: none`（避免它挡住画布交互），
+ * 所以按钮必须显式恢复指针事件，否则"看得见、点不动"。
+ */
+.empty-actions { display: flex; gap: 8px; margin: 10px 0 4px; pointer-events: auto; }
+.empty-actions .btn { pointer-events: auto; }
 
 /* 画布右下角视图浮层：给鼠标用户可见的缩放入口（键盘 +/-/0 之外） */
 .view-toolbar {
@@ -671,6 +677,35 @@ input[type="color"] {
   /* 抽屉打开时用遮罩挡住画布，点遮罩关闭——避免"看起来还能点画布" */
   body.drawer-open .drawer-scrim { display: block; }
 }
+
+/*
+ * 桌面宽度下折叠侧栏（顶栏「☰ 工具 / ⚙ 参数」触发）。
+ *
+ * 用改 grid 模板而不是 `display:none`：面板是网格列，直接隐藏会让后面的列左移串位
+ * （`.center` 会跑到 232px 那一列上）。折叠是用户偏好，由 index.ts 的 desktopHidden
+ * 跨重绘保留，`.narrow-only` 的显隐与它无关。
+ */
+@media (min-width: 981px) {
+  body.no-rail .main { grid-template-columns: 1fr 300px; }
+  body.no-rail .rail { display: none; }
+  body.no-panel .main { grid-template-columns: 232px 1fr; }
+  body.no-panel .right { display: none; }
+  body.no-rail.no-panel .main { grid-template-columns: 1fr; }
+}
+
+/*
+ * 顶栏两个面板开关（`.narrow-only` 是沿用下来的类名）。
+ *
+ * 这两个按钮曾经在**桌面宽度下也显示**，但点击只改 `dataset.drawer`，而桌面布局不读它，
+ * 于是表现是"按了没反应"。根因是 `.narrow-only` 从来**没有对应的 CSS 规则**
+ * （只在 HTML 与注释里出现过），"只在窄屏显示"这个意图从未生效。
+ *
+ * 选择"让它在两种宽度下都真的有用"，而不是"桌面隐藏"：
+ *  - 窄屏：侧栏是浮层抽屉，点按钮开合（原有行为）。
+ *  - 桌面：侧栏是常驻列，点按钮折叠/展开该列，把空间让给画布。
+ * 两种宽度下都是"显示/隐藏面板"，同一个心智模型，不存在"点了没反应"的情况。
+ */
+.narrow-only { display: inline-flex; }
 
 /* 窄屏抽屉遮罩（桌面宽度下不产生可见效果） */
 .drawer-scrim {

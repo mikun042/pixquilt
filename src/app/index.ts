@@ -754,6 +754,30 @@ function renderEmptyState(): void {
     el('div', { class: 'empty-state' }, [
       el('div', { class: 'empty-icon' }, ['▦']),
       el('div', { class: 'empty-title' }, ['拖入图片，或用顶栏「导入图片」']),
+      // 「空白画布」只挂在导出菜单里时，新用户找不到入口（他们会直接找「新建」，而那个按钮
+      // 在没有画布时是灰的）。这里给出显式按钮——空状态本来就是"你还没有画布"的求助界面。
+      el('div', { class: 'empty-actions' }, [
+        el(
+          'button',
+          {
+            class: 'btn act',
+            type: 'button',
+            'data-testid': 'empty-new-blank',
+            onclick: () => makeBlank(),
+          },
+          ['✚ 新建空白画布'],
+        ),
+        el(
+          'button',
+          {
+            class: 'btn',
+            type: 'button',
+            'data-testid': 'empty-import',
+            onclick: () => fileInput?.click(),
+          },
+          ['导入图片…'],
+        ),
+      ]),
       el('div', { class: 'empty-hint' }, ['支持 PNG / JPG / WebP / GIF / BMP / AVIF / ICO / SVG · 也可 Ctrl+V 粘贴']),
     ]),
   )
@@ -896,10 +920,21 @@ function buildHeader(): void {
     'button',
     {
       class: 'btn act',
-      title: '清空画布与素材，重新开始',
+      title: '新建：还没有画布时直接建一张空白画布；已有画布时清空重来',
       'aria-label': '新建',
       onclick: () => {
-        if (app.art && !confirm('清空当前画布？未导出的内容会丢失。')) return
+        /*
+         * 「新建」在没有画布时曾经是**禁用**的（updateHeaderState 里 `!art && !src`），
+         * 于是第一次打开工作台的人卡在空状态：唯一的"新建空白画布"入口藏在
+         * 「导出 ▾」菜单里，而"导出"这个词不会让人想到"新建"。现在改成：
+         *  - 已有画布 → 确认后清空（原行为，仍是"清空与素材，重新开始"）
+         *  - 还没有画布 → 直接建空白画布，按钮不再是死路
+         */
+        if (!app.art && !app.source) {
+          makeBlank()
+          return
+        }
+        if (!confirm('清空当前画布？未导出的内容会丢失。')) return
         app.art = null
         app.source = null
         app.sourceName = ''
@@ -929,13 +964,36 @@ function buildHeader(): void {
 
   if (drawerToolsBtn && drawerPanelBtn) {
     drawerToolsBtn.textContent = '☰ 工具'
-    drawerToolsBtn.title = '打开工具与色板面板（窄屏）'
-    drawerToolsBtn.setAttribute('aria-label', '打开工具与色板面板')
+    drawerToolsBtn.title = '显示 / 隐藏工具与色板面板（窄屏下为浮层抽屉）'
+    drawerToolsBtn.setAttribute('aria-label', '显示或隐藏工具与色板面板')
     drawerToolsBtn.dataset.testid = 'drawer-tools'
     drawerPanelBtn.textContent = '⚙ 参数'
-    drawerPanelBtn.title = '打开参数面板（窄屏）'
-    drawerPanelBtn.setAttribute('aria-label', '打开参数面板')
+    drawerPanelBtn.title = '显示 / 隐藏参数面板（窄屏下为浮层抽屉）'
+    drawerPanelBtn.setAttribute('aria-label', '显示或隐藏参数面板')
     drawerPanelBtn.dataset.testid = 'drawer-panel'
+
+    /*
+     * 两个按钮在**桌面宽度下也曾是可见的**，但那时点击只改 dataset.drawer，
+     * 而桌面布局根本不读它——用户看到的是"按了没反应"。
+     * （`.narrow-only` 这个类名只在 HTML 与注释里出现过，CSS 里从来没有对应规则，
+     *   所以"只在窄屏显示"这个意图从未生效。）
+     *
+     * 现在区分两种宽度下各自的正确行为：
+     *  - 窄屏（≤980px）：侧栏是浮层抽屉，点按钮开合。
+     *  - 桌面：侧栏是常驻列，点按钮**折叠/展开该列**，把空间让给画布。
+     */
+    const NARROW = 980
+    const isNarrow = (): boolean => window.innerWidth <= NARROW
+    /** 桌面折叠状态（跨 renderAll 保留，折叠是用户偏好，不该被一次重绘重置） */
+    let desktopHidden: 'none' | 'tools' | 'panel' = 'none'
+
+    const applyDesktopCollapse = (): void => {
+      document.body.classList.toggle('no-rail', desktopHidden === 'tools')
+      document.body.classList.toggle('no-panel', desktopHidden === 'panel')
+      drawerToolsBtn.setAttribute('aria-pressed', desktopHidden === 'tools' ? 'true' : 'false')
+      drawerPanelBtn.setAttribute('aria-pressed', desktopHidden === 'panel' ? 'true' : 'false')
+      canvasApi.redraw()
+    }
 
     const setDrawer = (kind: 'none' | 'tools' | 'panel'): void => {
       document.body.classList.toggle('drawer-open', kind !== 'none')
@@ -951,17 +1009,33 @@ function buildHeader(): void {
     const currentDrawer = (): 'none' | 'tools' | 'panel' =>
       document.body.classList.contains('drawer-tools') ? 'tools' : document.body.classList.contains('drawer-panel') ? 'panel' : 'none'
 
+    const toggleTools = (): void => {
+      if (isNarrow()) setDrawer(currentDrawer() === 'tools' ? 'none' : 'tools')
+      else {
+        desktopHidden = desktopHidden === 'tools' ? 'none' : 'tools'
+        applyDesktopCollapse()
+      }
+    }
+    const togglePanel = (): void => {
+      if (isNarrow()) setDrawer(currentDrawer() === 'panel' ? 'none' : 'panel')
+      else {
+        desktopHidden = desktopHidden === 'panel' ? 'none' : 'panel'
+        applyDesktopCollapse()
+      }
+    }
+
     // 初始状态写进 dataset，便于自动化断言与调试
     document.body.dataset.drawer = 'none'
-    drawerToolsBtn.addEventListener('click', () => setDrawer(currentDrawer() === 'tools' ? 'none' : 'tools'))
-    drawerPanelBtn.addEventListener('click', () => setDrawer(currentDrawer() === 'panel' ? 'none' : 'panel'))
+    drawerToolsBtn.addEventListener('click', toggleTools)
+    drawerPanelBtn.addEventListener('click', togglePanel)
     scrim?.addEventListener('click', () => setDrawer('none'))
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && currentDrawer() !== 'none') setDrawer('none')
     })
-    // 回到桌面宽度时收起抽屉：避免留下"看不见但开着"的状态
+    // 切回桌面宽度时收起抽屉浮层（桌面用的折叠状态由 desktopHidden 各自保留，互不影响）
     window.addEventListener('resize', () => {
-      if (window.innerWidth > 980) setDrawer('none')
+      if (window.innerWidth > NARROW && currentDrawer() !== 'none') setDrawer('none')
+      applyDesktopCollapse()
     })
   }
   actionsHost.append(undoBtn, redoBtn, regenerateBtn, newBtn)
@@ -1108,11 +1182,11 @@ function closeExportMenu(): void {
 /** 只更新顶栏按钮的可用状态（不重建 DOM，因此不会打断菜单） */
 function updateHeaderState(): void {
   const art = app.art
-  const src = app.source
   if (undoBtn) undoBtn.disabled = history.past.length === 0
   if (redoBtn) redoBtn.disabled = history.future.length === 0
-  if (regenerateBtn) regenerateBtn.disabled = !src
-  if (newBtn) newBtn.disabled = !art && !src
+  if (regenerateBtn) regenerateBtn.disabled = !app.source
+  // 「新建」不再因"没有画布"而禁用——那是第一次使用时的死路（点不动、又找不到别的入口）。
+  // 它的语义随之变成"没有画布就直接建一张，有画布才确认清空"，见顶栏按钮的 onclick。
   const exportBtn = document.getElementById('btn-export') as HTMLButtonElement | null
   // 导出按钮**不因"没有画布"而禁用**：否则用户不知道去哪导出，点开菜单会看到明确提示
   if (exportBtn) exportBtn.classList.toggle('is-empty', !art)

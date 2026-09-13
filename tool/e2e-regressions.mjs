@@ -572,6 +572,89 @@ await check('CLI：--ops-file 读文件；未知参数报错（不再静默忽�
   return '--ops-file 生效；--exact 被拒且指名'
 })
 
+/* ------------------------------- 用户报的「第一次打开就卡住」三个现象 */
+
+await check('新建：还没有画布时按钮可用，点击直接得到空白画布（不再死路）', async () => {
+  // 复位到"刚打开"的状态
+  await cdp.eval('window.pixelArtStudio.reset(); window.pixelArtStudio.setParams({})')
+  await sleep(300)
+  const st = JSON.parse(await cdp.eval(`(() => {
+    const b = [...document.querySelectorAll('#header-actions button')].find(x => (x.textContent || '').includes('新建'))
+    if (!b) return JSON.stringify({ error: '顶栏找不到「新建」按钮' })
+    const r = b.getBoundingClientRect()
+    return JSON.stringify({ disabled: b.disabled, w: Math.round(r.width), x: r.x + r.width / 2, y: r.y + r.height / 2 })
+  })()`))
+  assert(!st.error, st.error)
+  assert(!st.disabled, '「新建」在没有画布时不该禁用——那是第一次使用时的死路')
+  assert(st.w > 0, '「新建」按钮不可见（宽度 0）')
+
+  // 真实鼠标点击：合成 .click() 绕过命中测试，测不出 pointer-events / 遮挡问题
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: st.x, y: st.y, button: 'left', buttons: 1, clickCount: 1 })
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: st.x, y: st.y, button: 'left', buttons: 0, clickCount: 1 })
+  await sleep(300)
+  const info = JSON.parse(await cdp.eval('JSON.stringify(window.pixelArtStudio.getInfo())'))
+  assert(info.hasArt, '点「新建」后应当出现画布')
+  return `得到 ${info.width}×${info.height} 空白画布`
+})
+
+await check('空状态：直接给出「新建空白画布」入口，且真实鼠标点得动', async () => {
+  await cdp.eval('window.pixelArtStudio.reset(); window.pixelArtStudio.setParams({})')
+  await sleep(300)
+  const st = JSON.parse(await cdp.eval(`(() => {
+    const b = document.querySelector('[data-testid="empty-new-blank"]')
+    if (!b) return JSON.stringify({ error: '空状态里没有「新建空白画布」按钮' })
+    const r = b.getBoundingClientRect()
+    return JSON.stringify({ w: Math.round(r.width), h: Math.round(r.height),
+      pe: getComputedStyle(b).pointerEvents, x: r.x + r.width / 2, y: r.y + r.height / 2 })
+  })()`))
+  assert(!st.error, st.error)
+  assert(st.w > 0 && st.h > 0, `按钮尺寸为 0（${st.w}×${st.h}）`)
+  // 空状态整层是 pointer-events:none，按钮若不显式恢复就会"看得见点不动"
+  assert(st.pe !== 'none', `空状态按钮必须可接收指针事件，实际 pointer-events=${st.pe}`)
+
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: st.x, y: st.y, button: 'left', buttons: 1, clickCount: 1 })
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: st.x, y: st.y, button: 'left', buttons: 0, clickCount: 1 })
+  await sleep(300)
+  const info = JSON.parse(await cdp.eval('JSON.stringify(window.pixelArtStudio.getInfo())'))
+  assert(info.hasArt, '点空状态按钮后应当出现画布')
+  const stillEmpty = await cdp.eval('!!document.querySelector(".empty-state")')
+  assert(stillEmpty === false, '有画布后空状态必须移除，否则会盖住画好的内容')
+  return `得到 ${info.width}×${info.height}，空状态已移除`
+})
+
+await check('桌面宽度：工具/参数按钮真的折叠侧栏（不再"按了没反应"）', async () => {
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false })
+  await sleep(300)
+  const r = JSON.parse(await cdp.eval(`(async () => {
+    const tools = document.querySelector('[data-testid="drawer-tools"]')
+    const panel = document.querySelector('[data-testid="drawer-panel"]')
+    const rail = document.getElementById('rail-left')
+    const right = document.querySelector('.right')
+    const w = (e) => Math.round(e.getBoundingClientRect().width)
+    const before = { rail: w(rail), right: w(right) }
+    tools.click()
+    await new Promise((res) => setTimeout(res, 200))
+    const afterTools = { rail: w(rail), right: w(right) }
+    tools.click()
+    await new Promise((res) => setTimeout(res, 200))
+    const restored = { rail: w(rail), right: w(right) }
+    panel.click()
+    await new Promise((res) => setTimeout(res, 200))
+    const afterPanel = { rail: w(rail), right: w(right) }
+    panel.click()
+    await new Promise((res) => setTimeout(res, 200))
+    return JSON.stringify({ before, afterTools, restored, afterPanel, final: { rail: w(rail), right: w(right) } })
+  })()`))
+  assert(r.before.rail > 0 && r.before.right > 0, `桌面下两侧栏应可见：${JSON.stringify(r.before)}`)
+  assert(r.afterTools.rail === 0, `点「工具」应收起工具列，实际宽 ${r.afterTools.rail}`)
+  assert(r.afterTools.right > 0, '收起工具列不该连带收起参数列')
+  assert(r.restored.rail > 0, `再点应恢复工具列，实际宽 ${r.restored.rail}`)
+  assert(r.afterPanel.right === 0, `点「参数」应收起参数列，实际宽 ${r.afterPanel.right}`)
+  assert(r.afterPanel.rail > 0, '收起参数列不该连带收起工具列')
+  assert(r.final.right > 0, `再点应恢复参数列，实际宽 ${r.final.right}`)
+  return `工具列 ${r.before.rail}→0→${r.restored.rail}；参数列 ${r.before.right}→0→${r.final.right}`
+})
+
 /* ---------------------------------------------- 结果 */
 
 const passed = results.filter((r) => r.ok).length
