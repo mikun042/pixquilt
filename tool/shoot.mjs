@@ -10,6 +10,8 @@
  *   node tool/shoot.mjs                 # 产出 .tmp-shots/picker-full.png 与 picker-crop.png
  *   node tool/shoot.mjs --out 目录      # 换输出目录
  *   node tool/shoot.mjs --width 1400 --height 900
+ *   node tool/shoot.mjs --color E7E7E7  # 先把主色设成指定 hex 再截图（用于和参考图同色对比）
+ *   node tool/shoot.mjs --model hsv     # 先切到 HSV 段（参考图两张分别是 RGB / HSV）
  *
  * 注意：**必须先设桌面视口**。headless 默认 800×600 会命中 CSS 的 ≤980px 窄屏规则，
  * 把左栏 `display:none`，取色器就没有布局尺寸（截图会是空白）。
@@ -146,6 +148,19 @@ async function main() {
     // 打开取色器：点主色块
     await cdp.eval(`(() => { const s = document.querySelectorAll('.color-slot')[0]; if (s) s.click(); return true })()`)
     await new Promise((r) => setTimeout(r, 400))
+
+    // 可选：先把主色设成指定 hex（参考图同色对比用；不改算法，只走页内自动化接口）
+    const color = arg('color', '')
+    if (color) {
+      await cdp.eval(`(() => { window.pixelArtStudio.setPrimary('#${color.replace(/^#/, '')}'); return true })()`)
+      await new Promise((r) => setTimeout(r, 300))
+    }
+    // 可选：切到 HSV 段（参考图第二张就是 HSV 段）
+    const model = arg('model', '')
+    if (model) {
+      await cdp.eval(`(() => { const t = [...document.querySelectorAll('.cp-tab')].find((b) => b.textContent.toLowerCase() === ${JSON.stringify(model.toLowerCase())}); if (t) t.click(); return !!t })()`)
+      await new Promise((r) => setTimeout(r, 300))
+    }
 
     const rect = await cdp.eval(`(() => {
       const cp = document.querySelector('.cp')

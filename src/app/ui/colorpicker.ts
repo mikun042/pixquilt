@@ -1,24 +1,34 @@
 /**
  * 取色器：按 **Blender 取色界面** 的结构实现（用户提供的参考图即 Blender）。
  *
- * Blender 取色器的布局要点（照此实现，不自行发挥）：
+ * 下面这张图不是"凭印象"，而是把参考图逐像素测出来的（tool/ref-analysis.mjs + 定点采样）：
  *   ┌──────────────────────────────────────┐
- *   │ [RGB] [HSV] [Hex]                    │  ← 顶部色彩模型标签，切换下方数值行的单位
- *   │                                      │
- *   │      ╭───────────╮   ┌──┐            │  ← 左侧圆形色轮（中心白、外圈饱和）
- *   │      │   ◇游标   │   │  │            │  ← 右侧**竖向明度条**（上亮下暗）
- *   │      ╰───────────╯   └──┘            │
- *   │                                      │
- *   │  R 71   G 114   B 179                │  ← 数值行（单位随标签变化）
- *   │  [透明度横条 ▬▬▬▬▬▬▬▬▬▬]  1.000      │  ← 透明度用横条，最左 = 全透明
- *   │  ■ ■ ■ ■ ■ ■ ■ ■                     │  ← 色板（当前画布用到的颜色）
+ *   │ [   RGB   |   HSV   ]                │  ← 两个分段共用圆角容器、无缝隙；激活半段 #4772b3
+ *   │       ╭────────────╮  ┌─┐            │  ← 色轮 156px + 右侧明度竖条 14px
+ *   │       │     ○      │  │▬│            │  ← 游标是细圈；明度滑块是悬出条宽的浅色方块
+ *   │       ╰────────────╯  └─┘            │
+ *   │  红                  0.800           │  ← 整行滑条：蓝色填充宽度 = 数值占满量的比例
+ *   │  绿                  0.800           │
+ *   │  蓝                  0.800           │
+ *   │  Alpha               1.000           │  ← Alpha 也是整行滑条（最左 = 透明色）
+ *   │  Hex   [#E7E7E7]            [⌖]      │  ← Hex 行常驻，右侧吸管按钮
  *   └──────────────────────────────────────┘
  *
- * 与 Blender 的一个有意差异：**色相方向顺时针**（Blender 也是顺时针，从右侧 0° 起）。
- * 另一处差异：数值内部按 sRGB 处理（与 CSS / PNG / 项目文件一致），不做线性空间转换——
- * 若将来要对齐 Blender 的线性数值，只需在 `hexOfHsv()` / 输入回读处加一次转换，其余逻辑不动。
+ * 实测结论（决定了下面几处"非常规"写法）：
+ *   · 色相 0°(红) 在色轮**正下方**，顺时针递增：下 0° / 左 90° / 上 180° / 右 270°（8 方位实测）。
+ *     屏幕角 `atan2(dy, dx)` 的 0° 在正右，因此 色相 = 屏幕角 − 90°（见 HUE_OFFSET）。
+ *   · 色轮画在当前明度 V 上：参考图数值 0.8（线性）→ 彩色区最亮通道 231 = sRGB(0.8)。本项目
+ *     内部就是 sRGB，所以直接用 hsv.v 画即可，不需要任何色彩空间转换。
+ *   · 数值行是"滑条"：蓝 #4772b3 从左填充，宽度 = 数值占满量的比例（0.800 实测填充 80.7%），
+ *     剩余部分是 #545454；数字右对齐压在剩余部分上。
+ *   · 数值一律归一化 3 位小数（0.800 / 1.000 / 0.000）；输入兼容旧刻度（>1 视为 0-255 / 0-100 / 0-360）。
  *
- * 性能约束（继承上一版的硬要求）：**拖动中不重建 DOM**，只更新数值文本、游标与渐变；
+ * 与参考图的**有意差异**（都写在 docs/UI-COLOR-PICKER.md，不要当成 bug）：
+ *   · Hex 只显示 6 位（core 的 normalizeHex 只认 6 位；且本工具的 alpha 是"透明色"开关，
+ *     不是连续通道，多写两位会假装存在连续 alpha）。
+ *   · 色板 + 透明块 + 「收起」保留（参考图是 Blender 的浮窗，没有这些；删掉是本工具的功能倒退）。
+ *
+ * 性能约束（继承上一版的硬要求）：**拖动中不重建 DOM**，只更新数值文本、游标与填充宽度；
  * 松手才提交（一次拖动 = 一条撤销），并且监听 window blur 兜底收尾，避免拖拽状态悬挂。
  */
 import { colorTextOn, hexToRgb, hsvToRgb, rgbToHex, rgbToHsv } from '../../core/color.ts'
@@ -52,11 +62,30 @@ export interface ColorPickerApi {
   dispose: () => void
 }
 
-/** 色轮直径：与参考图里色轮占面板宽度的比例一致（约 200px 面板里的主视觉元素） */
-const WHEEL_SIZE = 184
-/** 右侧明度竖条的宽高 */
-const BAR_W = 22
+/**
+ * 色轮直径。参考图色轮 238px 占面板 292px 的 81.5%；本项目的左栏给取色器的内容宽是 176px，
+ * 于是取 156 + 间隙 6 + 明度条 14 = 176（正好填满，不溢出，比例 0.80 ≈ 参考图 0.815）。
+ * 要更大的轮子就必须加宽全局左栏（232px），那属于全站布局，不在取色器范围内。
+ */
+const WHEEL_SIZE = 156
+/** 右侧明度竖条的宽高（参考图 16px / 高=轮径，这里按比例取 14px） */
+const BAR_W = 14
 const BAR_H = WHEEL_SIZE
+/** 色轮与明度条的间隙 */
+const WHEEL_GAP = 6
+/** 游标半径（直径 13px ≈ 轮径的 8%，与参考图一致）：positionCursor 用它把游标居中到指针处 */
+const CURSOR_R = 6.5
+
+/**
+ * 色相起点偏移（度）。参考图实测：0°(红) 在色轮正下方，顺时针递增
+ * （下 0° / 左 90° / 上 180° / 右 270°）。屏幕角 atan2(dy,dx) 的 0° 在正右，
+ * 所以 色相 = 屏幕角 − 90°。**要改回"0° 在正右"只需把这里改成 0**（三处换算都走这两个函数）。
+ */
+const HUE_OFFSET = -90
+/** 屏幕角（度，0=正右、90=正下）→ 色相（度） */
+const angleToHue = (a: number): number => (a + HUE_OFFSET + 360) % 360
+/** 色相（度）→ 屏幕角（度） */
+const hueToAngle = (h: number): number => (h - HUE_OFFSET + 360) % 360
 
 /**
  * 透明度滑条左端的"死区"比例（6%）。
@@ -67,18 +96,48 @@ const BAR_H = WHEEL_SIZE
  */
 const ALPHA_ZERO_ZONE = 0.06
 
-type ColorModel = 'rgb' | 'hsv' | 'hex'
+type ColorModel = 'rgb' | 'hsv'
+
+/** 数值行定义：模型切换时只换 H/S/V ↔ R/G/B 三行，Alpha 与 Hex 常驻 */
+const ROW_SPECS: { key: string; label: string; model: ColorModel }[] = [
+  { key: 'R', label: '红', model: 'rgb' },
+  { key: 'G', label: '绿', model: 'rgb' },
+  { key: 'B', label: '蓝', model: 'rgb' },
+  { key: 'H', label: '色相', model: 'hsv' },
+  { key: 'S', label: '饱和度', model: 'hsv' },
+  { key: 'V', label: '明度', model: 'hsv' },
+]
+
+/** 数值显示：归一化 3 位小数（参考图 0.800 / 1.000） */
+const norm3 = (v: number): string => Math.max(0, Math.min(1, v)).toFixed(3)
 
 export function createColorPicker(host: HTMLElement, initial: ColorPickerState, cb: ColorPickerCallbacks): ColorPickerApi {
   let state: ColorPickerState = { ...initial }
-  let hsv = rgbToHsv(...rgbTuple(state.value))
-  let dragging: 'wheel' | 'value' | 'alpha' | null = null
+  /**
+   * 当前颜色的 hex。
+   *
+   * **为什么需要它**：HSV⇄RGB 与 hex 解析各自都有取整，只要让"改一个通道"经过
+   * `hex → RGB → 改字节 → HSV → hex → RGB` 这条链，就会累积 ±1 误差——实测把 G 拖到 0.1
+   * 之后颜色会"弹"回原值、继续拖也几乎不变。因此把 hex 作为**字节级真源**：
+   *   · RGB 通道操作：直接在 hexToRgb(currentHex) 上改字节，最后只反推一次 HSV；
+   *   · HSV 操作（色轮 / 明度 / H·S·V 滑条）：改 hsv，再同步 currentHex。
+   */
+  let currentHex = normalizeHex(state.value) ?? '#000000'
+  let hsv = rgbToHsv(...rgbTuple(currentHex))
+  /**
+   * 当前拖动对象：`'value'`（明度竖条）/ `'alpha'`（透明度行）/ 任意数值行 key（R/G/B/H/S/V）。
+   * 之所以用字符串而不是联合类型：数值行的 key 来自 ROW_SPECS，新增通道时这里不必跟着改。
+   */
+  let dragging: string | null = null
+  /** 本次 Alpha 拖动是否落在实色区（>死区）：决定松手时要不要提交"恢复实色" */
+  let alphaOpaque = false
   let model: ColorModel = 'rgb'
 
   /* ------------------------------------------------------------ 结构 */
 
-  const tabKeys: ColorModel[] = ['rgb', 'hsv', 'hex']
-  const tabLabels: Record<ColorModel, string> = { rgb: 'RGB', hsv: 'HSV', hex: 'Hex' }
+  // 参考图只有 RGB / HSV 两段：Hex 是下面常驻的一行，不是第三个标签
+  const tabKeys: ColorModel[] = ['rgb', 'hsv']
+  const tabLabels: Record<ColorModel, string> = { rgb: 'RGB', hsv: 'HSV' }
   const tabs = el('div', { class: 'cp-tabs', role: 'tablist' })
   const tabEls = new Map<ColorModel, HTMLButtonElement>()
   for (const key of tabKeys) {
@@ -96,47 +155,71 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
   const valueBarCanvas = el('canvas', { class: 'cp-bar', width: BAR_W, height: BAR_H })
   const valueKnob = el('div', { class: 'cp-vknob' })
   const valueBar = el('div', { class: 'cp-bar-wrap', style: { width: `${BAR_W}px`, height: `${BAR_H}px` } }, [valueBarCanvas, valueKnob])
-  valueBar.title = '明度（V）'
+  valueBar.title = '明度（V）：上亮下暗'
 
-  const pickerBtn = el(
-    'button',
-    { class: 'cp-icon-btn', type: 'button', title: '吸管：点这里，然后到画布上点一格取色', onclick: () => cb.onPickFromCanvas() },
-    ['✚'],
-  )
+  const wheelRow = el('div', { class: 'cp-wheel-row', style: { gap: `${WHEEL_GAP}px` } }, [wheelWrap, valueBar])
 
-  const wheelRow = el('div', { class: 'cp-wheel-row' }, [wheelWrap, el('div', { class: 'cp-bar-col' }, [valueBar, pickerBtn])])
-
-  /* ---- 透明度横条 ---- */
-  const alphaTrack = el('div', { class: 'cp-alpha' })
-  const alphaKnob = el('div', { class: 'cp-knob' })
-  alphaTrack.append(alphaKnob)
-
-  /* ---- 数值行（按模型切换单位） ---- */
+  /* ---- 数值行（整行滑条：填充宽度 = 数值比例，**整行可拖动**） ---- */
   const fieldsHost = el('div', { class: 'cp-fields' })
-  const numField = (label: string, key: string) => {
+  const fieldInputs = new Map<string, HTMLInputElement>()
+  const rowNodes = new Map<string, HTMLElement>()
+  const rowFills = new Map<string, HTMLElement>()
+  /** 六个数值行（R/G/B/H/S/V）按模型切换显隐；它们都是可拖动滑条 */
+  const sliderKeys = new Set(['R', 'G', 'B', 'H', 'S', 'V'])
+
+  const numRow = (key: string, label: string) => {
     const input = el('input', {
       class: 'cp-num',
       type: 'text',
-      inputmode: 'numeric',
+      inputmode: 'decimal',
       dataset: { field: key },
       onchange: (e: Event) => applyNumberField(key, (e.target as HTMLInputElement).value),
     })
-    return el('label', { class: 'cp-field' }, [el('span', { class: 'cp-field-label' }, [label]), input])
-  }
-  const fieldInputs = new Map<string, HTMLInputElement>()
-  for (const key of ['R', 'G', 'B', 'H', 'S', 'V', 'Hex']) {
-    const node = numField(key === 'Hex' ? 'Hex' : key, key)
-    fieldsHost.append(node)
-    const input = node.querySelector('input') as HTMLInputElement
+    const fill = el('div', { class: 'cp-row-fill' })
+    const row = el('div', { class: 'cp-row cp-field', dataset: { row: key } }, [fill, el('span', { class: 'cp-row-label' }, [label]), input])
     fieldInputs.set(key, input)
+    rowNodes.set(key, row)
+    rowFills.set(key, fill)
+    return row
   }
+  for (const spec of ROW_SPECS) fieldsHost.append(numRow(spec.key, spec.label))
+
+  /* ---- Alpha 行：与上面同一组滑条（保留 .cp-alpha 类名，自动化断言依赖它） ---- */
+  const alphaInput = el('input', {
+    class: 'cp-num',
+    type: 'text',
+    inputmode: 'decimal',
+    dataset: { field: 'Alpha' },
+    onchange: (e: Event) => applyNumberField('Alpha', (e.target as HTMLInputElement).value),
+  })
+  const alphaFill = el('div', { class: 'cp-row-fill' })
+  const alphaRow = el('div', { class: 'cp-row cp-alpha' }, [alphaFill, el('span', { class: 'cp-row-label' }, ['Alpha']), alphaInput])
+  fieldInputs.set('Alpha', alphaInput)
+  rowFills.set('Alpha', alphaFill)
+  fieldsHost.append(alphaRow)
+
+  /* ---- Hex 行（常驻）：标签 + 输入框 + 吸管 ---- */
+  const hexInput = el('input', {
+    class: 'cp-num',
+    type: 'text',
+    spellcheck: false,
+    dataset: { field: 'Hex' },
+    onchange: (e: Event) => applyNumberField('Hex', (e.target as HTMLInputElement).value),
+  })
+  fieldInputs.set('Hex', hexInput)
+  const pickerBtn = el(
+    'button',
+    { class: 'cp-icon-btn', type: 'button', title: '吸管：点这里，然后到画布上点一格取色', onclick: () => cb.onPickFromCanvas() },
+    ['⌖'],
+  )
+  const hexRow = el('div', { class: 'cp-hexrow' }, [el('span', { class: 'cp-hex-label' }, ['Hex']), hexInput, pickerBtn])
 
   /* ---- 色板 ---- */
   const swatchHost = el('div', { class: 'cp-swatches' })
 
   const closeBtn = el('button', { class: 'btn tiny', type: 'button', onclick: () => cb.onClose() }, ['收起'])
 
-  const panel = el('div', { class: 'cp' }, [tabs, wheelRow, alphaTrack, fieldsHost, swatchHost, el('div', { class: 'cp-foot' }, [closeBtn])])
+  const panel = el('div', { class: 'cp' }, [tabs, wheelRow, fieldsHost, hexRow, swatchHost, el('div', { class: 'cp-foot' }, [closeBtn])])
   clear(host)
   host.append(panel)
 
@@ -146,8 +229,9 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
   let lastDrawnV = Number.NaN
 
   /**
-   * 画色轮：**中心白、外圈饱和**（Blender 的 HSV 圆盘 = 饱和度沿半径、色相沿角度）。
-   * 只在明度变化时重画（拖动游标只改 transform，避免每帧重算 184² 像素）。
+   * 画色轮：**中心白、外圈饱和**（HSV 圆盘 = 饱和度沿半径线性递增、色相沿角度）。
+   * 实测：0°(红) 在正下方、顺时针；整体画在当前明度 V 上。
+   * 只在明度变化时重画（拖动游标只改 transform，避免每帧重算 156² 像素）。
    */
   function drawWheel(): void {
     if (!wheelCtx) return
@@ -165,9 +249,8 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
           img.data[o + 3] = 0
           continue
         }
-        let ang = (Math.atan2(dy, dx) * 180) / Math.PI
-        if (ang < 0) ang += 360
-        const c = hsvToRgb(ang, Math.min(1, d), v)
+        const ang = (Math.atan2(dy, dx) * 180) / Math.PI
+        const c = hsvToRgb(angleToHue(ang < 0 ? ang + 360 : ang), Math.min(1, d), v)
         img.data[o] = c.r
         img.data[o + 1] = c.g
         img.data[o + 2] = c.b
@@ -179,7 +262,7 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     lastDrawnV = v
   }
 
-  /** 明度竖条：上亮下暗（与 Blender 一致），底部固定为黑 */
+  /** 明度竖条：上亮下暗（与参考图一致），底部固定为黑 */
   function drawValueBar(): void {
     const ctx = valueBarCanvas.getContext('2d')
     if (!ctx) return
@@ -201,42 +284,53 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
 
   function positionCursor(): void {
     const r = WHEEL_SIZE / 2
-    const ang = (hsv.h * Math.PI) / 180
+    const ang = (hueToAngle(hsv.h) * Math.PI) / 180
     const dist = Math.max(0, Math.min(1, hsv.s)) * r
-    cursor.style.transform = `translate(${r + Math.cos(ang) * dist - 7}px, ${r + Math.sin(ang) * dist - 7}px)`
+    cursor.style.transform = `translate(${r + Math.cos(ang) * dist - CURSOR_R}px, ${r + Math.sin(ang) * dist - CURSOR_R}px)`
   }
 
   function paintTracks(): void {
-    const hex = hexOfHsv()
-    // 明度竖条游标（顶=100，底=0）
+    // 明度滑块（顶=1，底=0）
     valueKnob.style.top = `${(1 - hsv.v) * 100}%`
-    // 透明度横条：左透明 → 右当前色
-    alphaTrack.style.setProperty('--alpha-color', hex)
-    // 透明态 = 游标在最左（与"最左 = 全透明"的语义一致）
-    alphaKnob.style.left = `${cb.isTransparent() ? 0 : 100}%`
+    const transparent = cb.isTransparent()
+    alphaRow.classList.toggle('is-transparent', transparent)
+    alphaRow.title = transparent
+      ? '当前是「透明色」：拖到右侧恢复实色，或点下方色板选色'
+      : '拖到最左 = 选「透明色」（画笔 / 填充 / 形状 / X 删除都变成挖洞）'
   }
 
   function paintFields(): void {
-    const hex = hexOfHsv()
+    const hex = currentHex
     const c = hexToRgb(hex)
+    const transparent = cb.isTransparent()
     const set = (key: string, value: string) => {
       const input = fieldInputs.get(key)
       if (input && document.activeElement !== input) input.value = value
     }
-    // 三个模型共用同一组输入框：切换标签时换单位与显隐
-    for (const key of ['R', 'G', 'B', 'H', 'S', 'V', 'Hex']) {
-      const node = fieldInputs.get(key)?.parentElement
-      if (!node) continue
-      const show = model === 'rgb' ? key === 'R' || key === 'G' || key === 'B' : model === 'hsv' ? key === 'H' || key === 'S' || key === 'V' : key === 'Hex'
-      node.style.display = show ? '' : 'none'
+    const fill = (key: string, ratio: number) => {
+      const node = rowFills.get(key)
+      if (node) node.style.width = `${(Math.max(0, Math.min(1, ratio)) * 100).toFixed(2)}%`
     }
-    set('R', String(c.r))
-    set('G', String(c.g))
-    set('B', String(c.b))
-    set('H', String(Math.round(hsv.h)))
-    set('S', String(Math.round(hsv.s * 100)))
-    set('V', String(Math.round(hsv.v * 100)))
+    set('R', norm3(c.r / 255))
+    fill('R', c.r / 255)
+    set('G', norm3(c.g / 255))
+    fill('G', c.g / 255)
+    set('B', norm3(c.b / 255))
+    fill('B', c.b / 255)
+    set('H', norm3(hsv.h / 360))
+    fill('H', hsv.h / 360)
+    set('S', norm3(hsv.s))
+    fill('S', hsv.s)
+    set('V', norm3(hsv.v))
+    fill('V', hsv.v)
+    set('Alpha', transparent ? '0.000' : '1.000')
+    fill('Alpha', transparent ? 0 : 1)
     set('Hex', hex.toUpperCase())
+    // 三行模型行共用：切换标签只换 R/G/B ↔ H/S/V 的显隐（Alpha / Hex 常驻）
+    for (const spec of ROW_SPECS) {
+      const node = rowNodes.get(spec.key)
+      if (node) node.style.display = spec.model === model ? '' : 'none'
+    }
   }
 
   function paintSwatches(): void {
@@ -250,7 +344,7 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
           el('span', { class: 'cp-swatch-name' }, [group.name]),
           ...group.colors.slice(0, 32).map((hex) =>
             el('button', {
-              class: `cp-swatch${cb.isTransparent() ? '' : ''}`,
+              class: 'cp-swatch',
               type: 'button',
               title: hex,
               style: { background: hex, color: colorTextOn(hex) },
@@ -280,6 +374,15 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
 
   /** 数值行（按当前模型解析输入） */
   function applyNumberField(key: string, raw: string): void {
+    if (key === 'Alpha') {
+      // Alpha 只有"实色 / 透明"两态：0（或任意小值）→ 透明，其余 → 实色
+      const v = Number(raw)
+      if (!Number.isFinite(v)) return
+      if (v <= ALPHA_ZERO_ZONE) cb.onTransparent()
+      else cb.onCommit(currentHex)
+      repaint()
+      return
+    }
     if (key === 'Hex') {
       const norm = normalizeHex(raw)
       if (!norm) return
@@ -290,18 +393,11 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     }
     const value = Number(raw)
     if (!Number.isFinite(value)) return
-    const clamp = (v: number, max: number) => Math.max(0, Math.min(max, Math.round(v)))
-    if (key === 'R' || key === 'G' || key === 'B') {
-      const c = hexToRgb(hexOfHsv())
-      const next = { ...c, [key.toLowerCase()]: clamp(value, 255) }
-      hsv = rgbToHsv(next.r, next.g, next.b)
-    } else {
-      const map: Record<string, [keyof typeof hsv, number]> = { H: ['h', 360], S: ['s', 100], V: ['v', 100] }
-      const [field, max] = map[key]
-      const v = clamp(value, max)
-      hsv = { ...hsv, [field]: max === 100 ? v / 100 : v }
-    }
-    cb.onCommit(hexOfHsv())
+    // 输入兼容两种刻度：0–1（界面显示值）与旧习惯刻度（R/G/B 用 0–255、H 用 0–360、S/V 用 0–100）。
+    // 统一换算成"归一化比例"后交给 setChannelRatio——与拖动滑条走同一条路径。
+    const legacy = key === 'R' || key === 'G' || key === 'B' ? 255 : key === 'H' ? 360 : 100
+    setChannelRatio(key, value > 1 ? value / legacy : value)
+    cb.onCommit(currentHex)
     repaint()
   }
 
@@ -319,13 +415,18 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     }
   }
 
-  /** 拖动中的轻量刷新：只动数值/游标/渐变 */
+  /** 拖动中的轻量刷新：只动数值/游标/填充宽度（不重建 DOM） */
   function refresh(): void {
     if (!Number.isFinite(lastDrawnV) || Math.abs(lastDrawnV - hsv.v) > 1e-6) drawWheel()
     drawValueBar()
     positionCursor()
     paintTracks()
     paintFields()
+  }
+
+  /** HSV 变更后把 hex 同步回来（保持 currentHex 始终等于当前显示色） */
+  function syncHexFromHsv(): void {
+    currentHex = hexOfHsv()
   }
 
   /** 结构性刷新（切换颜色 / 色板变化） */
@@ -346,6 +447,7 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     const norm = normalizeHex(hex)
     if (!norm) return
     hsv = rgbToHsv(...rgbTuple(norm))
+    currentHex = norm
     cb.onCommit(norm)
     repaint()
   }
@@ -360,10 +462,9 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     const dx = (e.clientX - rect.left - r) / r
     const dy = (e.clientY - rect.top - r) / r
     const d = Math.sqrt(dx * dx + dy * dy)
-    let ang = (Math.atan2(dy, dx) * 180) / Math.PI
-    if (ang < 0) ang += 360
-    // 拖到圆外时饱和度夹到 1（Blender 同样如此），不把游标甩出去
-    return { h: ang, s: Math.min(1, d) }
+    const ang = (Math.atan2(dy, dx) * 180) / Math.PI
+    // 拖到圆外时饱和度夹到 1（参考图同样如此），不把游标甩出去
+    return { h: angleToHue(ang < 0 ? ang + 360 : ang), s: Math.min(1, d) }
   }
 
   wheelCanvas.addEventListener('pointerdown', (e: PointerEvent) => {
@@ -372,7 +473,8 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     dragging = 'wheel'
     safeCapture(wheelCanvas, e.pointerId)
     hsv = { ...hsv, h: pos.h, s: pos.s }
-    cb.onPreview(hexOfHsv())
+    syncHexFromHsv()
+    cb.onPreview(currentHex)
     refresh()
   })
   wheelCanvas.addEventListener('pointermove', (e: PointerEvent) => {
@@ -380,7 +482,8 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     const pos = wheelFromEvent(e)
     if (!pos) return
     hsv = { ...hsv, h: pos.h, s: pos.s }
-    cb.onPreview(hexOfHsv())
+    syncHexFromHsv()
+    cb.onPreview(currentHex)
     refresh()
   })
 
@@ -389,7 +492,8 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     if (!(rect.height > 0)) return
     const ratio = Math.max(0, Math.min(1, 1 - (e.clientY - rect.top) / rect.height))
     hsv = { ...hsv, v: ratio }
-    cb.onPreview(hexOfHsv())
+    syncHexFromHsv()
+    cb.onPreview(currentHex)
     refresh()
   }
   valueBar.addEventListener('pointerdown', (e: PointerEvent) => {
@@ -401,23 +505,89 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     if (dragging === 'value') valueFromEvent(e)
   })
 
-  const alphaFromEvent = (e: PointerEvent): void => {
-    const rect = alphaTrack.getBoundingClientRect()
-    if (!(rect.width > 0)) return
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-    if (ratio <= ALPHA_ZERO_ZONE) {
-      cb.onTransparent()
-    } else {
-      cb.onPreview(hexOfHsv())
+  /**
+   * 按"归一化比例"设置某个通道（0–1）。唯一实现，供两条输入路径共用：
+   *   · 拖动滑条 → 位置比例 → 本函数
+   *   · 手动输入数字 → 解析成比例 → 本函数
+   * 共用一套语义，避免"拖出来的值"和"输入的值"刻度不一致。
+   *
+   * **R/G/B 走字节直改**（不经过 HSV 往返）：HSV⇄RGB 各自都有取整，
+   * 往返一次就可能把值"弹"回原字节——实测把 G 拖到 0.1（期望字节 26）会算回 26，
+   * 于是"怎么拖都不变"。现在直接改字节、只在最后从结果反推一次 HSV，微调能精确落位。
+   */
+  function setChannelRatio(key: string, ratio: number): void {
+    const r = Math.max(0, Math.min(1, ratio))
+    if (key === 'R' || key === 'G' || key === 'B') {
+      // 以 currentHex 为准改一个字节；HSV 只反推一次（不再走 hexOfHsv 造成第二次往返）
+      const c = hexToRgb(currentHex)
+      const byte = Math.max(0, Math.min(255, Math.round(r * 255)))
+      const next = { ...c, [key.toLowerCase()]: byte }
+      currentHex = rgbToHex(next.r, next.g, next.b)
+      hsv = rgbToHsv(next.r, next.g, next.b)
+      return
     }
+    if (key === 'H') {
+      hsv = { ...hsv, h: r * 360 }
+      syncHexFromHsv()
+      return
+    }
+    if (key === 'S') {
+      hsv = { ...hsv, s: r }
+      syncHexFromHsv()
+      return
+    }
+    if (key === 'V') {
+      hsv = { ...hsv, v: r }
+      syncHexFromHsv()
+    }
+  }
+
+  /**
+   * 数值行的拖动：与 Alpha 行同一套写法。
+   * 之所以要有它：这些行看上去就是滑条（整行填充 + 数字），但只有 Alpha 绑了指针事件时，
+   * 另外六行"能看不能拖"——用户反馈的"RGB / HSV 滑条划不动"就是这个原因。
+   */
+  const rowFromEvent = (key: string) => (e: PointerEvent): void => {
+    const node = rowNodes.get(key)
+    if (!node) return
+    const rect = node.getBoundingClientRect()
+    if (!(rect.width > 0)) return // 不可见时 rect 全 0，继续算会除零产生 NaN
+    setChannelRatio(key, (e.clientX - rect.left) / rect.width)
+    cb.onPreview(currentHex)
     refresh()
   }
-  alphaTrack.addEventListener('pointerdown', (e: PointerEvent) => {
+
+  for (const key of sliderKeys) {
+    const node = rowNodes.get(key)
+    if (!node) continue
+    const handler = rowFromEvent(key)
+    node.addEventListener('pointerdown', (e: PointerEvent) => {
+      dragging = key
+      safeCapture(node, e.pointerId)
+      // 拖动时让数值输入框失焦：否则松手时的 change 事件会用输入框旧值把结果盖回去
+      fieldInputs.get(key)?.blur()
+      handler(e)
+    })
+    node.addEventListener('pointermove', (e: PointerEvent) => {
+      if (dragging === key) handler(e)
+    })
+  }
+
+  const alphaFromEvent = (e: PointerEvent): void => {
+    const rect = alphaRow.getBoundingClientRect()
+    if (!(rect.width > 0)) return
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+    alphaOpaque = ratio > ALPHA_ZERO_ZONE
+    if (alphaOpaque) cb.onPreview(currentHex)
+    else cb.onTransparent()
+    refresh()
+  }
+  alphaRow.addEventListener('pointerdown', (e: PointerEvent) => {
     dragging = 'alpha'
-    safeCapture(alphaTrack, e.pointerId)
+    safeCapture(alphaRow, e.pointerId)
     alphaFromEvent(e)
   })
-  alphaTrack.addEventListener('pointermove', (e: PointerEvent) => {
+  alphaRow.addEventListener('pointermove', (e: PointerEvent) => {
     if (dragging === 'alpha') alphaFromEvent(e)
   })
 
@@ -425,8 +595,9 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     if (!dragging) return
     const finished = dragging
     dragging = null
-    if (finished === 'alpha' && cb.isTransparent()) return
-    cb.onCommit(hexOfHsv())
+    // 停在透明区：不提交（透明色由 onTransparent 直接改 store，不进撤销栈）
+    if (finished === 'alpha' && !alphaOpaque) return
+    cb.onCommit(currentHex)
   }
   window.addEventListener('pointerup', endDrag)
   window.addEventListener('pointercancel', endDrag)
@@ -441,7 +612,11 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
       const prevValue = state.value
       state = { ...state, ...patch }
       if (patch.value && (targetChanged || patch.value !== prevValue) && dragging === null) {
-        hsv = rgbToHsv(...rgbTuple(patch.value))
+        const norm = normalizeHex(patch.value)
+        if (norm) {
+          currentHex = norm
+          hsv = rgbToHsv(...rgbTuple(norm))
+        }
       }
       repaint()
     },

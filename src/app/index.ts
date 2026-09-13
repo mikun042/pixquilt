@@ -957,7 +957,7 @@ function showHelp(): void {
     ['空格+拖动 / 中键拖动', '平移画布'],
     ['Ctrl+Z / Ctrl+Y', '撤销 / 重做'],
     ['Ctrl+S', '导出 PNG（1 倍）'],
-    ['点主色/背景色块', '打开取色器（Blender 结构：色轮 + 明度条 + 透明度条 + RGB/HSV/Hex）'],
+    ['点主色/背景色块', '打开取色器（Blender 结构：色轮 + 明度条 + RGB/HSV 两段 + 红/绿/蓝、Alpha 滑条 + Hex 行）'],
     ['右上角「导出 ▾」', 'PNG 各倍数 / 拼豆图纸 / 像素与项目 JSON'],
   ]
   const table = el('table')

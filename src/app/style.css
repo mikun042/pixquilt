@@ -374,120 +374,181 @@ input[type="color"] {
 
 /* ------------------------------------------------------------------ 取色器（Blender 结构） */
 
+/*
+ * 参考图实测配色：#181818 底 / #545454 控件底 / #4772b3 强调蓝 / #e6e6e6 主文字 / #a7a7a7 次文字。
+ * 这些只在本作用域内覆盖变量（下面 .cp 里的 --line/--text/--dim），不会外溢到界面其它区域。
+ * 尺寸：.cp 内容宽 176 = 色轮 156 + 间隙 6 + 明度条 14 —— 正好填满，不溢出。
+ */
 .cp {
+  --cp-bg: #181818;      /* 面板底 + 行间分隔线 */
+  --cp-slot: #545454;    /* 滑条未填充槽 / 未激活标签 */
+  --cp-fill: #4772b3;    /* 滑条填充 / 激活标签 */
+  --cp-field: #1d1d1d;   /* Hex 输入框底 */
+  --line: #545454;
+  --text: #e6e6e6;
+  --dim: #a7a7a7;
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 9px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #202430;
+  background: var(--cp-bg);
 }
 
-/* 顶部色彩模型标签（RGB / HSV / Hex） */
+/* 顶部色彩模型标签：两个分段共用一个圆角容器，无缝隙、各占一半（参考图实测） */
 .cp-tabs {
   display: flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 6px;
-  background: #171a22;
+  height: 26px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--cp-slot);
 }
 .cp-tab {
   flex: 1;
-  padding: 4px 6px;
   font: inherit;
-  font-size: 11px;
-  color: var(--dim);
+  font-size: 12px;
+  color: var(--text);
   background: none;
   border: 0;
-  border-radius: 4px;
   cursor: pointer;
+  text-shadow: 0 1px 0 #00000066;
 }
-.cp-tab:hover { color: var(--text); }
-.cp-tab.active { background: var(--accent-2); color: #fff; }
+.cp-tab:hover { color: #fff; }
+.cp-tab.active { background: var(--cp-fill); color: #fff; }
 
 /* 色轮 + 右侧明度竖条 */
-.cp-wheel-row { display: flex; gap: 8px; align-items: flex-start; justify-content: center; }
+.cp-wheel-row { display: flex; align-items: flex-start; }
 .cp-wheel-wrap { position: relative; flex: none; }
 .cp-wheel { display: block; border-radius: 50%; cursor: crosshair; touch-action: none; }
 
-/* 游标：一个空心圆环 + 中心点，和 Blender 一样能在任意背景上看清 */
+/* 游标：细圈（参考图直径≈轮径 8%、描边约 1.5px、无中心点），浅色 + 极淡暗描边保证亮底上也看得见 */
 .cp-cursor {
   position: absolute;
   top: 0;
   left: 0;
-  width: 14px;
-  height: 14px;
-  border: 2px solid #fff;
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid #dcdcdc;
   border-radius: 50%;
-  box-shadow: 0 0 0 1px #000a, inset 0 0 0 1px #0006;
+  box-shadow: 0 0 0 1px #00000045;
   pointer-events: none;
 }
 
-.cp-bar-col { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.cp-bar-wrap { position: relative; border-radius: 4px; overflow: hidden; cursor: ns-resize; touch-action: none; }
+.cp-bar-wrap { position: relative; cursor: ns-resize; touch-action: none; }
 .cp-bar { display: block; }
+/*
+ * 明度滑块：参考图实测是"悬出条宽"的浅色方块（内芯约 9px + 浅描边），
+ * 上下各留 ~1.5px 深色分隔。用 box-shadow 画上下两条深色带，不需要额外 DOM。
+ */
 .cp-vknob {
   position: absolute;
   left: -2px;
   right: -2px;
-  height: 3px;
-  margin-top: -1.5px;
-  background: #fff;
-  border: 1px solid #0008;
-  border-radius: 2px;
+  height: 10px;
+  margin-top: -5px;
+  background: #ffffff2e;
+  border: 1px solid #e6e6e6;
+  border-radius: 1px;
+  box-shadow: 0 -2px 0 var(--cp-bg), 0 2px 0 var(--cp-bg);
   pointer-events: none;
 }
 
+/* Hex 行右侧的吸管按钮（参考图是 27×27 的 #545454 方块） */
 .cp-icon-btn {
-  width: 22px;
-  height: 22px;
+  width: 27px;
+  height: 27px;
+  flex: none;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text);
-  background: var(--bg-3);
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  background: var(--cp-slot);
+  border: 0;
+  border-radius: 3px;
   cursor: pointer;
 }
-.cp-icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+.cp-icon-btn:hover { background: var(--cp-fill); color: #fff; }
 
-/* 透明度横条：左侧棋盘（透明）→ 右侧当前色 */
-.cp-alpha {
-  position: relative;
-  height: 18px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
+/*
+ * Alpha 行：与上面三行同组同款整行滑条（保留 .cp-alpha 类名，自动化断言依赖它）。
+ * 唯一差别：未填充槽用棋盘格——本工具的 alpha 是"透明色"开关，0.000 时能一眼看出是透明；
+ * 1.000 时填充全蓝，与参考图完全一致（参考图只出现过 1.000 这一态）。
+ */
+.cp-row.cp-alpha {
   cursor: ew-resize;
   touch-action: none;
-  background-image: linear-gradient(to right, transparent, var(--alpha-color, #000)),
-    repeating-conic-gradient(#3a3d47 0 25%, #2c2f38 0 50%) 0 0 / 10px 10px;
-}
-.cp-knob {
-  position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 4px;
-  margin-left: -2px;
-  background: #fff;
-  border: 1px solid #0008;
-  border-radius: 2px;
-  pointer-events: none;
+  background: repeating-conic-gradient(#3a3d47 0 25%, #2c2f38 0 50%) 0 0 / 8px 8px;
 }
 
-/* 数值行 */
-.cp-fields { display: flex; gap: 6px; }
-.cp-field { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
-.cp-field-label { font-size: 10px; color: var(--dim); }
-.cp-num {
-  width: 100%;
-  padding: 3px 5px;
-  font-family: var(--mono);
+/* 数值行组：四行紧贴、行间 1px 深色分隔、整组圆角 3px（参考图实测） */
+.cp-fields {
+  display: flex;
+  flex-direction: column;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.cp-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 27px;
+  background: var(--cp-slot);
+}
+.cp-row:not(:last-child) { border-bottom: 1px solid var(--cp-bg); }
+/* 蓝色填充层：宽度 = 数值占满量的比例（0.800 → 80%），由 paintFields() 写入 */
+.cp-row-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  background: var(--cp-fill);
+}
+/* 标签与数值必须 position:relative，否则会被绝对定位的填充层盖住 */
+.cp-row-label {
+  position: relative;
+  flex: 1;
+  padding-left: 10px;
   font-size: 12px;
   color: var(--text);
-  background: var(--bg-3);
+  text-shadow: 0 1px 0 #00000066;
+}
+/* 数值输入：整行滑条里的数字是"平铺"在行上的，必须盖掉全局 input 样式（271 行那条
+   input[type="text"] 选择器特异性比单个类高，所以这里写成 .cp-row .cp-num） */
+.cp-row .cp-num,
+.cp-hexrow .cp-num {
+  position: relative;
+  font: inherit;
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+}
+.cp-row .cp-num {
+  width: 66px;
+  padding: 0 10px 0 0;
+  text-align: right;
+}
+.cp-row .cp-num:focus,
+.cp-hexrow .cp-num:focus { color: #fff; }
+
+/* Hex 行（常驻）：灰标签 + 深色输入框 + 吸管按钮 */
+.cp-hexrow { display: flex; align-items: center; gap: 6px; }
+.cp-hex-label { font-size: 12px; color: var(--dim); }
+.cp-hexrow .cp-num {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  height: 27px;
+  padding: 0 8px;
+  text-align: left;
+  font-family: var(--mono);
+  background: var(--cp-field);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 3px;
 }
 
 /* 色板 */

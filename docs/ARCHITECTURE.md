@@ -148,3 +148,28 @@ npm run typecheck && npm test && npm run build && node tool/artc.mjs --selftest 
 - Node 端只直接解码 PNG；JPEG/WebP/GIF/AVIF/BMP/ICO/SVG 需走浏览器通道或先转格式。
 - `getInfo().hasEdits` 目前恒为 `false`（UI 的"有编辑"标记由 store 维护，尚未接进 API）——这是一个已知缺口，接上后需要同步 `docs/AGENT_API.md`。
 - 拼豆品牌色卡是**通用近似色**，不是任何品牌的官方色号；用户应导出/导入自己的 `.hex`（支持 `编号 #rrggbb` 两列格式）。
+
+### 8.4 数值滑条"划不动"——两个叠在一起的原因
+
+另一位 agent 按参考图把数值行改成了"整行填充条 + 归一化小数"（RGB/HSV/Alpha 同一形态），
+但用户反馈 **RGB 与 HSV 滑条拖不动**。排查发现是两个独立问题叠在一起：
+
+1. **六行根本没绑拖拽事件**：只给 Alpha 行写了 `pointerdown` / `pointermove`，
+   R/G/B/H/S/V 六行只有文本输入的 `onchange`——看上去是滑条，实际上只能手输数字。
+   → 抽出 `setChannelRatio(key, ratio)` 作为**唯一设值入口**，拖动与手动输入共用；
+   再给六行统一绑指针事件（与 Alpha 行同一套写法，含 `safeCapture` 与零尺寸守卫）。
+
+2. **改一个通道经过两次往返会"弹回去"**：最初实现是
+   `hex → RGB → 改字节 → HSV → hex → RGB`，而 HSV⇄RGB 与 hex 解析各自都要取整，
+   ±1 误差叠起来会让值回到原字节——实测把 G 拖到 0.1（期望 26）算回 26，表现为"怎么拖都不变"。
+   → 把 **hex 作为字节级真源**（`currentHex`）：RGB 操作直接改字节、只在最后反推一次 HSV；
+   HSV 操作（色轮/明度/H·S·V）改 `hsv` 后调用 `syncHexFromHsv()` 写回。
+   全部 `cb.onPreview` / `cb.onCommit` 都传 `currentHex`，保证"显示值 = 提交值"。
+
+**测试数据也要讲道理**：新增的 `tool/e2e-slider.mjs` 一开始从 `#1a1a1a` 起拖 G 到 10%，
+而该色 G 本来就是 26/255≈0.102——取整回同一个字节，**"没变化"是正确行为**，却让断言误报。
+改为从 `#808080`（三通道都在中位）起步，每个通道才有足够行程。
+**断言失败时先确认"期望值在几何/数值上可达"**，再怀疑代码。
+
+回归防线：`tool/e2e-slider.mjs`（10 项：六行逐行拖动、标签切换后的显隐、手动输入、
+连续拖动、零尺寸免疫），已并入 `npm run verify`。
