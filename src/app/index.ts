@@ -630,33 +630,55 @@ function buildHeader(): void {
   modeSelect.dataset.testid = 'mode'
   modeHost.append(modeSelect)
 
-  /* ---- 左侧：编辑操作（随手可及，且撤销/重做直接反映可用状态） ---- */
-  undoBtn = el('button', { class: 'btn', title: '撤销（Ctrl+Z）', onclick: undo }, ['↶ 撤销'])
-  redoBtn = el('button', { class: 'btn', title: '重做（Ctrl+Y / Ctrl+Shift+Z）', onclick: redo }, ['↷ 重做'])
-  regenerateBtn = el('button', {
-    class: 'btn',
-    title: '用当前参数重新转换（有手动编辑时会先确认）',
-    onclick: () => {
-      if (store.get('hasEdits') && !confirm('重新转换会覆盖当前的手动编辑，继续？')) return
-      regenerate()
+  /* ---- 右侧：编辑操作（与导入/导出同处右上角；窄屏自动收成图标） ---- */
+  undoBtn = el(
+    'button',
+    { class: 'btn act', title: '撤销（Ctrl+Z）', 'aria-label': '撤销', onclick: undo },
+    [el('span', { class: 'act-icon' }, ['↶']), el('span', { class: 'act-label' }, ['撤销'])],
+  )
+  redoBtn = el(
+    'button',
+    { class: 'btn act', title: '重做（Ctrl+Y / Ctrl+Shift+Z）', 'aria-label': '重做', onclick: redo },
+    [el('span', { class: 'act-icon' }, ['↷']), el('span', { class: 'act-label' }, ['重做'])],
+  )
+  regenerateBtn = el(
+    'button',
+    {
+      class: 'btn act',
+      title: '用当前参数重新转换（有手动编辑时会先确认）',
+      'aria-label': '重新转换',
+      onclick: () => {
+        if (store.get('hasEdits') && !confirm('重新转换会覆盖当前的手动编辑，继续？')) return
+        regenerate()
+      },
     },
-  }, ['重新转换'])
-  newBtn = el('button', {
-    class: 'btn',
-    title: '清空画布与素材，重新开始',
-    onclick: () => {
-      if (app.art && !confirm('清空当前画布？未导出的内容会丢失。')) return
-      app.art = null
-      app.source = null
-      app.sourceName = ''
-      app.refImage = null
-      resetHistory()
-      canvasApi.setArt(null)
-      store.setMany({ hasEdits: false, selectedCount: 0, clipboardHas: false })
-      renderAll()
+    [el('span', { class: 'act-icon' }, ['⟳']), el('span', { class: 'act-label' }, ['重新转换'])],
+  )
+  newBtn = el(
+    'button',
+    {
+      class: 'btn act',
+      title: '清空画布与素材，重新开始',
+      'aria-label': '新建',
+      onclick: () => {
+        if (app.art && !confirm('清空当前画布？未导出的内容会丢失。')) return
+        app.art = null
+        app.source = null
+        app.sourceName = ''
+        app.refImage = null
+        resetHistory()
+        canvasApi.setArt(null)
+        store.setMany({ hasEdits: false, selectedCount: 0, clipboardHas: false })
+        renderAll()
+      },
     },
-  }, ['新建'])
-  const helpBtn = el('button', { class: 'btn', title: '快捷键速查（?）', onclick: showHelp }, ['? 快捷键'])
+    [el('span', { class: 'act-icon' }, ['✚']), el('span', { class: 'act-label' }, ['新建'])],
+  )
+  const helpBtn = el(
+    'button',
+    { class: 'btn act', title: '快捷键速查（?）', 'aria-label': '快捷键速查', onclick: showHelp },
+    [el('span', { class: 'act-icon' }, ['?']), el('span', { class: 'act-label' }, ['快捷键'])],
+  )
   actionsHost.append(undoBtn, redoBtn, regenerateBtn, newBtn, helpBtn)
 
   /* ---- 右上角：导入图片 ---- */

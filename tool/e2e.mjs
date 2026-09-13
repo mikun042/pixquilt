@@ -229,30 +229,42 @@ async function main() {
       params: !!document.getElementById('panel-params'),
       palette: !!document.getElementById('panel-palette'),
       status: !!document.getElementById('statusbar'),
-      leftActions: document.querySelectorAll('#header-actions button').length,
+      rightActions: document.querySelectorAll('.header-right #header-actions button').length,
+      leftButtons: document.querySelectorAll('.header-left button').length,
       importBtn: document.getElementById('btn-import')?.textContent || '',
       exportBtn: document.getElementById('btn-export')?.textContent || '',
       modeOptions: document.querySelectorAll('#header-mode select option').length,
       modeInRight: !!document.querySelector('.header-right #header-mode'),
-      importInLeft: !!document.querySelector('.header-left #btn-import')
+      modeInLeft: !!document.querySelector('.header-left #header-mode'),
+      importInLeft: !!document.querySelector('.header-left #btn-import'),
+      importInRight: !!document.querySelector('.header-right #btn-import'),
+      exportInRight: !!document.querySelector('.header-right #btn-export'),
+      leftText: document.querySelector('.header-left')?.textContent || ''
     })`)
     check('UI 装配：工具/画布/参数/色板/状态栏 + 顶栏分组', () => {
       const u = JSON.parse(ui)
       assert(u.board, 'canvas 缺失')
       assert(u.tools === 6, `工具按钮应为 6，实际 ${u.tools}`)
       assert(u.params && u.palette && u.status, '面板或状态栏缺失')
-      assert(u.leftActions >= 5, `左侧编辑操作过少：${u.leftActions}`)
+      assert(u.rightActions >= 5, `右上角动作按钮过少：${u.rightActions}`)
       assert(u.importBtn.includes('导入'), `右上角缺「导入图片」按钮：${u.importBtn}`)
       assert(u.exportBtn.includes('导出'), `右上角缺「导出」按钮：${u.exportBtn}`)
       assert(u.modeOptions === 3, `模式切换应有 3 个选项，实际 ${u.modeOptions}`)
-      return `${u.tools} 工具 / 模式 3 项 / 右上角「${u.importBtn}」「${u.exportBtn}」`
+      return `${u.tools} 工具 / 右上角 ${u.rightActions} 个动作 + 导入 + 导出 / 模式 3 项`
     })
 
-    check('顶栏布局：导入导出在右上角，模式切换仍在左侧', () => {
+    check('顶栏布局：只有模式切换留在左侧，其余动作全在右上角', () => {
       const u = JSON.parse(ui)
+      assert(u.modeInLeft, '模式切换必须留在左侧')
       assert(!u.modeInRight, '模式切换不应被移到右上角（用户要求保持原位）')
-      assert(!u.importInLeft, '「导入图片」应该移到右上角，而不是留在左侧')
-      return '分组正确'
+      assert(!u.importInLeft && u.importInRight, '「导入图片」应在右上角')
+      assert(u.exportInRight, '「导出」应在右上角')
+      assert(u.leftButtons === 0, `左侧不应再有按钮，实际 ${u.leftButtons} 个`)
+      // 左侧只应出现品牌与模式文字（不应残留"撤销/新建"等动作文案）
+      for (const word of ['撤销', '重做', '重新转换', '新建', '导入', '导出']) {
+        assert(!u.leftText.includes(word), `左侧仍残留「${word}」`)
+      }
+      return '左侧仅品牌 + 模式切换'
     })
 
     // 导出菜单：点开应出现条目、再点收起（并且不能被一次重渲染冲掉）

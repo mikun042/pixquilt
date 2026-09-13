@@ -13,14 +13,18 @@
 <body>
 <div class="app">
   <header class="header">
-    <!-- 左侧：品牌 + 模式切换 + 编辑操作（撤销/重做/重新转换/新建）
-         右上角：导入图片 / 导出菜单（高频动作贴边，符合"文件操作用户找右上角"的直觉） -->
+    <!--
+      顶栏分两组：
+        左侧 = 品牌 + 模式切换（工作模式的锚点，位置固定不动）
+        右侧 = 其余全部操作：撤销 / 重做 / 重新转换 / 新建 / 快捷键 / 导入 / 导出
+      依据是桌面软件的肌肉记忆：动作按钮集中在右上角，左侧只放"当前处于什么状态"。
+    -->
     <div class="header-left">
       <div class="logo">▦ 像素画工作台</div>
       <div class="header-mode" id="header-mode"></div>
-      <div class="header-actions" id="header-actions"></div>
     </div>
     <div class="header-right">
+      <div class="header-actions" id="header-actions"></div>
       <button class="btn" id="btn-import" type="button"></button>
       <div class="menu-anchor" id="export-anchor">
         <button class="btn primary" id="btn-export" type="button" aria-haspopup="menu" aria-expanded="false"></button>
