@@ -5,7 +5,7 @@
  * 拼豆用户要的不是 PNG，而是**号色 + 数量 + 分板位置**。
  *
  * 全部是纯函数（只产出字符串/结构），因此 CLI 与 UI 都能用，且能被单测完整覆盖。
- * 对应计划：重构计划.md §17。
+ * 拼豆模式的完整说明见 docs/USAGE.md「拼豆用户注意」。
  */
 import { ALPHA_THRESHOLD, type PixelArt } from './types.ts'
 import { hexToRgb, luminance } from './color.ts'

@@ -3,7 +3,7 @@
  *
  * 与 `export.ts` 的分工：这里只管**像素**，`export.ts` 管**序列化**（JSON / 项目文件 / 图集 / 指纹）。
  * 分开的原因很实际：浏览器与 Node 都需要"画布 → RGBA"，但只有 Node 需要把 RGBA 压成 PNG 字节，
- * 混在一起会让浏览器包被迫依赖 zlib（本次重构踩到的分层缺陷，见 重构计划 §15.1 R1）。
+ * 混在一起会让浏览器包被迫依赖 zlib（分层缺陷，见 docs/DEVELOPMENT.md §6 第 1 条）。
  */
 import { ALPHA_THRESHOLD, MAX_EXPORT_PIXELS, MAX_EXPORT_SIDE } from './limits.ts'
 import { hexToRgb } from './color.ts'

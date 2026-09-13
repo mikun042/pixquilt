@@ -1,98 +1,146 @@
-# 像素画工作台（重写版）
+# 像素画工作台
 
 把照片 / 插图一键转成像素画，再逐格精修，最后出**拼豆图纸**或**游戏美术资产**。
-全部处理在你自己的电脑上完成，图片不上传；产物是**一个自包含 HTML**，双击即用。
+
+- **全部在本机完成**，图片不上传。
+- **产物是一个自包含 HTML**，双击即用，零外部依赖。
+- **AI agent 可以不打开浏览器直接批量出图**（CLI + 页内 API 两条路）。
+- 运行期 **0 依赖**；只有 3 个构建期 devDependencies。
+
+---
+
+## 我要用（人类）
 
 ```bash
 npm install
-npm run verify        # 类型检查 + 单测 + 构建 + 自检（四项全绿才算通过）
-npm run dev           # 本地预览（也可直接双击 像素画工作台.html）
+npm run build       # 生成 像素画工作台.html
 ```
 
-## 三条上手路径
+然后**双击根目录的 `像素画工作台.html`**（Chrome / Edge 均可），
+或 `npm run dev` 起本地预览。
 
-**① 人用界面**
+上手三步：**拖入图片 → 右侧调参数 → 顶栏「导出 ▾」**。
 
-双击根目录 `像素画工作台.html`（Chrome / Edge）→ 拖入图片 → 右侧调参 → 左侧工具精修 → 顶栏导出。
+- 完整操作说明：**[docs/USAGE.md](docs/USAGE.md)**（顶栏、参数、工具与快捷键、两种用途、常见问题）
+- 想直接空手画：画布中间的「✚ 新建空白画布」，或顶栏「✚ 新建」
 
-**② AI agent / 脚本批量出图（不需要浏览器）**
+## 我是 AI agent（不打开浏览器）
 
 ```bash
-node tool/artc.mjs --selftest                                  # 先自检（25 项，无需素材）
-node tool/artc.mjs --describe                                  # 打印全部能力/算子/参数（JSON）
-node tool/artc.mjs --in 素材 --out 输出 --palette beads16 --long-edge 58 --bead
-node tool/artc.mjs --in 素材 --out 输出 --palette gameboy --size 32x32 --alpha --sheet 4
+npm install
+node tool/quickstart.mjs      # 一条命令跑通：自省 → 造素材 → 批量 → 拼豆 → 页内 API
 ```
 
-**③ 页内 API（浏览器自动化）**
+这个脚本会**真的产出文件**并打印每一步的结果，同时告诉你下一步该读哪份文档。
+产出全部落在 `.quickstart/`（已在 `.gitignore` 里），看完可以直接删；要换位置用 `--out 目录`。
 
-```js
-await page.evaluate(() => window.pixelArtStudio.describe())   // 先自省：能力 + 算子 + 参数
-const r = await page.evaluate(() => window.pixelArtStudio.render(png, { longEdge: 64, paletteMode: 'preset', presetPaletteId: 'gameboy' }, 8))
+之后按需查：
+
+| 我想…… | 看这里 |
+|---|---|
+| 知道有哪些参数/算子、怎么调 | **[docs/AGENT-QUICKSTART.md](docs/AGENT-QUICKSTART.md)** |
+| 要精确的接口契约 | **[docs/AGENT_API.md](docs/AGENT_API.md)**（**由代码生成**，不会与实现漂移） |
+| 让工具自己说 | `node tool/artc.mjs --describe`（JSON） / `--help` |
+
+最常用的三条命令：
+
+```bash
+# 拼豆图纸：固定号色板 + 只买得到的颜色 → 图纸 SVG + 缺口清单 CSV
+node tool/artc.mjs --in 素材/ --out 输出/ --palette beads16 --long-edge 58 --bead --json
+
+# 游戏素材：精确尺寸 + 真 alpha + 图集坐标表（无损）
+node tool/artc.mjs --in 精灵.png --size 64x64 --style sprite --out 输出/ --json
+
+# 纯程序化出图：不读任何素材，用算子画
+node tool/artc.mjs --blank 32x32 --blank-transparent --ops '@ops.json' --out 输出/ --json
 ```
 
-完整接口手册：`docs/AGENT_API.md`（**由代码生成**，不会与实现漂移）。
-Agent 上手（推荐先跑这个）：`node tool/quickstart.mjs` → 见 `docs/AGENT-QUICKSTART.md`。
+> **agent 必读的两条**：①`--json` 的 stdout 是**纯 JSON**，可直接 parse（进度要加 `--progress`，写 stderr）；
+> ②**未知参数会报错**，不会静默忽略——报告里会指出正确写法。别把"命令成功"当成"参数生效"。
 
-## 两个主要用途
+---
 
-**拼豆图纸**：固定号色板 + 锁色板（只用你买得到的颜色）→ 出 `*_图纸.svg`（格内标号色、板标注、图例）+ `*_缺口清单.csv`（编号 / 颜色 / 格数 / 珠数 / 估算重量 / 建议袋数 / 分板）。
+## 输出示例
 
-**游戏美术资产**：精确尺寸（16/24/32/48/64/128）+ 真 alpha + 命名模板 → 一条命令批量出图 + 图集坐标表（帧等尺寸 + `offsetX/offsetY`，引擎侧直接用）。
+**拼豆图纸**：`*_图纸.svg`（格内标号色、板标注、图例）+ `*_缺口清单.csv`
+（编号 / 颜色 / 格数 / 珠数 / 估算重量 / 建议袋数 / 分板）
+
+```
+编号,颜色,格数,珠数,估算重量(g),建议袋数
+B01,#FFFFFF,1571,1571,125.68,4
+B05,#4A4A4A,442,442,35.36,1
+合计,10 色,3364,3364,269.12,13
+```
+
+**游戏资产**：精确尺寸（16/24/32/48/64/128）+ 真 alpha + 命名模板，
+配套 `_sheet.json` 图集坐标表（帧等尺寸 + `offsetX/offsetY`，引擎侧可直接用）。
+
+---
 
 ## 目录
 
 ```
-像素画工作台.html      ← 交付物（单文件，dist/index.html 的副本，哈希一致）
-src/core/              ← 纯逻辑：零 DOM、零框架、Node 可 import（管线/算子/导出/拼豆/元数据）
-src/io/                ← Node 侧平台绑定（PNG 编解码、文件读取）
-src/app/               ← 浏览器侧：UI、画布、页内 API、平台绑定
-tool/artc.mjs          ← 批处理 CLI（agent 主入口）
-tool/quickstart.mjs    ← Agent 快速上手：一条命令跑通「自省→造素材→批量→拼豆→页内 API」
-tool/build.mjs         ← 单文件构建（内联 CSS + JS）
-tool/describe.mjs      ← 由 src/core/spec.ts 生成 docs/AGENT_API.md
-tool/e2e.mjs           ← 真浏览器端到端冒烟测试（19 项）
-tool/e2e-picker.mjs    ← 取色器专项验证（17 项：几何方向、标签、色板、透明度）
-tool/e2e-slider.mjs    ← 数值滑条专项验证（12 项：逐行拖动、输入、防误触）
-tool/e2e-regressions.mjs ← 已修缺陷的回归防线（13 项：真实鼠标/键盘输入）
-tool/shoot.mjs         ← 截图工具：产出取色器现状截图（与参考图并排比较用）
-tool/ref-analysis.mjs  ← 参考图/截图结构分析（主色直方图、字符画、横向条带）
-docs/                  ← AGENT-QUICKSTART.md · AGENT_API.md（生成）· TESTING-GUIDE.md
-                          · ARCHITECTURE.md · USAGE.md · UI-COLOR-PICKER.md
-重构计划.md             ← 本次重写的设计与决策记录（含可维护性验收门）
+像素画工作台.html        ← 交付物（单文件，dist/index.html 的副本，脚本核对哈希一致）
+src/core/                ← 纯逻辑：零 DOM、零 node: 依赖，Node 可直接 import
+   spec.ts               ←   算子/参数元数据的【单一真源】，驱动文档生成与一致性断言
+   limits.ts             ←   全部魔法数字集中在此
+   pipeline.ts ops.ts    ←   像素化管线 / 12 类编辑算子
+   export.ts bead.ts     ←   序列化、拼豆图纸与缺口清单
+src/io/                  ← Node 侧平台绑定（PNG 编解码、文件 IO）
+src/app/                 ← 浏览器侧：UI、画布、页内 API（automation.ts）
+tool/artc.mjs            ← 批处理 CLI（agent 主入口）
+tool/quickstart.mjs      ← Agent 快速上手（一条命令跑通全链路）
+tool/build.mjs           ← 单文件构建（内联 CSS + JS，核对产物哈希）
+tool/describe.mjs        ← 由 core/spec.ts 生成 docs/AGENT_API.md
+tool/e2e*.mjs            ← 无头浏览器验证（自写零依赖 CDP 客户端）
+docs/                    ← 见下方「文档导航」
 ```
 
-## 验证链（改任何代码后都跑）
+## 文档导航
+
+| 文档 | 给谁看 |
+|---|---|
+| **[docs/USAGE.md](docs/USAGE.md)** | 人类用户：界面怎么用、两种用途、常见问题 |
+| **[docs/AGENT-QUICKSTART.md](docs/AGENT-QUICKSTART.md)** | AI agent：CLI 与页内 API 上手、无损配方、能力边界 |
+| **[docs/AGENT_API.md](docs/AGENT_API.md)** | 接口契约（**生成物**，`npm run describe`） |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 贡献者：铁律、验证链、结构规则、踩过的坑、路线图 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 维护者：分层、数据模型、关键决策、缺陷复盘 |
+| [docs/TESTING-GUIDE.md](docs/TESTING-GUIDE.md) | 外部测试 agent：测试清单与报告格式 |
+| [docs/UI-COLOR-PICKER.md](docs/UI-COLOR-PICKER.md) | 做取色器视觉改造的模型 |
+| [docs/history/](docs/history/) | 想追溯决策与修复过程的人（**归档，不维护**） |
+
+---
+
+## 验证链
 
 ```bash
-npm run verify        # 一次跑完下面六项，全绿才算通过
+npm run verify     # 一次跑完全部，全绿才算通过
 ```
 
-```bash
-npm run typecheck     # tsc 0 错（开着 noUnusedLocals，未用变量会直接报错）
-npm test              # node:test，55 项单元测试（不需要浏览器）
-npm run build         # 生成 dist/index.html 并同步根目录 HTML（脚本核对两文件哈希一致）
-npm run selftest      # 25 项链路自检（引擎/算子/导出/拼豆，不需要浏览器）
-npm run e2e           # 19 项真浏览器端到端（UI 装配 + 绘制 + 导出 + 导入，无头 Edge/Chrome）
-npm run e2e:picker    # 11 项取色器专项（色轮几何方向、标签切换、色板、透明度）
-```
+| 步骤 | 内容 | 需要浏览器 |
+|---|---|---|
+| `typecheck` | `tsc --noEmit` | 否 |
+| `test` | 62 项单元测试 | 否 |
+| `build` | 单文件产物 + 核对两份 HTML 哈希一致 | 否 |
+| `selftest` | 31 项链路自检（不需要素材） | 否 |
+| `e2e` | 20 项端到端 | **是** |
+| `e2e:picker` / `e2e:slider` | 取色器 17 项 / 滑条 12 项 | **是** |
+| `e2e:regressions` | 23 项已修缺陷的回归防线 | **是** |
 
-改 UI 外观时另外两个工具：
+> 数字会过期，以命令输出为准。改 UI 外观另有两个工具：
+> `npm run shoot`（截图）、`npm run ref:analyze -- <png>`（截图结构分析）。
 
-```bash
-npm run shoot                                   # 取色器现状截图 → .tmp-shots/
-npm run ref:analyze -- <png 路径>                # 参考图/截图的结构分析（主色、字符画、条带）
-```
-
-**专门给"看图改 UI"的模型**：`docs/UI-COLOR-PICKER.md` 是取色器改造指南（含 DOM 结构、CSS 变量位置、
-6 条不能碰的约束、常见任务该改哪里、验证清单）。
+---
 
 ## 已知边界（如实声明，不做半成品）
 
-- **多帧动画未实现**：`capabilities().animation === false`。动画素材请逐帧出图后用 `--sheet` 拼图集。数据模型已预留 `frames` 字段（见 `重构计划.md` §4.7）。
-- **Node 端只直接解码 PNG**（位深 8/16、颜色类型 0/2/3/4/6、非隔行）。其他格式走浏览器通道（页内 API）或先转 PNG。
-- **屏幕吸管未实现**（`eyeDropper: false`）：画布取色请用取色工具 `I` 或 `Alt+点击`。
-- 单画布模型：一次处理一张图。
+- **多帧动画未实现**（`capabilities().animation === false`）。逐帧出图后用 `--sheet` 拼图集。
+- **Node 端只直接解码 PNG**。JPEG/WebP/GIF/BMP/AVIF/ICO/SVG 请走浏览器通道（页内 API），或先转 PNG。
+- **屏幕吸管未实现**（`eyeDropper: false`）。画布取色用取色工具 `I` 或 `Alt+点击`。
+- **单画布模型**：一次处理一张图（批量由 CLI 逐张跑）。
+- **拼豆内建色卡是通用近似色**，不是任何品牌官方色号；要严格对应请导入自己的 `.hex`。
+
+其余"还没做但值得做"的项见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §8 路线图。
 
 ## 许可
 

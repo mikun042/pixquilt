@@ -81,7 +81,7 @@ ConvertParams = { longEdge, downsample, cropRatio, paletteMode, paletteK, preset
 ## 7. 怎么验证一个改动是安全的
 
 ```bash
-npm run typecheck && npm test && npm run build && node tool/artc.mjs --selftest && npm run e2e
+npm run verify     # 七步全绿才算通过；每一步的说明见 docs/DEVELOPMENT.md §3
 ```
 
 **测试有效性的判断标准**（比数量重要）：故意改坏一处，看测试是否变红。本项目已用这个方法验证过的断言包括：
@@ -92,9 +92,14 @@ npm run typecheck && npm test && npm run build && node tool/artc.mjs --selftest 
 - 绘制只依赖 rAF → e2e 的"画布真的画出了内容"会红（headless 下 rAF 不产帧时）；
 - 算子表与实现漂移 → 单测"spec.ts 列出的算子与实现完全一致"会红；
 - 量化缓存复用错误索引 → 单测"缓存路径与逐格直接匹配必须逐位一致"会红；
-- 空状态提示盖住画布 → e2e 的"导入图片：转换结果真的显示出来，且空状态已移除"会红。
+- 空状态提示盖住画布 → e2e 的"导入图片：转换结果真的显示出来，且空状态已移除"会红；
+- `cleanup` 报告恒为空 → 单测"cleanup 吃掉的颜色必须如实上报"会红；
+- 页面宣称的算子未实现 → e2e"每个算子都真的能执行"会红（让 `mirror` 抛"未知算子"即可复现）；
+- 两个面板折叠状态存成单值 → 回归断言"能同时收起（不再互相顶开）"会红。
 
-## 8. 上线后修掉的两个真实缺陷（都是静默的，值得记住）
+写新断言时，请把对应的"改坏方式"一并写进提交说明——这是本项目判断测试价值的唯一方式。
+
+## 8. 修掉过的真实缺陷（都是静默的，值得记住）
 
 ### 8.1 「导入图片转换不出来」——不是转换问题，是遮挡
 
@@ -153,13 +158,6 @@ npm run typecheck && npm test && npm run build && node tool/artc.mjs --selftest 
 
 取色器专项验证在 `tool/e2e-picker.mjs`（17 项）、数值滑条专项在 `tool/e2e-slider.mjs`（12 项），
 两者都已并入 `npm run verify`。
-
-## 9. 仍未做的事（诚实清单）
-
-- 多帧动画（数据模型已预留 `frames`，UI/API/导出均未暴露）。
-- Node 端只直接解码 PNG；JPEG/WebP/GIF/AVIF/BMP/ICO/SVG 需走浏览器通道或先转格式。
-- `getInfo().hasEdits` 目前恒为 `false`（UI 的"有编辑"标记由 store 维护，尚未接进 API）——这是一个已知缺口，接上后需要同步 `docs/AGENT_API.md`。
-- 拼豆品牌色卡是**通用近似色**，不是任何品牌的官方色号；用户应导出/导入自己的 `.hex`（支持 `编号 #rrggbb` 两列格式）。
 
 ### 8.4 数值滑条"划不动"——两个叠在一起的原因
 
@@ -279,3 +277,18 @@ CSS 里原本永不可达的 `body.no-rail.no-panel` 才第一次有了意义。
 
 新增断言特意**成对检查"另一个没被顶开"**——只测"单独折叠生效"是抓不到这个 bug 的，
 这也是它当初从 22 条断言里漏过去的原因。
+
+## 9. 仍未做的事（诚实清单）
+
+完整的路线图见 `docs/DEVELOPMENT.md` §8（含价值/风险/做法建议）。这里只列与本文件相关的结构缺口：
+
+- **多帧动画**（数据模型已预留 `frames`，UI/API/导出均未暴露）。**用户明确说"后续再加"，别抢跑。**
+- **Node 端只直接解码 PNG**；JPEG/WebP/GIF/AVIF/BMP/ICO/SVG 需走浏览器通道或先转格式。
+- **没有自动草稿**：刷新页面会丢失未导出的编辑（只有手动导出的项目 JSON）。
+- **拼豆品牌色卡是通用近似色**，不是任何品牌的官方色号；用户应导出/导入自己的 `.hex`（支持 `编号 #rrggbb` 两列格式）。
+- **R1 分层没有静态检查**：`core` 不许依赖 DOM/`node:` 这条规则目前靠"浏览器构建会失败"自然把关，
+  没有 ESLint 规则。若要加静态检查，这是第一个值得补的点（见 `docs/DEVELOPMENT.md` §4）。
+
+> 注：`getInfo().hasEdits` **曾经**恒为 `false`，现已修好并如实反映编辑状态
+> （回归断言：`e2e-regressions.mjs` 的「getInfo().hasEdits 反映真实编辑状态」）。
+> 若在旧文档或旧报告里看到"这是已知缺口"，那条已经过期。

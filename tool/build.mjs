@@ -5,7 +5,7 @@
  * 为什么不用 Vite/Rollup：产物只有一个 HTML，需求是"内联一切"，用 esbuild 一次 bundle
  * 就够（它同时承担 TS 转译与打包），少一层依赖就少一层将来会腐坏的东西。
  *
- * 产物同步（约束来自 重构计划 §15.2）：
+ * 产物同步（约束见 docs/DEVELOPMENT.md §5 第 3 条）：
  *   dist/index.html  ←构建→  根目录 `像素画工作台.html`
  * 两者哈希必须逐位一致；`npm run build` 结束时会自己核对，不一致就直接失败退出。
  */

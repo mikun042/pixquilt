@@ -13,15 +13,15 @@ node tool/quickstart.mjs        # 一条命令跑通全链路，产出落在 .qu
 它会依次做六件事并把每步结论打印出来（我在本机实测通过）：
 
 ```
-1. 自省           apiLevel 2 · 画布上限 2048 格 / 色板 256 色 · 算子 10 类 · 参数 19 项
+1. 自省           apiLevel 2 · 画布上限 2048 格 / 色板 256 色 · 算子 12 类 · 参数 19 项
                   预置色卡：pico8 / gameboy / nes / cga / beads16(带号色) / beads24(带号色)
-                  自检：26/26 通过
+                  自检：31/31 通过
 2. 造素材         自己生成 hero.png / slime.png（96×96，带透明背景）——不依赖仓库里有没有图
 3. 批量出资产     2 张 → 每张精确 32×32、同一套 16 色、透明 484 格；_sheet.json 帧互不相交
 4. 拼豆图纸       缺口清单 14 行（号色 B01/B05/P01… 全部来自色卡）；图纸 SVG 606 KB
                   守恒校验：合计 3364 + 透明 0 = 画布 3364
 5. 页内 API       46 个方法；renderBlank 无副作用出图（18×18 / 3 条算子改动）；PNG 落盘
-6. 产出清单       列出所有产物路径与体积
+6. 产出清单       列出所有产物路径与体积（全部落在 .quickstart/，已 gitignore）
 ```
 
 只跑引擎不看浏览器（CI / 无浏览器环境）：`node tool/quickstart.mjs --no-browser`
@@ -248,6 +248,7 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 | 素材目录里混了 `.svg` 导致整批失败 | 已修复。现在会记进 `skippedFiles` 并以 0 退出；Node 端本来就只解码 PNG，非 PNG 请走浏览器路径 |
 | `--json` 的 stdout 解析失败 | 已修复（stdout 现在是纯 JSON）。若要同时看进度，加 `--progress`（进度写 stderr） |
 | 产物里出现 `undefined.png` | 已修复（0.1.0 之后）。确认产物是当前版本：`git log --oneline -1` |
+| 算子好像"没生效" | 检查 `ops` 放的位置：**`render` 的 `ops` 在第 4 个参数，`renderBlank` 的在第 1 个**。放错位置会直接报错并说明正确写法（以前是静默丢掉算子） |
 
 ---
 
@@ -257,8 +258,9 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 |---|---|
 | `docs/AGENT_API.md` | **完整接口契约**（由 `src/core/spec.ts` 生成，测试保证不与实现漂移） |
 | `docs/TESTING-GUIDE.md` | 如何系统性测试本项目（含自动化清单与防坑要点） |
-| `docs/USAGE.md` | 用户向：参数表、快捷键、FAQ |
-| `docs/ARCHITECTURE.md` | 分层、数据模型、决策记录、已知缺口 |
+| `docs/USAGE.md` | 用户向：界面、参数表、快捷键、FAQ |
+| `docs/DEVELOPMENT.md` | 贡献者向：铁律、验证链、结构规则、踩过的坑、路线图 |
+| `docs/ARCHITECTURE.md` | 分层、数据模型、决策记录、缺陷复盘 |
 | `docs/UI-COLOR-PICKER.md` | 取色器改造指南（给改 UI 的 agent） |
 
 ---

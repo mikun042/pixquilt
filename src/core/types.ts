@@ -92,7 +92,7 @@ export interface PixelArt {
   alphaMask?: Uint8Array | null
   /**
    * 动画帧（**预留**，本期不实现、不读写）。
-   * 见 重构计划.md §4.7：先把单画布做扎实，多帧只占字段位，避免半成品 API 冻结。
+   * 见 docs/DEVELOPMENT.md §8 的 B1：先把单画布做扎实，多帧只占字段位，避免半成品 API 冻结。
    */
   frames?: Frame[] | null
 }
