@@ -49,22 +49,38 @@ src/app/               ← 浏览器侧：UI、画布、页内 API、平台绑�
 tool/artc.mjs          ← 批处理 CLI（agent 主入口）
 tool/build.mjs         ← 单文件构建（内联 CSS + JS）
 tool/describe.mjs      ← 由 src/core/spec.ts 生成 docs/AGENT_API.md
-tool/e2e.mjs           ← 真浏览器端到端冒烟测试
-docs/                  ← AGENT_API.md（生成）· ARCHITECTURE.md · USAGE.md
+tool/e2e.mjs           ← 真浏览器端到端冒烟测试（19 项）
+tool/e2e-picker.mjs    ← 取色器专项验证（11 项：几何方向、标签、色板、透明度）
+tool/shoot.mjs         ← 截图工具：产出取色器现状截图（与参考图并排比较用）
+tool/ref-analysis.mjs  ← 参考图/截图结构分析（主色直方图、字符画、横向条带）
+docs/                  ← AGENT_API.md（生成）· ARCHITECTURE.md · USAGE.md · UI-COLOR-PICKER.md
 重构计划.md             ← 本次重写的设计与决策记录（含可维护性验收门）
 ```
 
 ## 验证链（改任何代码后都跑）
 
 ```bash
-npm run typecheck     # tsc 0 错
-npm test              # node:test，53 项单元测试（不需要浏览器）
-npm run build         # 生成 dist/index.html 并同步根目录 HTML（哈希一致性由脚本核对）
-node tool/artc.mjs --selftest   # 25 项链路自检（引擎/算子/导出/拼豆）
-npm run e2e           # 13 项真浏览器端到端（UI 装配 + 绘制 + 导出，无头 Edge/Chrome）
+npm run verify        # 一次跑完下面六项，全绿才算通过
 ```
 
-`npm run verify` 会依次跑前四项。
+```bash
+npm run typecheck     # tsc 0 错（开着 noUnusedLocals，未用变量会直接报错）
+npm test              # node:test，55 项单元测试（不需要浏览器）
+npm run build         # 生成 dist/index.html 并同步根目录 HTML（脚本核对两文件哈希一致）
+npm run selftest      # 25 项链路自检（引擎/算子/导出/拼豆，不需要浏览器）
+npm run e2e           # 19 项真浏览器端到端（UI 装配 + 绘制 + 导出 + 导入，无头 Edge/Chrome）
+npm run e2e:picker    # 11 项取色器专项（色轮几何方向、标签切换、色板、透明度）
+```
+
+改 UI 外观时另外两个工具：
+
+```bash
+npm run shoot                                   # 取色器现状截图 → .tmp-shots/
+npm run ref:analyze -- <png 路径>                # 参考图/截图的结构分析（主色、字符画、条带）
+```
+
+**专门给"看图改 UI"的模型**：`docs/UI-COLOR-PICKER.md` 是取色器改造指南（含 DOM 结构、CSS 变量位置、
+6 条不能碰的约束、常见任务该改哪里、验证清单）。
 
 ## 已知边界（如实声明，不做半成品）
 

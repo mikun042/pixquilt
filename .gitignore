@@ -7,6 +7,9 @@ dist/
 # 本地试跑产物
 out/
 samples-out/
+# 截图工具（tool/shoot.mjs）的输出：用于"看图改 UI"时与参考图并排比较，不入库
+.tmp-shots/
+.git-msg.tmp
 
 # 编辑器 / 系统
 .vscode/

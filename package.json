@@ -16,6 +16,8 @@
     "selftest": "node tool/artc.mjs --selftest",
     "e2e": "node tool/e2e.mjs",
     "e2e:picker": "node tool/e2e-picker.mjs",
+    "shoot": "node tool/shoot.mjs",
+    "ref:analyze": "node tool/ref-analysis.mjs",
     "dev": "node tool/serve.mjs",
     "verify": "npm run typecheck && npm run test && npm run build && node tool/artc.mjs --selftest && npm run e2e && npm run e2e:picker"
   },
