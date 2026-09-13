@@ -162,7 +162,8 @@ function regenerate(): void {
 
 async function importFile(file: File): Promise<void> {
   try {
-    store.set('busy', true)
+    // 这里曾经写 store.set('busy', ...)，但 store.busy 全 app 层没有任何读取者（死状态）；
+    // 若要给大图加"处理中"提示，应重新引入并接上 UI，而不是留一个没人读的字段。
     const image = await decodeToRgba(file)
     app.source = image
     app.sourceName = file.name
@@ -172,8 +173,6 @@ async function importFile(file: File): Promise<void> {
     toast(`已导入 ${file.name}（${image.width}×${image.height}）`)
   } catch (err) {
     toast(`导入失败：${(err as Error).message}`, 'error')
-  } finally {
-    store.set('busy', false)
   }
 }
 
@@ -368,15 +367,17 @@ function ensurePicker(host: HTMLElement): ColorPickerApi {
 }
 
 /** 取色器下方的色板分组：预置色卡（含拼豆号色）+ 最近使用 + 工作色板 */
+/** 取色器下方的色板分组：本图用色 + 最近使用 + 当前预置色卡 */
 function pickerGroups(): { name: string; colors: string[] }[] {
   const rows = readRecents()
   const preset = getPreset(app.params.presetPaletteId)
   const work = app.art?.palette ?? []
+  // 曾经在这里额外硬编码一个 'PICO-8' 组：当 presetPaletteId 本身就是 pico8 时，
+  // 会渲染出两行同名同色的色块（重复）。预置色卡由上面的"预置"组表达即可。
   return [
     { name: '本图', colors: work.slice(0, 32) },
     { name: '最近', colors: rows.slice(0, 16) },
     { name: preset?.name ?? '预置', colors: (preset?.colors ?? []).slice(0, 32) },
-    { name: 'PICO-8', colors: (getPreset('pico8')?.colors ?? []).slice(0, 16) },
   ].filter((g) => g.colors.length > 0)
 }
 
@@ -1299,7 +1300,18 @@ function boot(): void {
     importImage: importFile,
     decodeImage: decodeToRgba,
     makeThumbnail,
-    blank: makeBlank,
+    // 供 getInfo().hasEdits 读取真值（此前 API 写死 false，编辑后仍报 false，属主动误导）
+    hasEdits: () => store.get('hasEdits'),
+    resetEdits: () => store.set('hasEdits', false),
+    /**
+     * 从 params 推导空白画布规格：UI 的 makeBlank 与 API 的 newCanvas 共用同一份规则。
+     * 此前两者各有一套（尺寸推导相同，但底色一个用 matteColor、一个默认 #000000），行为已分叉。
+     */
+    blankSpec: () => {
+      const w = app.params.exactWidth ?? Math.min(58, app.params.longEdge)
+      const h = app.params.exactHeight ?? Math.min(58, app.params.longEdge)
+      return { width: w, height: h, color: app.params.matteColor, transparent: app.params.transparent === 'alpha' }
+    },
     applyOpsToArt: (ops) => (app.art ? applyOps(app.art, ops, { fallbackColor: store.get('primary'), allowApproxColor: !app.params.lockPalette }) : null),
   })
 

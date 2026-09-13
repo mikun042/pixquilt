@@ -32,7 +32,6 @@ export interface EditorState {
   hoverText: string
   clipboardHas: boolean
   mode: 'photo' | 'beads' | 'asset'
-  busy: boolean
 }
 
 export const initialState: EditorState = {
@@ -51,7 +50,6 @@ export const initialState: EditorState = {
   hoverText: '',
   clipboardHas: false,
   mode: 'photo',
-  busy: false,
 }
 
 type AnyKey = keyof EditorState

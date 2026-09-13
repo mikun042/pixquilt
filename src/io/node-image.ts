@@ -6,7 +6,11 @@
  *
  * 能力边界（**如实声明，不做半成品**）：
  *  - 支持：PNG（位深 8/16，颜色类型 0/2/3/4/6，非隔行）
- *  - 不支持：JPEG / WebP / GIF / AVIF / BMP / ICO / SVG → 由 CLI 的 --browser-decode 走浏览器通道
+ *  - 不支持：JPEG / WebP / GIF / AVIF / BMP / ICO / SVG
+ *    → 两条真实可用的替代路径：先用图像工具转 PNG；或经浏览器通道
+ *      （页内 API `window.pixelArtStudio.importImage`，浏览器原生解码覆盖这些格式）。
+ *    ⚠️ 不要在这里提及任何**未实现**的 CLI flag——本项目曾出现"报错让用户改用
+ *      `--browser-decode`，但该 flag 从未实现"的死路文案。
  */
 import { readFileSync } from 'node:fs'
 import { extname } from 'node:path'
@@ -47,7 +51,7 @@ export class UnsupportedImageError extends Error {
 
 /**
  * 读取并解码一张图片。只处理 PNG；其他格式抛出 `UnsupportedImageError`，
- * 由调用方决定是"提示用户改用 --browser-decode"还是回退到浏览器通道。
+ * 由调用方决定如何提示（CLI 会把中文原因打进失败清单）。
  */
 export function loadImageNode(file: string): RgbaImage {
   const bytes = new Uint8Array(readFileSync(file))
@@ -61,8 +65,12 @@ export function loadImageNode(file: string): RgbaImage {
     }
   }
   const ext = extname(file).toLowerCase()
+  // 注意：这里**不能**推荐一个不存在的 CLI flag。此前文案让用户"改用 --browser-decode"，
+  // 但 tool/artc.mjs 从未实现它（传了只会打印帮助并 exit 1）——那是死路。
+  // 现在给出两条真实可用的替代做法。
   throw new UnsupportedImageError(
     `Node 端只能直接解码 PNG，而 ${file} 的实际格式是 ${format}（扩展名 ${ext || '无'}）。` +
-      `请改用 --browser-decode（无头浏览器通道），或先用图像工具另存为 PNG。`,
+      `替代做法：① 先用图像工具把它另存为 PNG；` +
+      `② 用浏览器打开工作台、通过页内 API（window.pixelArtStudio.importImage）导入——浏览器原生解码支持这些格式。`,
   )
 }

@@ -33,9 +33,14 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 
 /* ------------------------------------------------------------------ 参数解析 */
 
+/**
+ * 布尔开关：出现即为 true。
+ * 注意：**不要往这里加没有实现的 flag**——曾经有 `--keep-size` 只登记在此、没有任何消费点，
+ * 用户传了既不生效也不报错（静默失效比报错更糟）。新增 flag 必须同时改 buildParams 与帮助文本。
+ */
 const BOOL_FLAGS = new Set([
   'help', 'selftest', 'describe', 'dry-run', 'json', 'bead', 'alpha', 'transparent',
-  'sheet', 'pixbin', 'no-cleanup', 'quiet', 'keep-size', 'lock-palette',
+  'sheet', 'pixbin', 'no-cleanup', 'quiet', 'lock-palette',
 ])
 /** 可选值开关：后面跟的值不以 -- 开头才算值（`--sheet` 与 `--sheet 4` 都合法） */
 const OPTIONAL_VALUE_FLAGS = new Set(['sheet', 'bead'])

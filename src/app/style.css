@@ -268,7 +268,7 @@ html, body {
   cursor: pointer;
 }
 
-select, input[type="number"], input[type="text"], .hex-input, .num {
+select, input[type="number"], input[type="text"], .num {
   font: inherit;
   font-family: var(--mono);
   color: var(--text);
@@ -278,7 +278,6 @@ select, input[type="number"], input[type="text"], .hex-input, .num {
   padding: 3px 6px;
 }
 .num { width: 68px; }
-.hex-input { width: 92px; }
 input[type="color"] {
   width: 34px;
   height: 24px;
@@ -305,7 +304,6 @@ input[type="color"] {
 .field > label { color: var(--dim); font-size: 12px; }
 .row { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
 .row.wrap { flex-wrap: wrap; }
-.row.tiny-gap { gap: 3px; margin-top: 3px; }
 .field-inner { margin: 4px 0 8px 8px; display: flex; flex-direction: column; gap: 4px; }
 .hint { color: var(--dim); font-size: 11px; line-height: 1.5; }
 .hint.lines { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
@@ -327,7 +325,6 @@ input[type="color"] {
 .tool-btn.active { border-color: var(--accent); background: #22304a; color: var(--accent); }
 
 .color-row { display: flex; align-items: center; gap: 6px; margin: 8px 0; }
-.color-col { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .color-slot {
   display: flex;
   align-items: center;

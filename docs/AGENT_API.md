@@ -319,6 +319,9 @@ ps.newCanvas({ width: 32, height: 32, transparent: true })   // 空白画布（�
 ps.edit([{ op: "rect", x0: 4, y0: 4, x1: 27, y1: 27, color: "#223344" }, { op: "trim" }])
 ps.undo()  ps.redo()
 ps.render(fileOrDataURL, params, scale, { transparentBg, ops })      // 无副作用一站式
+await ps.renderBlank({ width: 32, height: 32, transparent: true, ops: [...] }, params, scale, { transparentBg })
+//   renderBlank = 「空白画布 + 算子 + 导出」的无副作用一站式（无需原图、不碰工作区状态），
+//   CLI 的 --blank 走的是同一条链路；返回形状与 render() 一致
 ```
 
 ### 编辑器状态写入

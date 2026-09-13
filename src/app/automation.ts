@@ -16,7 +16,7 @@ import { applyOps, blankArt, type EditOp } from '../core/ops.ts'
 import { runPipeline } from '../core/pipeline.ts'
 import { artHash, decodePixBin, encodePixBin, layoutSheet, parseProjectFile, pixelJSONString, projectJSONString } from '../core/export.ts'
 import { base64ToBytes, bytesToBase64 } from '../core/binary.ts'
-import { artStats, countTransparent, countUsage } from '../core/stats.ts'
+import { artStats, countTransparent, countUsage, hasRealAlpha } from '../core/stats.ts'
 import { beadListCsv, beadReport, beadSvg } from '../core/bead.ts'
 import { CAPABILITIES, OP_SPECS, PARAM_SPECS, describeAll } from '../core/spec.ts'
 
@@ -43,7 +43,22 @@ export interface AutomationDeps {
   importImage: (file: File) => Promise<void>
   decodeImage: (file: Blob & { name?: string }) => Promise<{ width: number; height: number; data: Uint8ClampedArray }>
   makeThumbnail: (img: { width: number; height: number; data: Uint8ClampedArray }, maxSide?: number) => string
-  blank: () => void
+  /**
+   * 画布是否有手动编辑（相对最近一次自动转换）。
+   * 原先这个字段在 getInfo() 里写死 `false`，导致"编辑后仍报 hasEdits:false"，
+   * 是**主动误导**——脚本会据此以为画布是纯转换结果。改由 UI 的 store 提供真值。
+   */
+  hasEdits: () => boolean
+  /** 清空「有手动编辑」标记：newCanvas 产出的是新基线，不应延续上一张画布的标记 */
+  resetEdits: () => void
+  /**
+   * 「从 params 推导空白画布」（尺寸 + 底色），UI 的 makeBlank 与 API 的 newCanvas 共用。
+   *
+   * 此前 `blank: () => void` 只声明与注入、**全文件 0 次调用**，而 UI 的 makeBlank 与 API 的
+   * newCanvas 各有一套尺寸/底色推导规则（一方用 matteColor、一方默认 #000000），
+   * 行为已经分叉。现在统一成本函数。
+   */
+  blankSpec: () => { width: number; height: number; color: string; transparent: boolean }
   applyOpsToArt: (ops: EditOp[]) => { art: PixelArt; changes: { op: string; kind?: string; cells: number; changed: boolean; note?: string }[]; applied: boolean } | null
 }
 
@@ -75,7 +90,7 @@ export function installAutomationApi(deps: AutomationDeps): void {
     width: art.width,
     height: art.height,
     paletteSize: art.palette.length,
-    hasAlpha: !!(art.alphaMask && art.alphaMask.some((v) => v < 128)),
+    hasAlpha: hasRealAlpha(art.alphaMask),
     transparent: countTransparent(art.indices, art.alphaMask),
     usage: countUsage(art.indices, art.palette, art.alphaMask),
   })
@@ -159,9 +174,10 @@ export function installAutomationApi(deps: AutomationDeps): void {
         width: art?.width ?? 0,
         height: art?.height ?? 0,
         paletteSize: art?.palette.length ?? 0,
-        hasAlpha: !!(art?.alphaMask && art.alphaMask.some((v) => v < 128)),
+        hasAlpha: hasRealAlpha(art?.alphaMask),
         transparent: stats?.transparent ?? 0,
-        hasEdits: false as boolean,
+        // 真值来自 UI 的 store（最近一次自动转换之后是否有手动编辑），不再写死 false
+        hasEdits: deps.hasEdits(),
         tool: prefs.tool,
         primary: prefs.primary,
         bg: prefs.bg,
@@ -177,7 +193,7 @@ export function installAutomationApi(deps: AutomationDeps): void {
     },
     hasAlpha: (): boolean => {
       const art = requireArt()
-      return !!art.alphaMask && art.alphaMask.some((v) => v < 128)
+      return hasRealAlpha(art.alphaMask)
     },
     countTransparent: (): number => {
       const art = requireArt()
@@ -229,9 +245,19 @@ export function installAutomationApi(deps: AutomationDeps): void {
     redo: (): void => deps.redo(),
     /** 新建空白画布（不必先有原图）；transparent 则整幅透明 */
     newCanvas: (opts: { width: number; height: number; color?: string; transparent?: boolean }): EditSummary => {
-      const art = blankArt(opts.width, opts.height, opts.color ?? '#000000', !!opts.transparent)
+      // 尺寸必填（脚本要精确控制），底色/透明缺省时与 UI「新建空白画布」保持一致：
+      // 底色的默认值来自参数里的 matteColor（而不是写死 #000000），避免两处行为分叉。
+      const spec = deps.blankSpec()
+      const art = blankArt(
+        opts.width,
+        opts.height,
+        opts.color ?? spec.color,
+        opts.transparent === undefined ? spec.transparent : !!opts.transparent,
+      )
       deps.setSource(null, '')
       deps.setArt(art)
+      // 新画布 = 新基线：编辑标记归零，否则 getInfo().hasEdits 会延续上一张画布的状态
+      deps.resetEdits()
       return summaryOf(art, [], true)
     },
 
@@ -275,7 +301,51 @@ export function installAutomationApi(deps: AutomationDeps): void {
       }
     },
 
-    /* ---------------------------------------------------------- 拼豆与游戏资产（本项目的两个主要用途） */
+    /**
+     * 一站式空白画布（**无副作用**）：建画布 → 跑算子 → 导出，不碰工作台状态与草稿。
+     *
+     * **这个方法此前只有文档、没有实现**（`core/ops.ts`、`core/spec.ts` 的注释与生成的
+     * `AGENT_API.md` 都在提它，但 `automation.ts` 里 0 处定义）——agent 按文档调用会直接
+     * `is not a function`。语法与参数以文档为准，这里把它补齐（CLI 的 `--blank` 走的就是同一套
+     * `blankArt + applyOps`）。
+     */
+    renderBlank: async (
+      opts: { width: number; height: number; color?: string; transparent?: boolean; ops?: EditOp[] },
+      params?: Partial<ConvertParams>,
+      scale = 1,
+      exp?: { transparentBg?: boolean },
+    ): Promise<{
+      width: number
+      height: number
+      palette: string[]
+      usage: Record<string, number>
+      transparent: number
+      changes: { op: string; cells: number }[]
+      png: string
+      pixelJSON: string
+      paletteHex: string
+      hash: string
+    }> => {
+      const p = coerceParams({ ...DEFAULT_PARAMS, ...(params ?? {}) })
+      const base = blankArt(opts.width, opts.height, opts.color ?? '#000000', !!opts.transparent)
+      // 无副作用路径**不继承主色**：绘画类算子必须显式给 color，结果才与工作区状态无关
+      const r = opts.ops?.length ? applyOps(base, opts.ops, { allowApproxColor: !p.lockPalette }) : null
+      const art = r ? r.art : base
+      const png = await deps.pngDataURL(art, scale, { transparentBg: exp?.transparentBg, bgHex: p.matteColor })
+      return {
+        width: art.width,
+        height: art.height,
+        palette: [...art.palette],
+        usage: countUsage(art.indices, art.palette, art.alphaMask),
+        transparent: countTransparent(art.indices, art.alphaMask),
+        changes: r ? r.changes.map((c) => ({ op: c.op, cells: c.cells })) : [],
+        png,
+        pixelJSON: pixelJSONString(art),
+        paletteHex: serializeHexPalette(art.palette),
+        hash: artHash(art),
+      }
+    },
+
     /** 拼豆用量报告：号色 / 格数 / 珠数 / 重量 / 袋数 / 分板 */
     beadReport: (opts: { codes?: string[]; beadMm?: number; beadGram?: number; boardCells?: number } = {}) => {
       const art = requireArt()

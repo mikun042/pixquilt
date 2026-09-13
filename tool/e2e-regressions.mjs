@@ -387,6 +387,58 @@ await check('P2-06 窄屏：侧栏收成抽屉且有开关可展开/收起', asy
   return `开关可点；收起 → ${r.opened} → ${r.closed}`
 })
 
+/* ---------------------------------------------- 审阅发现的幽灵引用 / 死代码 */
+
+await check('幽灵引用：文档提到的页内 API 方法必须真的存在且可调用', async () => {
+  const r = JSON.parse(await cdp.eval(`(async () => {
+    const ps = window.pixelArtStudio
+    const missing = ['render', 'renderBlank', 'newCanvas', 'edit', 'undo', 'redo'].filter((m) => typeof ps[m] !== 'function')
+    if (missing.length) return JSON.stringify({ missing })
+    // renderBlank 是无副作用一站式：建空白画布 → 跑算子 → 导出
+    const out = await ps.renderBlank({ width: 24, height: 16, color: '#101820', ops: [{ op: 'rect', x0: 2, y0: 2, x1: 10, y1: 10, color: '#ff0000' }] }, { longEdge: 24 }, 2)
+    const before = ps.getInfo().hasArt
+    return JSON.stringify({
+      missing,
+      missingFields: ['width', 'height', 'palette', 'png', 'pixelJSON', 'changes', 'hash'].filter((k) => out[k] === undefined),
+      w: out.width, h: out.height, changes: out.changes.length, pngOk: String(out.png).startsWith('data:image/png'),
+      hasArtUnchanged: before,
+    })
+  })()`))
+  assert(r.missing.length === 0, `文档承诺的方法缺失：${r.missing.join(', ')}`)
+  assert(r.missingFields.length === 0, `renderBlank 返回缺字段：${r.missingFields.join(', ')}`)
+  assert(r.w === 24 && r.h === 16, `renderBlank 尺寸应为 24×16，实际 ${r.w}×${r.h}`)
+  assert(r.changes === 1, `应报告 1 条算子改动，实际 ${r.changes}`)
+  assert(r.pngOk, 'renderBlank 未返回 PNG dataURL')
+  return `renderBlank 可用（${r.w}×${r.h} / ${r.changes} 条改动）`
+})
+
+await check('getInfo().hasEdits 反映真实编辑状态（不再恒为 false）', async () => {
+  const r = JSON.parse(await cdp.eval(`(async () => {
+    const ps = window.pixelArtStudio
+    await ps.renderBlank({ width: 16, height: 16, color: '#ffffff' })
+    ps.newCanvas({ width: 16, height: 16, color: '#ffffff' })
+    await new Promise((res) => setTimeout(res, 150))
+    const fresh = ps.getInfo().hasEdits
+    ps.edit([{ op: 'rect', x0: 1, y0: 1, x1: 5, y1: 5, color: '#ff0000' }])
+    await new Promise((res) => setTimeout(res, 150))
+    const edited = ps.getInfo().hasEdits
+    ps.undo()
+    await new Promise((res) => setTimeout(res, 150))
+    return JSON.stringify({ fresh, edited, afterUndo: ps.getInfo().hasEdits })
+  })()`))
+  assert(r.fresh === false, `刚新建的画布 hasEdits 应为 false，实际 ${r.fresh}`)
+  assert(r.edited === true, `编辑之后 hasEdits 必须为 true（曾恒为 false），实际 ${r.edited}`)
+  return `新建 false → 编辑 true → 撤销 ${r.afterUndo}`
+})
+
+await check('CLI：不存在"接受了但没有任何效果"的 flag（--keep-size 已移除）', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const out = execFileSync(process.execPath, ['tool/artc.mjs', '--help'], { encoding: 'utf8' })
+  assert(!/keep-size/.test(out), '帮助文本里仍宣传 --keep-size（该 flag 无实现）')
+  assert(!/browser-decode/.test(out), '帮助文本里仍宣传 --browser-decode（该 flag 无实现）')
+  return '帮助文本只列已实现的参数'
+})
+
 /* ---------------------------------------------- 结果 */
 
 const passed = results.filter((r) => r.ok).length
