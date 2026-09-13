@@ -394,6 +394,12 @@ input[type="color"] {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--cp-bg);
+  /*
+   * 拖滑条时不要选中沿途文字：鼠标按住扫过色轮/滑条会让浏览器把经过的标签、数字
+   * 一并划进选区（`touch-action` 只挡触摸滚动，挡不住鼠标选词），观感很脏。
+   * 输入框在下面单独恢复 user-select:text，否则数字框里没法拖选替换。
+   */
+  user-select: none;
 }
 
 /* 顶部色彩模型标签：两个分段共用一个圆角容器，无缝隙、各占一半（参考图实测） */
@@ -470,37 +476,40 @@ input[type="color"] {
 .cp-icon-btn:hover { background: var(--cp-fill); color: #fff; }
 
 /*
- * Alpha 行：与上面三行同组同款**整行滑条**（保留 .cp-alpha 类名，自动化断言依赖它）。
- * 唯一差别：未填充槽用棋盘格——本工具的 alpha 是"透明色"开关，0.000 时能一眼看出是透明；
- * 1.000 时填充全蓝，与参考图完全一致（参考图只出现过 1.000 这一态）。
+ * Alpha 行的滑条轨道：未填充槽用棋盘格——本工具的 alpha 是"透明色"开关，
+ * 0.000 时能一眼看出是透明；1.000 时填充全蓝，与参考图一致。
  */
-.cp-row.cp-alpha {
+.cp-alpha .cp-row-track {
   background: repeating-conic-gradient(#3a3d47 0 25%, #2c2f38 0 50%) 0 0 / 8px 8px;
 }
 
-/* 数值行组：四行紧贴、行间 1px 深色分隔、整组圆角 3px（参考图实测） */
-.cp-fields {
-  display: flex;
-  flex-direction: column;
-  border-radius: 3px;
-  overflow: hidden;
-}
 /*
- * 数值行 = **整行滑条**：蓝色填充铺满整行、标签与数字平铺其上（与参考图一致）。
- * 拖动基准是整行本身（见 colorpicker.ts 的 rowFromEvent）。
- * 注意：数字输入框在行内、叠在填充层之上，所以"标签与输入框"都必须 position:relative
- * 才能盖住绝对定位的 .cp-row-fill。
+ * 数值行 = **[滑条轨道][数值框]**，数值框在轨道之外（结构隔离，见 colorpicker.ts 注释）。
+ * 行底色用面板色：轨道才是"滑条"，右边那块是放数字的地方。
+ * 行高 27px、上下各留 1px，于是相邻两条轨道之间有 2px 深色分隔（不需要分隔线）。
  */
+.cp-fields { display: flex; flex-direction: column; }
 .cp-row {
-  position: relative;
   display: flex;
   align-items: center;
+  gap: 6px;
   height: 27px;
+  padding: 1px 0;
+  background: var(--cp-bg);
+}
+/* 轨道：拖动命中区 + 填充的裁剪容器。拖动基准是轨道本身，填充画在轨道里。
+   touch-action:none 才有触摸拖动；cursor 只在轨道上给 ew-resize（数值框上是文本光标） */
+.cp-row-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  border-radius: 2px;
+  overflow: hidden;
   background: var(--cp-slot);
   cursor: ew-resize;
   touch-action: none;
 }
-.cp-row:not(:last-child) { border-bottom: 1px solid var(--cp-bg); }
 /* 蓝色填充层：宽度 = 数值占满量的比例（0.800 → 80%），由 paintFields() 写入 */
 .cp-row-fill {
   position: absolute;
@@ -510,20 +519,21 @@ input[type="color"] {
   width: 0;
   background: var(--cp-fill);
 }
-/* 标签与数值必须 position:relative，否则会被绝对定位的填充层盖住 */
+/* 标签浮在填充层之上；pointer-events:none 让指针事件的 target 就是轨道本身 */
 .cp-row-label {
   position: relative;
-  flex: 1;
-  padding-left: 10px;
+  display: block;
+  padding-left: 8px;
+  line-height: 25px;
   font-size: 12px;
   color: var(--text);
   text-shadow: 0 1px 0 #00000066;
+  pointer-events: none;
 }
-/* 数值输入：整行滑条里的数字是"平铺"在行上的，必须盖掉全局 input 样式（271 行那条
-   input[type="text"] 选择器特异性比单个类高，所以这里写成 .cp-row .cp-num） */
+/* 数值输入：必须盖掉全局 input 样式（271 行那条 input[type="text"] 选择器特异性比单个类高，
+   所以这里写成 .cp-row .cp-num） */
 .cp-row .cp-num,
 .cp-hexrow .cp-num {
-  position: relative;
   font: inherit;
   font-family: var(--font);
   font-size: 12px;
@@ -532,11 +542,15 @@ input[type="color"] {
   border: 0;
   border-radius: 0;
   outline: none;
+  /* 取色器整体禁选（见 .cp），但输入框必须能选中自己的内容，否则没法拖选替换 */
+  user-select: text;
 }
 .cp-row .cp-num {
-  width: 66px;
-  padding: 0 10px 0 0;
+  flex: none;
+  width: 42px;
+  padding: 0 3px 0 0;
   text-align: right;
+  cursor: text;
 }
 .cp-row .cp-num:focus,
 .cp-hexrow .cp-num:focus { color: #fff; }

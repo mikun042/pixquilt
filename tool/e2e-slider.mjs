@@ -2,8 +2,11 @@
 /**
  * 数值滑条拖动专项验证（回归防线）。
  *
- * 背景：RGB / HSV 六个数值行看上去是滑条（整行填充 + 数字），但只有 Alpha 行绑了指针事件时，
+ * 背景：RGB / HSV 六个数值行看上去是滑条，但只有 Alpha 行绑了指针事件时，
  * 它们"能看不能拖"——用户实际反馈过这个缺陷。本脚本用真实 PointerEvent 逐行拖动并断言通道值改变。
+ *
+ * 命中区是**滑条轨道** `.cp-row-track`（不是整行）：数值框在轨道之外，
+ * 输入数字时不会误触滑条（见 e2e-picker 的"数值框不触发滑条"）。
  *
  * 用法：node tool/e2e-slider.mjs [--app <html 路径>]
  */
@@ -129,15 +132,17 @@ async function dragRow(key, pos) {
   return await cdp.eval(`(() => {
     const row = document.querySelector('[data-row="${key}"]')
     if (!row) return JSON.stringify({ error: '找不到行 ' + '${key}' })
-    // 拖动几何基准是整行（整行滑条的外观与参考图一致）
-    const rect = row.getBoundingClientRect()
-    if (!(rect.width > 0)) return JSON.stringify({ error: '行没有布局宽度' })
+    // 拖动命中区是**滑条轨道**（.cp-row-track）：数值框在轨道之外，故意拖不到
+    const track = row.querySelector('.cp-row-track')
+    if (!track) return JSON.stringify({ error: '找不到滑条轨道 ' + '${key}' })
+    const rect = track.getBoundingClientRect()
+    if (!(rect.width > 0)) return JSON.stringify({ error: '轨道没有布局宽度' })
     const before = window.pixelArtStudio.getInfo().primary
     const x = rect.left + rect.width * ${pos}
     const y = rect.top + rect.height / 2
     const mk = (type) => new PointerEvent(type, { clientX: x, clientY: y, bubbles: true, pointerId: 11, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
-    row.dispatchEvent(mk('pointerdown'))
-    row.dispatchEvent(mk('pointermove'))
+    track.dispatchEvent(mk('pointerdown'))
+    track.dispatchEvent(mk('pointermove'))
     window.dispatchEvent(mk('pointerup'))
     const input = row.querySelector('input')
     return JSON.stringify({ before, after: window.pixelArtStudio.getInfo().primary, shown: input ? input.value : '', fillW: row.querySelector('.cp-row-fill')?.style.width || '' })
@@ -239,11 +244,11 @@ check('数值输入与拖动两条路径都能改（输入 0.3 生效）', () =>
 
 /* ---------------- 拖动过程中不进撤销栈的中间态 ---------------- */
 const noSpam = await cdp.eval(`(() => {
-  const row = document.querySelector('[data-row="S"]')
-  const rect = row.getBoundingClientRect()
+  const track = document.querySelector('[data-row="S"] .cp-row-track')
+  const rect = track.getBoundingClientRect()
   const mk = (type, x) => new PointerEvent(type, { clientX: x, clientY: rect.top + rect.height / 2, bubbles: true, pointerId: 12, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
-  row.dispatchEvent(mk('pointerdown', rect.left + rect.width * 0.2))
-  for (let i = 0; i < 15; i++) row.dispatchEvent(mk('pointermove', rect.left + rect.width * (0.2 + i * 0.04)))
+  track.dispatchEvent(mk('pointerdown', rect.left + rect.width * 0.2))
+  for (let i = 0; i < 15; i++) track.dispatchEvent(mk('pointermove', rect.left + rect.width * (0.2 + i * 0.04)))
   window.dispatchEvent(mk('pointerup', rect.left + rect.width * 0.8))
   return JSON.stringify({ ok: true, primary: window.pixelArtStudio.getInfo().primary })
 })()`)
@@ -292,22 +297,24 @@ check('双路径：数字框可聚焦编辑、不改颜色、不清空内容', (
 
 const labelDrag = await cdp.eval(`(() => {
   const row = document.querySelector('[data-row="G"]')
+  const track = row.querySelector('.cp-row-track')
   const label = row.querySelector('.cp-row-label')
-  const rowRect = row.getBoundingClientRect()
+  const trackRect = track.getBoundingClientRect()
   const lr = label.getBoundingClientRect()
   const before = window.pixelArtStudio.getInfo().primary
-  // 整行滑条：从标签处的水平位置按下也应该按比例调值（标签不拦截指针）
+  // 轨道左端（标签处）按下也应能调值：标签是 pointer-events:none，事件落到轨道上
   const x = lr.left + 4
-  const mk = (type) => new PointerEvent(type, { clientX: x, clientY: rowRect.top + rowRect.height / 2, bubbles: true, pointerId: 22, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
-  row.dispatchEvent(mk('pointerdown'))
+  const mk = (type) => new PointerEvent(type, { clientX: x, clientY: trackRect.top + trackRect.height / 2, bubbles: true, pointerId: 22, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
+  track.dispatchEvent(mk('pointerdown'))
   window.dispatchEvent(mk('pointerup'))
-  return JSON.stringify({ before, after: window.pixelArtStudio.getInfo().primary, labelW: Math.round(lr.width) })
+  return JSON.stringify({ before, after: window.pixelArtStudio.getInfo().primary, labelW: Math.round(lr.width), trackW: Math.round(trackRect.width) })
 })()`)
-check('整行滑条：在行首标签位置按下也能按比例调值', () => {
+check('滑条轨道：在行首标签位置按下也能按比例调值', () => {
   const r = JSON.parse(labelDrag)
   assert(r.labelW > 10, `标签必须有实际宽度（实测 ${r.labelW}px）`)
+  assert(r.trackW > 50, `轨道必须有实际宽度（实测 ${r.trackW}px）——否则断言会假通过`)
   const g = frac(r.after, 'G')
-  assert(g < 0.15, `行首（约 6%）应把 G 调到很低，实测 ${g.toFixed(2)}（${r.before} → ${r.after}）`)
+  assert(g < 0.15, `行首（约 10%）应把 G 调到很低，实测 ${g.toFixed(2)}（${r.before} → ${r.after}）`)
   return `${r.before} → ${r.after}（G=${g.toFixed(2)}）`
 })
 
@@ -316,10 +323,10 @@ const degenerate = await cdp.eval(`(() => {
   const rail = document.querySelector('.rail')
   const old = rail.style.display
   rail.style.display = 'none'          // 模拟面板不可见（窄屏抽屉收起）
-  const row = document.querySelector('[data-row="R"]')
+  const track = document.querySelector('[data-row="R"] .cp-row-track')
   const mk = (type) => new PointerEvent(type, { clientX: 100, clientY: 100, bubbles: true, pointerId: 13, button: 0, buttons: type === 'pointerup' ? 0 : 1 })
   const before = window.pixelArtStudio.getInfo().primary
-  row.dispatchEvent(mk('pointerdown'))
+  track.dispatchEvent(mk('pointerdown'))
   window.dispatchEvent(mk('pointerup'))
   rail.style.display = old
   const after = window.pixelArtStudio.getInfo().primary

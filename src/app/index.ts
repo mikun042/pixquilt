@@ -331,6 +331,12 @@ function ensurePicker(host: HTMLElement): ColorPickerApi {
         store.setMany({ transparent: true, tool: 'pencil' })
         renderAll()
       },
+      // Alpha 滑条右半边：实时恢复实色（拖动中的预览，松手由 onCommit 收尾）。
+      // 特意不换 tool——用户可能正拿着填充/形状工具，切回实色不该顺手把工具改成画笔。
+      onOpaque: () => {
+        store.set('transparent', false)
+        renderAll()
+      },
       isTransparent: () => store.get('transparent'),
       onPickFromCanvas: () => {
         store.set('tool', 'picker')

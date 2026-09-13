@@ -7,10 +7,10 @@
  *   │       ╭────────────╮  ┌─┐            │  ← 色轮 156px + 右侧明度竖条 14px
  *   │       │     ○      │  │▬│            │  ← 游标是细圈；明度滑块是悬出条宽的浅色方块
  *   │       ╰────────────╯  └─┘            │
- *   │  红                  0.800           │  ← 整行滑条：蓝色填充宽度 = 数值占满量的比例
- *   │  绿                  0.800           │
- *   │  蓝                  0.800           │
- *   │  Alpha               1.000           │  ← Alpha 也是整行滑条（最左 = 透明色）
+ *   │  红 ███████     0.800                │  ← 滑条：蓝色填充宽度 = 数值占满量的比例
+ *   │  绿 ███         0.800                │     数值框在滑条**右侧之外**（拖动碰不到它）
+ *   │  蓝              0.800               │
+ *   │  透明度 ████████ 0.000               │  ← 两态滑条（左半 = 1.000 全透明，右半 = 0.000 实色）
  *   │  Hex   [#E7E7E7]            [⌖]      │  ← Hex 行常驻，右侧吸管按钮
  *   └──────────────────────────────────────┘
  *
@@ -19,11 +19,17 @@
  *     屏幕角 `atan2(dy, dx)` 的 0° 在正右，因此 色相 = 屏幕角 − 90°（见 HUE_OFFSET）。
  *   · 色轮画在当前明度 V 上：参考图数值 0.8（线性）→ 彩色区最亮通道 231 = sRGB(0.8)。本项目
  *     内部就是 sRGB，所以直接用 hsv.v 画即可，不需要任何色彩空间转换。
- *   · 数值行是"滑条"：蓝 #4772b3 从左填充，宽度 = 数值占满量的比例（0.800 实测填充 80.7%），
- *     剩余部分是 #545454；数字右对齐压在剩余部分上。
+ *   · 数值行是"滑条"：蓝 #4772b3 从左填充，宽度 = 数值占满量的比例（0.800 实测填充 80.7%）。
  *   · 数值一律归一化 3 位小数（0.800 / 1.000 / 0.000）；输入兼容旧刻度（>1 视为 0-255 / 0-100 / 0-360）。
  *
  * 与参考图的**有意差异**（都写在 docs/UI-COLOR-PICKER.md，不要当成 bug）：
+ *   · **数值框在滑条右侧、不在滑条上**：参考图里数字是压在滑条上的，但那样"点数字框"
+ *     与"拖滑条"共用一个命中区，输入时必然误触（Alpha 行会被改成透明/实色）。
+ *     现在靠结构隔离（数字框不在轨道内），不是靠事件拦截。
+ *   · **最后一行是「透明度」而不是「Alpha」**：参考图那一行是连续 alpha（1.000 = 完全不透明），
+ *     本工具是"透明色"开关，所以数值改成透明度口径——0.000 = 不透明，1.000 = 全透明，
+ *     与界面其它地方的"透明"语言一致（透明色 / 透明挖洞 / 色板「透明」块）。
+ *     注意：填充画的是"颜色有多少"，全透明时填充 0%（空条 = 没有颜色），与数字口径相反但同指一事。
  *   · Hex 只显示 6 位（core 的 normalizeHex 只认 6 位；且本工具的 alpha 是"透明色"开关，
  *     不是连续通道，多写两位会假装存在连续 alpha）。
  *   · 色板 + 透明块 + 「收起」保留（参考图是 Blender 的浮窗，没有这些；删掉是本工具的功能倒退）。
@@ -40,8 +46,18 @@ export interface ColorPickerCallbacks {
   onPreview: (hex: string) => void
   /** 松手 / 数值输入 / 点色块：提交（进撤销栈） */
   onCommit: (hex: string) => void
-  /** 透明度拖到最左 = 选「透明色」 */
+  /**
+   * Alpha 滑条拖到**左半边**：选「透明色」。
+   * 与 onPreview 一样是拖动中的实时反馈，不进撤销栈。
+   */
   onTransparent: () => void
+  /**
+   * Alpha 滑条拖到**右半边**：恢复实色（同样只做实时预览，松手才 onCommit）。
+   *
+   * 为什么需要它：只靠 onPreview 的话，从透明拖回实色时 `transparent` 仍是 true，
+   * 填充会一直停在 0%、数字停在 0.000，拖起来"没反应"，松手才跳一下。
+   */
+  onOpaque: () => void
   /** 当前绘制色是否为透明色 */
   isTransparent: () => boolean
   /** 点吸管：让画布进入取色模式（下一次点击画布即取色） */
@@ -88,13 +104,17 @@ const angleToHue = (a: number): number => (a + HUE_OFFSET + 360) % 360
 const hueToAngle = (h: number): number => (h - HUE_OFFSET + 360) % 360
 
 /**
- * 透明度滑条左端的"死区"比例（6%）。
+ * 透明度滑条的分界比例（50%）。
  *
- * 为什么需要它：`getBoundingClientRect()` 返回小数，鼠标落在最左 1px 处算出来的比例可能是 0.006
- * 而不是 0——用 `<= 0.001` 判断会判定"没拖到底"，用户很难精确点到全透明。
- * 现在只要落进左端 6% 就视为"选了透明色"（该区域视觉上本来就是最透明的部分）。
+ * 本工具的透明度**不是连续通道**，而是"透明色"开关（见文件头部"有意差异"），
+ * 所以这条滑条只有**两个位置**：拖到左半边 = 全透明（1.000），右半边 = 实色（0.000）。
+ *
+ * 为什么是 50% 而不是"左端一小段死区"：旧实现只有最左 6%（约 8px）算透明，
+ * 其余全算实色——用户拖动中段时什么都没发生，看起来就是"这条滑条拖不动"
+ * （2026-09-13 实测复现：在 128px 轨道上从 0.9 拖到 0.2，值纹丝不动）。
+ * 现在整条轨道都有响应：越过中线就翻状态，来回拖会实时来回翻。
  */
-const ALPHA_ZERO_ZONE = 0.06
+const ALPHA_MID = 0.5
 
 type ColorModel = 'rgb' | 'hsv'
 
@@ -160,15 +180,21 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
   const wheelRow = el('div', { class: 'cp-wheel-row', style: { gap: `${WHEEL_GAP}px` } }, [wheelWrap, valueBar])
 
   /**
-   * 数值行：**整行滑条** —— 蓝色填充铺满整行、标签与数字平铺其上（与参考图一致）。
+   * 数值行 = **[滑条轨道][数值框]**，数值框在轨道之外。
    *
-   * 拖动基准就是整行本身（`[data-row]`），因此行动作与滑条动作是同一个元素；
-   * 数字输入框在行内、点击它即进入文本编辑（会 blur 后提交）。
-   * 曾经试过"标签 | 滑条 | 数字框"的三段式来防误触，但它偏离了参考图的外观，已回退。
+   * 为什么必须分开：轨道整条都是拖动命中区。数字框若坐在轨道里面，点进数字框的那一刻
+   * 事件就已经落到滑条上了——Alpha 行尤其严重，它整行可拖、又用 clientX 换算状态，
+   * 点数字框就会按点击位置把颜色改成"透明/实色"。
+   * 现在数字框与轨道是互不重叠的两个命中区，**输入数字永远碰不到滑条**（不是靠事件拦截，
+   * 而是靠结构：数字框根本不在滑条里）。
+   * 代价：滑条只占行宽的约 3/4，填充看起来比参考图短——参考图里数字是压在滑条上的。
    */
   const fieldsHost = el('div', { class: 'cp-fields' })
   const fieldInputs = new Map<string, HTMLInputElement>()
-  const rowNodes = new Map<string, HTMLElement>()
+  /** 行（只用来按模型切换显隐） */
+  const rowEls = new Map<string, HTMLElement>()
+  /** 滑条轨道：拖动基准 + 填充的裁剪容器 */
+  const rowTracks = new Map<string, HTMLElement>()
   const rowFills = new Map<string, HTMLElement>()
   /** 六个数值行（R/G/B/H/S/V）按模型切换显隐；它们都是可拖动滑条 */
   const sliderKeys = new Set(['R', 'G', 'B', 'H', 'S', 'V'])
@@ -182,34 +208,37 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
       onchange: (e: Event) => applyNumberField(key, (e.target as HTMLInputElement).value),
     })
     const fill = el('div', { class: 'cp-row-fill' })
-    const row = el('div', { class: 'cp-row cp-field', dataset: { row: key } }, [
-      fill,
-      el('span', { class: 'cp-row-label' }, [label]),
-      input,
-    ])
+    const track = el('div', { class: 'cp-row-track' }, [fill, el('span', { class: 'cp-row-label' }, [label])])
+    const row = el('div', { class: 'cp-row', dataset: { row: key } }, [track, input])
     fieldInputs.set(key, input)
-    rowNodes.set(key, row)
+    rowEls.set(key, row)
+    rowTracks.set(key, track)
     rowFills.set(key, fill)
     return row
   }
   for (const spec of ROW_SPECS) fieldsHost.append(numRow(spec.key, spec.label))
 
-  /* ---- Alpha 行：与上面同一组滑条（保留 .cp-alpha 类名，自动化断言依赖它） ---- */
+  /*
+   * ---- 透明度行：与上面同一组滑条 ----
+   *
+   * 数值走的是**透明度**（0.000 = 不透明，1.000 = 全透明），不是 alpha。
+   * 理由：本工具的 alpha 是"透明色"开关，界面上其它地方一律用"透明"这套语言
+   * （透明色 / 透明挖洞 / 色板里的「透明」块），只有这一行原来写着 Alpha + 1.000，
+   * 反而要说"1.000 = 完全不透明"，与直觉相反。
+   * 类名保持 `.cp-alpha`（自动化断言与文档引用的稳定钩子），内部键名用 `Opacity` 以免语义混淆。
+   */
   const alphaInput = el('input', {
     class: 'cp-num',
     type: 'text',
     inputmode: 'decimal',
-    dataset: { field: 'Alpha' },
-    onchange: (e: Event) => applyNumberField('Alpha', (e.target as HTMLInputElement).value),
+    dataset: { field: 'Opacity' },
+    onchange: (e: Event) => applyNumberField('Opacity', (e.target as HTMLInputElement).value),
   })
   const alphaFill = el('div', { class: 'cp-row-fill' })
-  const alphaRow = el('div', { class: 'cp-row cp-alpha' }, [
-    alphaFill,
-    el('span', { class: 'cp-row-label' }, ['Alpha']),
-    alphaInput,
-  ])
-  fieldInputs.set('Alpha', alphaInput)
-  rowFills.set('Alpha', alphaFill)
+  const alphaTrack = el('div', { class: 'cp-row-track' }, [alphaFill, el('span', { class: 'cp-row-label' }, ['透明度'])])
+  const alphaRow = el('div', { class: 'cp-row cp-alpha' }, [alphaTrack, alphaInput])
+  fieldInputs.set('Opacity', alphaInput)
+  rowFills.set('Opacity', alphaFill)
   fieldsHost.append(alphaRow)
 
   /* ---- Hex 行（常驻）：标签 + 输入框 + 吸管 ---- */
@@ -306,11 +335,12 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
   function paintTracks(): void {
     // 明度滑块（顶=1，底=0）
     valueKnob.style.top = `${(1 - hsv.v) * 100}%`
+    // 透明度是两态开关：状态靠"填充 0/100% + 数字 1.000/0.000"表达（见 paintFields），
+    // 这里补一句 tooltip，让"左半边全透明 / 右半边实色"这个手势能被发现
     const transparent = cb.isTransparent()
-    alphaRow.classList.toggle('is-transparent', transparent)
     alphaRow.title = transparent
-      ? '当前是「透明色」：拖到右侧恢复实色，或点下方色板选色'
-      : '拖到最左 = 选「透明色」（画笔 / 填充 / 形状 / X 删除都变成挖洞）'
+      ? '当前「全透明」（1.000）：拖到滑条右半边恢复实色（0.000），或点下方色板选色'
+      : '拖到滑条左半边 = 「全透明」（1.000）：画笔 / 填充 / 形状 / X 删除都变成挖洞'
   }
 
   function paintFields(): void {
@@ -337,12 +367,14 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
     fill('S', hsv.s)
     set('V', norm3(hsv.v))
     fill('V', hsv.v)
-    set('Alpha', transparent ? '0.000' : '1.000')
-    fill('Alpha', transparent ? 0 : 1)
+    // 透明度：1.000 = 全透明。填充画的是"颜色有多少"（alpha），所以全透明时填充为 0%——
+    // 空条 = 没有颜色 = 透明，数字与填充指向同一件事，只是口径相反（一个说"多少透明"、一个说"多少颜色"）
+    set('Opacity', transparent ? '1.000' : '0.000')
+    fill('Opacity', transparent ? 0 : 1)
     set('Hex', hex.toUpperCase())
-    // 三行模型行共用：切换标签只换 R/G/B ↔ H/S/V 的显隐（Alpha / Hex 常驻）
+    // 三行模型行共用：切换标签只换 R/G/B ↔ H/S/V 的显隐（透明度 / Hex 常驻）
     for (const spec of ROW_SPECS) {
-      const node = rowNodes.get(spec.key)
+      const node = rowEls.get(spec.key)
       if (node) node.style.display = spec.model === model ? '' : 'none'
     }
   }
@@ -388,11 +420,12 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
 
   /** 数值行（按当前模型解析输入） */
   function applyNumberField(key: string, raw: string): void {
-    if (key === 'Alpha') {
-      // Alpha 只有"实色 / 透明"两态：0（或任意小值）→ 透明，其余 → 实色
+    if (key === 'Opacity') {
+      // 透明度只有"全透明 / 实色"两态。输入用**与拖动同一条分界**（ALPHA_MID）：
+      // 输入 0.5 及以上 = 全透明，低于 0.5 = 实色（0 = 不透明）。避免出现两套阈值。
       const v = Number(raw)
       if (!Number.isFinite(v)) return
-      if (v <= ALPHA_ZERO_ZONE) cb.onTransparent()
+      if (v >= ALPHA_MID) cb.onTransparent()
       else cb.onCommit(currentHex)
       repaint()
       return
@@ -557,15 +590,18 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
   }
 
   /**
-   * 数值行的拖动：几何基准是**整行**（`[data-row]`），与参考图"整行滑条"的外观一致。
+   * 数值行的拖动：几何基准是**滑条轨道**（不是整行）。
    *
-   * 之所以要有这段：这些行看上去就是滑条，但当初只有 Alpha 绑了指针事件时，
+   * 用轨道而不是整行有两个原因：① 填充是画在轨道里的，"点在轨道的哪里"必须等于
+   * "填充画到哪里"，否则轨道右端永远拖不到 1.0；② 数值框在轨道之外，点它不会触发这里。
+   *
+   * 之所以要绑这六个行：这些行看上去就是滑条，但当初只有 Alpha 绑了指针事件时，
    * 另外六行"能看不能拖"——用户反馈的"RGB / HSV 滑条划不动"就是这个原因。
    */
   const rowFromEvent = (key: string) => (e: PointerEvent): void => {
-    const row = rowNodes.get(key)
-    if (!row) return
-    const rect = row.getBoundingClientRect()
+    const track = rowTracks.get(key)
+    if (!track) return
+    const rect = track.getBoundingClientRect()
     if (!(rect.width > 0)) return // 不可见时 rect 全 0，继续算会除零产生 NaN
     setChannelRatio(key, (e.clientX - rect.left) / rect.width)
     cb.onPreview(currentHex)
@@ -573,36 +609,40 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
   }
 
   for (const key of sliderKeys) {
-    const row = rowNodes.get(key)
-    if (!row) continue
+    const track = rowTracks.get(key)
+    if (!track) continue
     const handler = rowFromEvent(key)
-    row.addEventListener('pointerdown', (e: PointerEvent) => {
+    track.addEventListener('pointerdown', (e: PointerEvent) => {
       dragging = key
-      safeCapture(row, e.pointerId)
-      // 这里**不** blur 输入框：整行布局下点数字框就是要进编辑态，blur 会让它立刻失焦。
-      // 拖动结果与输入框的冲突改由"松手后回写输入框显示值"解决（见 endDrag）。
+      safeCapture(track, e.pointerId)
       handler(e)
     })
-    row.addEventListener('pointermove', (e: PointerEvent) => {
+    track.addEventListener('pointermove', (e: PointerEvent) => {
       if (dragging === key) handler(e)
     })
   }
 
   const alphaFromEvent = (e: PointerEvent): void => {
-    const rect = alphaRow.getBoundingClientRect()
+    // 同样以轨道为几何基准：数值框在轨道外，拖不动它
+    const rect = alphaTrack.getBoundingClientRect()
     if (!(rect.width > 0)) return
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-    alphaOpaque = ratio > ALPHA_ZERO_ZONE
-    if (alphaOpaque) cb.onPreview(currentHex)
-    else cb.onTransparent()
+    // 越过中线就翻状态：整条轨道都有响应，来回拖会实时来回翻（见 ALPHA_MID 注释）
+    alphaOpaque = ratio >= ALPHA_MID
+    if (alphaOpaque) {
+      cb.onOpaque()
+      cb.onPreview(currentHex)
+    } else {
+      cb.onTransparent()
+    }
     refresh()
   }
-  alphaRow.addEventListener('pointerdown', (e: PointerEvent) => {
+  alphaTrack.addEventListener('pointerdown', (e: PointerEvent) => {
     dragging = 'alpha'
-    safeCapture(alphaRow, e.pointerId)
+    safeCapture(alphaTrack, e.pointerId)
     alphaFromEvent(e)
   })
-  alphaRow.addEventListener('pointermove', (e: PointerEvent) => {
+  alphaTrack.addEventListener('pointermove', (e: PointerEvent) => {
     if (dragging === 'alpha') alphaFromEvent(e)
   })
 
