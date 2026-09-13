@@ -229,16 +229,62 @@ async function main() {
       params: !!document.getElementById('panel-params'),
       palette: !!document.getElementById('panel-palette'),
       status: !!document.getElementById('statusbar'),
-      buttons: document.querySelectorAll('#header-actions button').length
+      leftActions: document.querySelectorAll('#header-actions button').length,
+      importBtn: document.getElementById('btn-import')?.textContent || '',
+      exportBtn: document.getElementById('btn-export')?.textContent || '',
+      modeOptions: document.querySelectorAll('#header-mode select option').length,
+      modeInRight: !!document.querySelector('.header-right #header-mode'),
+      importInLeft: !!document.querySelector('.header-left #btn-import')
     })`)
-    check('UI 装配：工具/画布/参数/色板/状态栏/顶栏按钮都在', () => {
+    check('UI 装配：工具/画布/参数/色板/状态栏 + 顶栏分组', () => {
       const u = JSON.parse(ui)
       assert(u.board, 'canvas 缺失')
       assert(u.tools === 6, `工具按钮应为 6，实际 ${u.tools}`)
       assert(u.params && u.palette && u.status, '面板或状态栏缺失')
-      assert(u.buttons >= 10, `顶栏按钮过少：${u.buttons}`)
-      return `${u.tools} 工具 / ${u.buttons} 按钮`
+      assert(u.leftActions >= 5, `左侧编辑操作过少：${u.leftActions}`)
+      assert(u.importBtn.includes('导入'), `右上角缺「导入图片」按钮：${u.importBtn}`)
+      assert(u.exportBtn.includes('导出'), `右上角缺「导出」按钮：${u.exportBtn}`)
+      assert(u.modeOptions === 3, `模式切换应有 3 个选项，实际 ${u.modeOptions}`)
+      return `${u.tools} 工具 / 模式 3 项 / 右上角「${u.importBtn}」「${u.exportBtn}」`
     })
+
+    check('顶栏布局：导入导出在右上角，模式切换仍在左侧', () => {
+      const u = JSON.parse(ui)
+      assert(!u.modeInRight, '模式切换不应被移到右上角（用户要求保持原位）')
+      assert(!u.importInLeft, '「导入图片」应该移到右上角，而不是留在左侧')
+      return '分组正确'
+    })
+
+    // 导出菜单：点开应出现条目、再点收起（并且不能被一次重渲染冲掉）
+    const menuFlow = await cdp.eval(`(() => {
+      const btn = document.getElementById('btn-export')
+      const menu = document.getElementById('export-menu')
+      const before = menu.hidden
+      btn.click()
+      const openedHidden = menu.hidden
+      const items = menu.querySelectorAll('.dropdown-item').length
+      const groups = [...menu.querySelectorAll('.dropdown-group')].map((g) => g.textContent)
+      const scales = menu.querySelectorAll('.dropdown-row .btn').length
+      const aria = btn.getAttribute('aria-expanded')
+      // 再点一次应收起
+      btn.click()
+      const closedHidden = menu.hidden
+      return JSON.stringify({ before, openedHidden, items, groups, scales, aria, closedHidden })
+    })()`)
+    check('导出菜单：可展开、含分组与倍数、可收起', () => {
+      const m = JSON.parse(menuFlow)
+      assert(m.before === true, '菜单初始应为收起状态')
+      assert(m.openedHidden === false, '点击后菜单应展开')
+      assert(m.items >= 5, `菜单条目过少：${m.items}`)
+      assert(m.scales === 9, `放大倍数应为 9 个，实际 ${m.scales}`)
+      assert(m.aria === 'true', 'aria-expanded 应为 true')
+      assert(m.closedHidden === true, '再次点击应收起')
+      return `${m.items} 个条目 / ${m.groups.join('/')} / ${m.scales} 个倍数`
+    })
+
+    // 菜单在"有画布"时点某个条目不应报错（导出会真的触发下载，这里只验证菜单联动不抛错）
+    // 注意：这条必须放在**创建画布之后**，否则菜单条目本就该是禁用状态
+
 
     // 环境探针：确认 headless 下 setTimeout 与 rAF 是否真的会回调（先排除环境因素）
     const envProbe = await cdp.eval(`(async () => {
@@ -319,6 +365,29 @@ async function main() {
       assert(Number(c.draws) > 0, `绘制函数从未执行（draws=${c.draws}）`)
       assert(c.nonEmpty > 1000, `画布几乎空白：${c.nonEmpty} 个不透明像素（lastDraw=${c.lastDraw}）`)
       return `${c.w}×${c.h} / ${c.nonEmpty} 个不透明像素 / 重绘 ${c.draws} 次`
+    })
+
+    // 导出菜单条目在有画布时必须可用（这条放在创建画布之后，才对得上真实时序）
+    const menuClickSafe = await cdp.eval(`(() => {
+      const btn = document.getElementById('btn-export')
+      btn.click()
+      const menu = document.getElementById('export-menu')
+      const target = menu.querySelector('[data-testid="export-png"]')
+      const exists = !!target
+      const disabled = target ? target.disabled : null
+      const bead = menu.querySelector('[data-testid="export-bead"]')
+      const beadDisabled = bead ? bead.disabled : null
+      // 不真的点条目（会触发下载），只验证状态后收起
+      btn.click()
+      return JSON.stringify({ exists, disabled, beadExists: !!bead, beadDisabled })
+    })()`)
+    check('导出菜单：有画布时 PNG 与拼豆条目均可用', () => {
+      const r = JSON.parse(menuClickSafe)
+      assert(r.exists, '找不到 PNG 导出条目')
+      assert(r.disabled === false, '有画布时 PNG 导出条目不应禁用')
+      assert(r.beadExists, '找不到拼豆导出条目')
+      assert(r.beadDisabled === false, '有画布时拼豆导出条目不应禁用')
+      return 'PNG 与拼豆条目可用'
     })
 
     const png = await cdp.eval("window.pixelArtStudio.exportPNG(2).slice(0, 22)")

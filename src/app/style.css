@@ -35,6 +35,10 @@ html, body {
 
 /* ------------------------------------------------------------------ 顶栏 */
 
+/*
+ * 顶栏分两组：左侧"模式切换 + 编辑操作"，右上角"导入 / 导出"。
+ * 依据是桌面软件的肌肉记忆：文件级操作（导入/导出）在右上角，编辑级操作（撤销/重做）靠左。
+ */
 .header {
   display: flex;
   align-items: center;
@@ -45,6 +49,24 @@ html, body {
   flex-wrap: wrap;
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.header-mode { display: flex; align-items: center; }
+
 .logo { font-weight: 600; letter-spacing: 0.5px; white-space: nowrap; }
 
 .header-actions {
@@ -52,8 +74,72 @@ html, body {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  flex: 1;
 }
+
+/* ------------------------------------------------------------------ 导出下拉菜单 */
+
+.menu-anchor { position: relative; display: inline-flex; }
+
+.dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 80;
+  min-width: 268px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #1e222c;
+  box-shadow: 0 12px 32px #000a;
+}
+.dropdown[hidden] { display: none; }
+
+.dropdown-group {
+  padding: 6px 8px 3px;
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.dropdown-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 6px 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.dropdown-item:hover:not(:disabled) { background: #2a3040; }
+.dropdown-item:disabled { opacity: 0.4; cursor: not-allowed; }
+.dropdown-item .di-label { font-size: 13px; }
+.dropdown-item .di-hint { font-size: 11px; color: var(--dim); }
+
+.dropdown-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+  padding: 5px 8px 7px;
+}
+.dropdown-row-label { font-size: 11px; color: var(--dim); margin-right: 2px; }
+
+.dropdown-empty {
+  padding: 8px;
+  font-size: 12px;
+  color: var(--warn);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+
+/* 没有画布时导出按钮仍可点开（菜单里会说明原因），只做视觉弱化 */
+.btn.is-empty { opacity: 0.75; }
 
 /* ------------------------------------------------------------------ 三区布局 */
 
@@ -321,10 +407,21 @@ input[type="color"] {
 
 @media (max-width: 1200px) {
   .main { grid-template-columns: 200px 1fr 260px; }
+  /* 中等宽度优先保证"导入/导出"与模式切换可见：编辑操作只留图标文字更短的形态 */
+  .header-actions .btn { padding: 5px 7px; font-size: 12px; }
 }
 @media (max-width: 980px) {
   .main { grid-template-columns: 1fr; }
   .rail, .right { position: absolute; top: 0; bottom: 0; width: min(300px, 88vw); z-index: 60; box-shadow: 0 0 32px #000a; display: none; }
   .rail { left: 0; }
   .right { right: 0; }
+}
+@media (max-width: 720px) {
+  /* 窄屏：把编辑操作收成两行，但"导入图片 / 导出"永远留在右上角 */
+  .header { padding: 6px 8px; gap: 6px; }
+  .header-left { gap: 6px; }
+  .logo { font-size: 12px; }
+  .mode-select { padding: 4px 6px; }
+  .header-actions .btn { padding: 4px 6px; font-size: 11px; }
+  .dropdown { min-width: 240px; right: -4px; }
 }

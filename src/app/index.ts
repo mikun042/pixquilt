@@ -209,6 +209,13 @@ const palettePanel = document.getElementById('panel-palette') as HTMLElement
 const paramsPanel = document.getElementById('panel-params') as HTMLElement
 const statusbar = document.getElementById('statusbar') as HTMLElement
 
+/** 顶栏按钮引用：结构只建一次，render 时只更新可用状态（避免打断导出菜单的展开状态） */
+let fileInput: HTMLInputElement | null = null
+let undoBtn: HTMLButtonElement | null = null
+let redoBtn: HTMLButtonElement | null = null
+let regenerateBtn: HTMLButtonElement | null = null
+let newBtn: HTMLButtonElement | null = null
+
 const TOOL_META: Record<string, { icon: string; name: string; key: string }> = {
   pencil: { icon: '✎', name: '画笔', key: 'B' },
   selection: { icon: '⬚', name: '选区', key: 'M' },
@@ -529,6 +536,7 @@ function renderAll(): void {
   renderParams()
   renderStatusbar()
   renderEmptyState()
+  updateHeaderState()
   canvasApi.redraw()
 }
 
@@ -571,11 +579,26 @@ function exportProject(): void {
 
 /* ------------------------------------------------------------------ 顶栏装配 */
 
+/**
+ * 顶栏只构建一次，之后只更新按钮的可用状态。
+ *
+ * 为什么不在每次 render 里重建：导出菜单是展开/收起状态机，重建会把菜单状态一起冲掉
+ * （点开菜单 → 触发一次渲染 → 菜单消失）。这里把"结构"与"状态"分开：
+ * 结构在 boot 时建好，render 只调 updateHeaderState()。
+ */
 function buildHeader(): void {
-  const header = document.getElementById('header-actions')
-  if (!header) return
-  const art = app.art
-  const fileInput = el('input', {
+  const modeHost = document.getElementById('header-mode') as HTMLElement | null
+  const actionsHost = document.getElementById('header-actions') as HTMLElement | null
+  const importBtn = document.getElementById('btn-import') as HTMLButtonElement | null
+  const exportBtn = document.getElementById('btn-export') as HTMLButtonElement | null
+  const menu = document.getElementById('export-menu') as HTMLElement | null
+  const anchor = document.getElementById('export-anchor') as HTMLElement | null
+  if (!modeHost || !actionsHost || !importBtn || !exportBtn || !menu || !anchor) {
+    throw new Error('顶栏结构缺失（index.html 模板被改动过？）')
+  }
+
+  // 文件选择器常驻在 DOM 里（隐藏），"导入图片"与"新建空白画布"共用它
+  fileInput = el('input', {
     type: 'file',
     accept: 'image/*,.avif,.ico,.svg',
     style: { display: 'none' },
@@ -585,25 +608,43 @@ function buildHeader(): void {
       ;(e.target as HTMLInputElement).value = ''
     },
   })
-  header.append(fileInput)
+  document.body.append(fileInput)
 
-  const btn = (label: string, title: string, onclick: () => void, disabled = false) =>
-    el('button', { class: 'btn', title, disabled: disabled ? true : false, onclick }, [label])
-
-  const modeSelect = selectInput(store.get('mode'), [['photo', '图片→像素'], ['beads', '拼豆图纸'], ['asset', '游戏资产']], (v) => {
-    store.set('mode', v as 'photo' | 'beads' | 'asset')
-    patchParams(MODE_PRESETS[v] ?? {})
-  })
+  /* ---- 左侧：模式切换（位置与之前一致，只是不再和文件操作混在一起） ---- */
+  const modeSelect = selectInput(
+    store.get('mode'),
+    [
+      ['photo', '图片→像素'],
+      ['beads', '拼豆图纸'],
+      ['asset', '游戏资产'],
+    ],
+    (v) => {
+      store.set('mode', v as 'photo' | 'beads' | 'asset')
+      patchParams(MODE_PRESETS[v] ?? {})
+      renderAll()
+    },
+  )
   modeSelect.className = 'mode-select'
+  modeSelect.title = '选择用途：切换后会自动套一组合适的参数'
+  modeSelect.setAttribute('aria-label', '工作模式')
+  modeSelect.dataset.testid = 'mode'
+  modeHost.append(modeSelect)
 
-  header.append(
-    modeSelect,
-    btn('导入图片', '打开或拖入图片', () => fileInput.click()),
-    btn('重新转换', '用当前参数重跑（有手动编辑时会确认）', () => {
-      if (store.get('hasEdits') && !confirm('重新转换会覆盖当前手动编辑，继续？')) return
+  /* ---- 左侧：编辑操作（随手可及，且撤销/重做直接反映可用状态） ---- */
+  undoBtn = el('button', { class: 'btn', title: '撤销（Ctrl+Z）', onclick: undo }, ['↶ 撤销'])
+  redoBtn = el('button', { class: 'btn', title: '重做（Ctrl+Y / Ctrl+Shift+Z）', onclick: redo }, ['↷ 重做'])
+  regenerateBtn = el('button', {
+    class: 'btn',
+    title: '用当前参数重新转换（有手动编辑时会先确认）',
+    onclick: () => {
+      if (store.get('hasEdits') && !confirm('重新转换会覆盖当前的手动编辑，继续？')) return
       regenerate()
-    }, !app.source),
-    btn('新建', '清空画布与素材', () => {
+    },
+  }, ['重新转换'])
+  newBtn = el('button', {
+    class: 'btn',
+    title: '清空画布与素材，重新开始',
+    onclick: () => {
       if (app.art && !confirm('清空当前画布？未导出的内容会丢失。')) return
       app.art = null
       app.source = null
@@ -613,25 +654,157 @@ function buildHeader(): void {
       canvasApi.setArt(null)
       store.setMany({ hasEdits: false, selectedCount: 0, clipboardHas: false })
       renderAll()
-    }),
-    btn('导出 PNG', '按 1 倍导出（其它倍数见下方按钮）', () => void exportPNG(1), !art),
-    btn('拼豆图纸', '导出图纸 SVG + 缺口清单 CSV', exportBeadFiles, !art),
-    btn('项目 JSON', '保存参数+像素（不含原图）', exportProject, !art),
-    btn('? 快捷键', '快捷键速查', () => showHelp()),
+    },
+  }, ['新建'])
+  const helpBtn = el('button', { class: 'btn', title: '快捷键速查（?）', onclick: showHelp }, ['? 快捷键'])
+  actionsHost.append(undoBtn, redoBtn, regenerateBtn, newBtn, helpBtn)
+
+  /* ---- 右上角：导入图片 ---- */
+  importBtn.textContent = '导入图片'
+  importBtn.title = '打开图片文件（也可以直接拖进窗口，或 Ctrl+V 粘贴）'
+  importBtn.dataset.testid = 'import'
+  const pickFile = fileInput
+  importBtn.addEventListener('click', () => pickFile.click())
+
+  /* ---- 右上角：导出菜单（把原先铺在顶栏的 9 个倍数按钮收进菜单） ---- */
+  exportBtn.textContent = '导出 ▾'
+  exportBtn.title = '导出 PNG / 图纸 / 数据（Ctrl+S 直接存 1 倍 PNG）'
+  exportBtn.dataset.testid = 'export'
+  const openMenu = () => {
+    renderExportMenu(menu)
+    menu.hidden = false
+    exportBtn.setAttribute('aria-expanded', 'true')
+  }
+  const closeMenu = () => {
+    menu.hidden = true
+    exportBtn.setAttribute('aria-expanded', 'false')
+  }
+  exportBtn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    if (menu.hidden) openMenu()
+    else closeMenu()
+  })
+  // 点菜单内部不关闭（除非显式点了某个条目）；点外面关闭
+  menu.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement
+    if (target.closest('[data-close]')) closeMenu()
+  })
+  window.addEventListener('click', (e) => {
+    if (menu.hidden) return
+    if (!anchor.contains(e.target as Node)) closeMenu()
+  })
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.hidden) closeMenu()
+  })
+
+  updateHeaderState()
+}
+
+/** 导出菜单内容：每次打开时重建，因此"透明底"等状态永远是最新的 */
+function renderExportMenu(menu: HTMLElement): void {
+  clear(menu)
+  const hasArt = !!app.art
+  const keyed = app.params.transparent === 'key'
+
+  const item = (label: string, hint: string, onclick: () => void, opts: { disabled?: boolean; testid?: string } = {}) => {
+    const b = el('button', {
+      class: 'dropdown-item',
+      type: 'button',
+      role: 'menuitem',
+      title: hint,
+      disabled: opts.disabled ? true : false,
+      onclick,
+    }, [
+      el('span', { class: 'di-label' }, [label]),
+      el('span', { class: 'di-hint' }, [hint]),
+    ])
+    if (opts.testid) b.dataset.testid = opts.testid
+    return b
+  }
+
+  if (!hasArt) {
+    menu.append(el('div', { class: 'dropdown-empty' }, ['还没有画布：先导入图片，或点「新建 → 空白画布」']))
+  }
+
+  menu.append(el('div', { class: 'dropdown-group' }, ['图片']))
+  menu.append(
+    item('PNG 1x（原尺寸）', `文件名自动带源图名${keyed ? ' · 透明底' : ''}`, () => {
+      closeExportMenu()
+      void exportPNG(1)
+    }, { disabled: !hasArt, testid: 'export-png' }),
+  )
+  const scaleRow = el('div', { class: 'dropdown-row' })
+  scaleRow.append(el('span', { class: 'dropdown-row-label' }, ['放大倍数']))
+  for (const s of EXPORT_SCALES) {
+    scaleRow.append(
+      el('button', {
+        class: 'btn tiny',
+        type: 'button',
+        disabled: hasArt ? false : true,
+        title: `按 ${s} 倍最近邻放大导出`,
+        onclick: () => {
+          closeExportMenu()
+          void exportPNG(s)
+        },
+      }, [`${s}x`]),
+    )
+  }
+  menu.append(scaleRow)
+  menu.append(
+    item('复制 PNG（1x）', '直接粘进聊天 / 文档', () => {
+      closeExportMenu()
+      void copyPNG()
+    }, { disabled: !hasArt }),
   )
 
-  const scaleRow = el('div', { class: 'row tiny-gap' })
-  for (const s of EXPORT_SCALES) {
-    scaleRow.append(el('button', { class: 'btn tiny', disabled: art ? false : true, onclick: () => void exportPNG(s) }, [`${s}x`]))
-  }
-  header.append(scaleRow)
-  header.append(
-    el('div', { class: 'row tiny-gap' }, [
-      el('button', { class: 'btn tiny', disabled: art ? false : true, onclick: exportPixelJSON }, ['像素 JSON']),
-      el('button', { class: 'btn tiny', disabled: art ? false : true, onclick: () => void copyPNG() }, ['复制 PNG']),
-      el('button', { class: 'btn tiny', disabled: art ? false : true, title: '新建空白画布（不导入图片）', onclick: () => makeBlank() }, ['空白画布']),
-    ]),
+  menu.append(el('div', { class: 'dropdown-group' }, ['拼豆']))
+  menu.append(
+    item('图纸 SVG + 缺口清单 CSV', '格内标号色、分板、图例；清单含珠数与重量', () => {
+      closeExportMenu()
+      exportBeadFiles()
+    }, { disabled: !hasArt, testid: 'export-bead' }),
   )
+
+  menu.append(el('div', { class: 'dropdown-group' }, ['数据']))
+  menu.append(
+    item('像素数据 JSON', '每格颜色 + 每色用量表（原料清单）', () => {
+      closeExportMenu()
+      exportPixelJSON()
+    }, { disabled: !hasArt }),
+    item('项目 JSON', '参数 + 色板 + 像素，不含原图，可分享继续编辑', () => {
+      closeExportMenu()
+      exportProject()
+    }, { disabled: !hasArt }),
+  )
+
+  menu.append(el('div', { class: 'dropdown-group' }, ['画布']))
+  menu.append(
+    item('新建空白画布', '不导入图片，直接开画（拼豆/资产原型常用）', () => {
+      closeExportMenu()
+      makeBlank()
+    }, { testid: 'blank-canvas' }),
+  )
+}
+
+/** 关闭导出菜单（供菜单项回调复用，避免互相引用） */
+function closeExportMenu(): void {
+  const menu = document.getElementById('export-menu')
+  const btn = document.getElementById('btn-export')
+  if (menu) menu.hidden = true
+  btn?.setAttribute('aria-expanded', 'false')
+}
+
+/** 只更新顶栏按钮的可用状态（不重建 DOM，因此不会打断菜单） */
+function updateHeaderState(): void {
+  const art = app.art
+  const src = app.source
+  if (undoBtn) undoBtn.disabled = history.past.length === 0
+  if (redoBtn) redoBtn.disabled = history.future.length === 0
+  if (regenerateBtn) regenerateBtn.disabled = !src
+  if (newBtn) newBtn.disabled = !art && !src
+  const exportBtn = document.getElementById('btn-export') as HTMLButtonElement | null
+  // 导出按钮**不因"没有画布"而禁用**：否则用户不知道去哪导出，点开菜单会看到明确提示
+  if (exportBtn) exportBtn.classList.toggle('is-empty', !art)
 }
 
 function makeBlank(): void {
@@ -661,6 +834,8 @@ function showHelp(): void {
     ['滚轮 / + / − / 0', '缩放 / 适配窗口'],
     ['空格+拖动 / 中键拖动', '平移画布'],
     ['Ctrl+Z / Ctrl+Y', '撤销 / 重做'],
+    ['Ctrl+S', '导出 PNG（1 倍）'],
+    ['右上角「导出 ▾」', 'PNG 各倍数 / 拼豆图纸 / 像素与项目 JSON'],
   ]
   const table = el('table')
   for (const [k, v] of rows) table.append(el('tr', {}, [el('td', {}, [k]), el('td', {}, [v])]))
@@ -699,6 +874,12 @@ window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && k === 'y') {
     e.preventDefault()
     redo()
+    return
+  }
+  if ((e.ctrlKey || e.metaKey) && k === 's') {
+    // 主流软件的肌肉记忆：Ctrl+S = 导出图片（这里是浏览器工具，没有"保存文件"的概念）
+    e.preventDefault()
+    void exportPNG(1)
     return
   }
   if (e.ctrlKey || e.metaKey || e.altKey) return
