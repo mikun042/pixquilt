@@ -26,8 +26,11 @@ npm run build       # 生成 像素画工作台.html
 
 ## 我是 AI agent（不打开浏览器）
 
+> 直接把项目地址交给 agent 就行——`README.md` 与 [`AGENTS.md`](AGENTS.md) 都在根目录，
+> 后者是**给 agent 的交接单**（入口选择、环境要求、三条最容易踩的坑）。
+> **`src/` 零第三方依赖**：`artc.mjs` 与 `quickstart.mjs` 不需要 `npm install` 就能跑。
+
 ```bash
-npm install
 node tool/quickstart.mjs      # 一条命令跑通：自省 → 造素材 → 批量 → 拼豆 → 页内 API
 ```
 

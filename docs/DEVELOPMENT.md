@@ -215,7 +215,8 @@ npm run ref:analyze -- <png 路径>   # 参考图/截图结构分析（主色直
 
 | 文档 | 读者 | 真源 | 什么时候必须更新 |
 |---|---|---|---|
-| `README.md` | 进入项目的人 | 手写 | 入口、命令、目录结构变化时 |
+| `README.md` | 进入项目的人与 agent | 手写 | 入口、命令、目录结构变化时 |
+| `AGENTS.md` | **AI agent 的交接单**（最短路径） | 手写 | 入口路径、环境要求、易踩坑变化时 |
 | `docs/USAGE.md` | 最终用户（人类） | 手写 | 改参数 / 快捷键 / 界面行为 / 导出行为时 |
 | `docs/AGENT-QUICKSTART.md` | AI agent | 手写 | 改 CLI 参数 / 页内 API / 上手路径时 |
 | `docs/AGENT_API.md` | AI agent、脚本作者 | **由 `src/core/spec.ts` 生成** | `npm run describe`，测试保证不漂移 |
