@@ -51,14 +51,14 @@ npm run verify
 | 步骤 | 命令 | 内容 | 需要浏览器 |
 |---|---|---|---|
 | 类型检查 | `npm run typecheck` | `tsc --noEmit`，开着 `noUnusedLocals`——**未使用的变量会直接报错** | 否 |
-| 单元测试 | `npm test` | 71 项（管线 / 12 类算子 / sanitize / 导出格式 / PDF 结构 / 常量表） | 否 |
+| 单元测试 | `npm test` | 73 项（管线 / 12 类算子 / sanitize / 导出格式 / PDF 结构 / 常量表） | 否 |
 | 构建 | `npm run build` | 内联 CSS+JS 出单文件，核对两个产物哈希一致 | 否 |
 | 链路自检 | `npm run selftest` | 32 项（引擎→算子→导出→拼豆→PDF→CLI 参数），不需要素材 | 否 |
 | 端到端 | `npm run e2e` | 20 项（UI 装配 + 绘制 + 导出 + 导入 + 页面算子可执行性） | **是** |
 | 取色器专项 | `npm run e2e:picker` | 17 项（色轮几何方向、标签、色板、透明度） | **是** |
 | 滑条专项 | `npm run e2e:slider` | 12 项（逐行拖动、数值输入、防误触） | **是** |
 | 回归防线 | `npm run e2e:regressions` | 23 项（已修缺陷逐条锁住，真实鼠标/键盘输入） | **是** |
-| PDF 与图标 | `npm run e2e:pdf` | 8 项（浏览器侧压缩格式、xref 偏移、吸管图标几何） | **是** |
+| PDF 与图标 | `npm run e2e:pdf` | 10 项（浏览器侧压缩格式、排版自适应、xref 偏移、吸管图标几何） | **是** |
 
 改 UI 外观时的辅助工具：
 

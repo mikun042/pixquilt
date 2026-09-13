@@ -746,14 +746,85 @@ describe('拼豆（Bead Mode）', () => {
     assert.ok(!/[^\x00-\x7f]/.test(content), 'PDF 内容流里出现了非 ASCII 字符（会显示成乱码）')
   })
 
-  it('拼豆 PDF：分板跨页时每块板各占一页，页数 = 板数', () => {
-    const art = build({ longEdge: 120 })
+  it('拼豆 PDF：号色字号跟格子走（比例为主，绝对上限只在超大格子上兜底）', () => {
+    /*
+     * 这条守住的是"格子里的字别挤满格子"这个用户可见的性质。
+     *
+     * 必须在**格子小于上限阈值**的画布上测比例：`fontSize = min(MAX_CODE_PT, cellW * RATIO)`，
+     * 格子一大就被 6.5pt 顶住，比例随之下降——那时无论 RATIO 是 0.45 还是 0.62，
+     * 输出都是 6.5pt，断言测不到任何东西（我第一版就栽在这，变异测试没能变红）。
+     */
+    const fontOf = (art: ReturnType<typeof build>): { code: number; cell: number } => {
+      // 必须注入压缩器：不注入时流是明文，下面的 inflateSync 会直接抛错
+      const bytes = beadPdf(art, { codes: getPreset('beads16')?.codes, deflate: deflateRaw })
+      const content = inflateSync(Buffer.from(firstStream(bytes))).toString('latin1')
+      const segs = [...content.matchAll(/([\d.]+) ([\d.]+) m\n([\d.]+) ([\d.]+) l\nS/g)]
+      const vx = [...new Set(segs.filter((s) => Math.abs(Number(s[1]) - Number(s[3])) < 0.001).map((s) => Number(s[1])))].sort(
+        (a, b) => a - b,
+      )
+      const cell = Math.min(...vx.slice(1).map((x, i) => x - vx[i]))
+      const codeSizes = []
+      for (const blk of content.matchAll(/BT\n([\s\S]*?)ET/g)) {
+        if (!/\(([A-Z]\d+)\) Tj/.test(blk[1])) continue
+        const tf = /\/Helvetica(?:-Bold)? ([\d.]+) Tf/.exec(blk[1])
+        if (tf) codeSizes.push(Number(tf[1]))
+      }
+      assert.ok(codeSizes.length > 0, '没有印出号色：格内应当有 B01/G02 这样的编号')
+      return { code: codeSizes[0], cell }
+    }
+
+    /*
+     * 取值说明（别随手改，这几个尺寸是量出来的）：
+     *  - 58×58 / 100×100：格子 9.30 / 5.39pt，字号未被上限顶住，比例应稳定在 45%。
+     *  - 32×32：格子 16.85pt，已超上限阈值（6.5/0.45 ≈ 14.4pt），比例降到 39%。
+     *  - 120×120：格子 4.49pt → 字号 2.02pt，低于 MIN_CODE_PT 而**不印号色**，
+     *    所以不能拿它测比例。
+     */
+    for (const side of [58, 100]) {
+      const art = build({ longEdge: side, exactWidth: side, exactHeight: side })
+      const { code, cell } = fontOf(art)
+      const ratio = code / cell
+      assert.ok(
+        ratio > 0.4 && ratio <= 0.46,
+        `${side}×${side}：字号/格宽应为 45% 左右，实际 ${(ratio * 100).toFixed(0)}%（字号 ${code.toFixed(2)}pt / 格子 ${cell.toFixed(2)}pt）`,
+      )
+    }
+
+    // 格子超上限阈值：比例被压低，但仍须"明显小于格子"（这正是设上限的目的）
+    for (const side of [16, 32]) {
+      const art = build({ longEdge: side, exactWidth: side, exactHeight: side })
+      const { code, cell } = fontOf(art)
+      assert.equal(code, 6.5, `${side}×${side} 的字号应被 MAX_CODE_PT 顶住，实际 ${code}`)
+      assert.ok(code / cell < 0.42, `${side}×${side}：格子 ${cell.toFixed(1)}pt 很大，比例应有明显余量`)
+    }
+  })
+
+  it('拼豆 PDF：超出可读尺寸时才分板跨页，页数 = 板数', () => {
+    /*
+     * 用 600×600：整幅塞一页需要 0.86pt/格，远低于可读下限（约 4.2pt），
+     * 所以退回按板分页——这正是"不跨页是偏好、不是硬指标"的那条分界线。
+     * （120×120 现在能塞进一页，不再适合做本用例。）
+     */
+    const art = build({ longEdge: 600, exactWidth: 600, exactHeight: 600 })
     const report = beadReport(art, { boardCells: 58 })
     const boards = report.board.columns * report.board.rows
     assert.ok(boards >= 4, `本用例需要多块板才能验证分页，实际 ${boards}`)
     const text = new TextDecoder('latin1').decode(beadPdf(art, { boardCells: 58, deflate: deflateRaw }))
     assert.equal(Number(/\/Type \/Pages \/Count (\d+)/.exec(text)?.[1]), boards, '页数应等于板数')
     assert.equal([...text.matchAll(/\/Type \/Page[^s]/g)].length, boards, 'Page 对象数应等于板数')
+    // 分页后格子应回到可读尺寸（而不是继续缩小）
+    assert.ok(boards === 121, `600/58 向上取整应为 11×11 块板，实际 ${boards}`)
+  })
+
+  it('拼豆 PDF：常规尺寸自适应成一页（不跨页）', () => {
+    // 用户要求"导出的画最好自适应 A4 尺寸，尽可能不跨页"——
+    // 58×58 与 120×120 都该落在一页；120×120 曾固定切成 9 页（按板分页的旧排版）。
+    for (const side of [58, 120]) {
+      const art = build({ longEdge: side, exactWidth: side, exactHeight: side })
+      const text = new TextDecoder('latin1').decode(beadPdf(art, { deflate: deflateRaw }))
+      const pages = Number(/\/Type \/Pages \/Count (\d+)/.exec(text)?.[1])
+      assert.equal(pages, 1, `${side}×${side} 应自适应成一页，实际 ${pages} 页`)
+    }
   })
 })
 

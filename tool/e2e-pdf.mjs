@@ -312,6 +312,61 @@ async function main() {
       assert(codes.length === 432, `号色数应等于不透明格数 432，实际 ${codes.length}`)
       return `${codes.length} 格`
     })
+
+    /*
+     * 排版三件套：自适应 A4、尽量不跨页、号色字号小到不挤格子。
+     * 用同一份浏览器产出的 PDF 就能验——不必另跑 CLI。
+     */
+    const geometry = () => {
+      const content = inflateSync(pdfStreams(bytes)[0]).toString('latin1')
+      const segs = [...content.matchAll(/([\d.]+) ([\d.]+) m\n([\d.]+) ([\d.]+) l\nS/g)]
+      const vx = [...new Set(segs.filter((s) => Math.abs(Number(s[1]) - Number(s[3])) < 0.001).map((s) => Number(s[1])))].sort(
+        (a, b) => a - b,
+      )
+      const cell = vx.length >= 2 ? Math.min(...vx.slice(1).map((x, i) => x - vx[i])) : NaN
+
+      /*
+       * 号色字号**从号色文字实际用的 Tf 反推**，不要"猜一个尺寸区间来筛"。
+       * 我第一版按 `size <= 6` 过滤，而格子大时号色字号会超过 6pt（上限 6.5），
+       * 于是被自己的过滤器丢掉，断言误报"没有找到号色字号"。
+       * 号色的特征不是"字小"，而是"内容是 B01/G02 这样的编号"。
+       */
+      const codeSizes = []
+      for (const blk of content.matchAll(/BT\n([\s\S]*?)ET/g)) {
+        if (!/\(([A-Z]\d+)\) Tj/.test(blk[1])) continue
+        const tf = /\/Helvetica(?:-Bold)? ([\d.]+) Tf/.exec(blk[1])
+        if (tf) codeSizes.push(Number(tf[1]))
+      }
+      return { vx, cell, code: codeSizes.length ? codeSizes[0] : NaN, codeCount: codeSizes.length, content }
+    }
+
+    check('排版：常规尺寸自适应成一页，且内容落在页边距内', () => {
+      const g = geometry()
+      assert(Number(/\/Type \/Pages \/Count (\d+)/.exec(text)?.[1]) === 1, '24×18 这种小画布必须是单页')
+      assert(g.vx.length >= 2, '没找到竖网格线')
+      const span = g.vx[g.vx.length - 1] - g.vx[0]
+      assert(span <= 595.28 - 40, `图纸宽度 ${span.toFixed(1)}pt 超出 A4 可用宽度`)
+      return `${g.vx.length} 条竖线，格子 ${(g.cell / 72 * 25.4).toFixed(2)}mm，跨 ${span.toFixed(0)}pt`
+    })
+
+    check('排版：号色字号明显小于格子边长（不再挤满格子）', () => {
+      const g = geometry()
+      assert(g.code > 0, '没有找到号色字号')
+      /*
+       * 断言的是**比例区间**，不是精确值：将来微调比例属于设计调整，不该让测试红；
+       * 但两端越界都要抓住——用户就是为"字挤满格子"反馈的。
+       *
+       * 上限 45%：旧版实测 62%（min(6.5, cellW*0.62)，字几乎贴边）。
+       * 下限 15%：格宽比例受 `MAX_CODE_PT` 兜底，**超大格子上的比例必然偏低**——
+       * 本用例 24×18 的格子有 7.93mm，6.5pt 上限对应约 2.3mm 字，占 29%。
+       * 想要这个比例也到 45% 就得把上限抬到 15pt 以上，那会让大画布上的字失控变大。
+       * 宁可让"格子特别大时字相对偏小"，也不要"格子小的时候字糊成一团"。
+       */
+      const ratio = g.code / g.cell
+      assert(ratio <= 0.45, `号色字号占格宽 ${(ratio * 100).toFixed(0)}%，超过 45% 会挤到格子边框`)
+      assert(ratio >= 0.15, `号色字号只占格宽 ${(ratio * 100).toFixed(0)}%，小到读不了`)
+      return `字号 ${(g.code / 72 * 25.4).toFixed(2)}mm / 格子 ${(g.cell / 72 * 25.4).toFixed(2)}mm = ${(ratio * 100).toFixed(0)}%`
+    })
   }
 }
 
