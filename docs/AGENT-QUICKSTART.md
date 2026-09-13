@@ -125,9 +125,51 @@ node tool/artc.mjs --blank 32x32 --blank-transparent --out 输出 \
 --ops '[{"op":"setAll","color":"#ffffff"},{"op":"rect","x0":1,"y0":1,"x1":30,"y1":30,"color":"#000000","filled":false}]'
 ```
 
+**算子很长就写文件**。逐格 `setCells` 动辄十几 KB，塞进命令行既要处理引号转义、
+又容易撞长度上限，报错还定位不到位置：
+
+```bash
+node tool/artc.mjs --in 底图.png --ops-file ops.json --out 输出 --json
+node tool/artc.mjs --in 底图.png --ops @ops.json  --out 输出 --json   # 等价简写
+```
+
 ---
 
-## 四、页内 API（浏览器路径）
+## 四、做**无损**像素素材（最容易踩的一条）
+默认参数面向"照片转像素"，对**已经画好的像素素材**是有损的。走这条路径必须显式给三个开关：
+
+```bash
+node tool/artc.mjs --in 精灵.png --size 64x64 --alpha \
+  --downsample nearest --no-cleanup --palette-k 64 --out 输出 --json
+```
+
+每个开关挡掉一类损失（实测数据，64×64 探针精灵：1px 描边 + 1px 孤立高光）：
+
+| 开关 | 不加会怎样 |
+| --- | --- |
+| `--no-cleanup` | **杂色清理会吃掉 1px 细节**——孤立高光、眼神、描边断点正是它要"并入邻色"的对象，实测 1px 高光被整块吞掉（眼睛也从 9 格掉到 8 格） |
+| `--downsample nearest` | 默认 `average` 会按面积混色，**造出源图里不存在的颜色**（实测多出 8 个混合色，1px 高光被染成 `#fff5bf`）；整数倍缩小时 `nearest` 是无损的（512→64 的 8:1 实测描边一根没丢） |
+| `--palette-k 64` | 自动取色默认只取 24 色，会把接近的颜色合并；设成 ≥ 实际色数才不会丢色 |
+| `--size WxH` | 注意是 `--size`，**没有 `--exact` 这个参数**（写了会报未知参数并从错误信息里看到它吞掉了什么） |
+
+**cleanup 动了像素会明确警告**，不会静默：
+
+```
+⚠ 精灵.png：杂色清理改掉 1 格，1 种颜色整幅消失：#ffd700(1格)
+  若这些是刻意画的细节，请加 --no-cleanup（本张产物已按清理后写出）
+```
+
+`--json` 里也有对应字段，可以程序化判断：
+
+```json
+"cleanup": { "changedCells": 1, "removedColors": [{ "index": 2, "hex": "#ffd700", "cells": 1 }], "truncated": false }
+```
+
+看到 `removedColors` 非空，先确认那些颜色是不是故意画的，再决定要不要 `--no-cleanup` 重跑。
+
+---
+
+## 五、页内 API（浏览器路径）
 
 ```js
 await page.evaluate(() => window.pixelArtStudio.whenReady())   // 等草稿恢复完成
@@ -151,7 +193,7 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 
 ---
 
-## 五、可以依赖的稳定约定
+## 六、可以依赖的稳定约定
 
 - **确定性**：同图 + 同参 + 同算子 = 同结果。用 `artHash`（CLI 的 `--json` 里有 `hash` 字段）跨运行比对。
 - **镜像同步**：`setParams` / `importImage` / `reset` / `loadProject` 之后，**同一次 JS 调用内**紧接读
@@ -162,7 +204,7 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 
 ---
 
-## 六、能力边界（如实声明，别踩）
+## 七、能力边界（如实声明，别踩）
 
 | 限制 | 说明 / 绕法 |
 |---|---|
@@ -176,7 +218,7 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 
 ---
 
-## 七、排错
+## 八、排错
 
 | 现象 | 原因 / 处理 |
 |---|---|
@@ -187,10 +229,15 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 | 算子报"必须显式给 color" | 无副作用路径不继承主色；给每个绘画算子补 `color` |
 | 想把结果喂给引擎但帧对不齐 | 用 `--size WxH` 固定尺寸 + `--sheet` 拿 `offsetX/offsetY`；不要用 `trim` 破坏帧尺寸 |
 | 想看某次调用到底改了什么 | `--json` 汇总里有 `hash` / `changes` / `transparent`；页内 API 返回 `changes[]`，其中 `changed` 是权威判定 |
+| 报"未知参数：--xxx" | 是真的写错了，工具**不会静默忽略**。错误信息会给出最接近的正确参数名，并提示该参数吞掉了后面的哪个值 |
+| 报"命名模板解析后仍含占位符" | `--name` 里用了不支持的占位符。可用：`{name}` `{index}` `{w}` `{h}` `{scale}`（可写 `{index:02}` 补零） |
+| 素材目录里混了 `.svg` 导致整批失败 | 已修复。现在会记进 `skippedFiles` 并以 0 退出；Node 端本来就只解码 PNG，非 PNG 请走浏览器路径 |
+| `--json` 的 stdout 解析失败 | 已修复（stdout 现在是纯 JSON）。若要同时看进度，加 `--progress`（进度写 stderr） |
+| 产物里出现 `undefined.png` | 已修复（0.1.0 之后）。确认产物是当前版本：`git log --oneline -1` |
 
 ---
 
-## 八、相关文档
+## 九、相关文档
 
 | 文档 | 内容 |
 |---|---|
@@ -202,7 +249,7 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 
 ---
 
-## 九、一句话给 agent
+## 十、一句话给 agent
 
 > 先 `node tool/quickstart.mjs` 确认环境并看懂产出形态；
 > 批量出图用 `tool/artc.mjs`（**固定色板** + `--size` + `--alpha` + `--sheet`）；

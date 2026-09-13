@@ -13,8 +13,9 @@
  *   node tool/artc.mjs --selftest
  *   node tool/artc.mjs --describe
  */
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 import { runPipeline } from '../src/core/pipeline.ts'
@@ -40,10 +41,68 @@ const HERE = dirname(fileURLToPath(import.meta.url))
  */
 const BOOL_FLAGS = new Set([
   'help', 'selftest', 'describe', 'dry-run', 'json', 'bead', 'alpha', 'transparent',
-  'sheet', 'pixbin', 'no-cleanup', 'quiet', 'lock-palette',
+  'sheet', 'pixbin', 'no-cleanup', 'quiet', 'lock-palette', 'blank-transparent', 'progress',
 ])
 /** 可选值开关：后面跟的值不以 -- 开头才算值（`--sheet` 与 `--sheet 4` 都合法） */
 const OPTIONAL_VALUE_FLAGS = new Set(['sheet', 'bead'])
+/** 取值型开关（后面必须跟一个值） */
+const VALUE_FLAGS = new Set([
+  'in', 'out', 'name', 'index', 'scale', 'ops', 'ops-file', 'blank', 'blank-color', 'long-edge', 'size',
+  'dither', 'contrast', 'saturation', 'brightness', 'crop', 'downsample', 'palette-k',
+  'palette', 'preset', 'style', 'matte', 'cleanup-min', 'bead-mm', 'bead-gram', 'board',
+])
+/** 允许出现的全部开关。新增 flag 必须同时改这里与帮助文本（见 BOOL_FLAGS 上方注释）。 */
+export const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...OPTIONAL_VALUE_FLAGS, ...VALUE_FLAGS])
+
+/** 简单的编辑距离，只用来给拼错的参数提建议 */
+function editDistance(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+  }
+  return dp[a.length][b.length]
+}
+
+/**
+ * 未知参数一律报错。
+ *
+ * 起因：曾经 `--exact 32x32` 被完全静默忽略——`--exact` 不是任何已实现的 flag，
+ * 于是它进了 `args.exact`（没人读），`32x32` 落进位置参数 `_`（也没人读），
+ * 命令"成功"退出但输出仍是默认 64×64。调用方（尤其是 agent）会拿这份产物当真，
+ * 直到下游发现尺寸不对才回头怀疑引擎。**静默失效比报错更糟**，这里把它变成硬错误。
+ */
+export function assertKnownFlags(argv) {
+  const unknown = []
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (!a.startsWith('--') || a.length === 2) continue
+    const key = a.slice(2)
+    if (KNOWN_FLAGS.has(key)) continue
+    // 该 flag 是否存在"吞掉下一个值"的副作用：a 之后的第一个非 -- 记号
+    const next = argv[i + 1]
+    const swallowed = next !== undefined && !next.startsWith('--') ? next : null
+    unknown.push({ key, swallowed })
+  }
+  if (!unknown.length) return
+  const lines = unknown.map(({ key, swallowed }) => {
+    const near = [...KNOWN_FLAGS]
+      .map((k) => ({ k, d: editDistance(key, k) }))
+      .filter((x) => x.d <= 2 || x.k.startsWith(key) || key.startsWith(x.k))
+      .sort((x, y) => x.d - y.d)
+      .slice(0, 3)
+      .map((x) => `--${x.k}`)
+    const hint = near.length ? `，是否想写 ${near.join(' 或 ')}？` : ''
+    const eaten = swallowed ? `（它还吞掉了后面的 "${swallowed}"，该值没有被任何参数使用）` : ''
+    return `  --${key}${hint}${eaten}`
+  })
+  throw new Error(
+    `未知参数：\n${lines.join('\n')}\n` +
+      `可用参数见 --help。未知参数不会被忽略地"照常执行"——那会让产物与预期不符却看不出原因。`,
+  )
+}
 
 export function parseArgs(argv) {
   const out = { _: [] }
@@ -215,6 +274,26 @@ export function parseOps(text, source) {
   return parsed
 }
 
+/**
+ * `--ops @文件` / `--ops-file <文件>`：从文件读算子数组。
+ *
+ * 单独提供它的理由：agent 生成的算子数组动辄 13–16 KB（一个 64×64 精灵的逐格 setCells），
+ * 走 `--ops '<json>'` 会把整份 JSON 塞进命令行——既容易撞 shell 长度上限，又要处理引号转义，
+ * 而且报错时定位不到第几行。写进文件就没有这些问题。
+ */
+export function loadOps(args) {
+  const fileArg = args['ops-file'] ?? (typeof args.ops === 'string' && args.ops.startsWith('@') ? args.ops.slice(1) : null)
+  if (!fileArg) return args.ops ? parseOps(String(args.ops), '--ops') : []
+  const path = resolve(String(fileArg))
+  let text
+  try {
+    text = readFileSync(path, 'utf8')
+  } catch (e) {
+    throw new Error(`读不到算子文件：${path}（${e?.code ?? e?.message ?? e}）`)
+  }
+  return parseOps(text, path)
+}
+
 /** 命名模板：{name} {index} {w} {h} {scale}，支持 {index:02} 零填充 */
 export function applyTemplate(tpl, vars) {
   return String(tpl).replace(/\{(\w+)(?::(\d+))?\}(?:)/g, (_, key, width) => {
@@ -225,6 +304,24 @@ export function applyTemplate(tpl, vars) {
   })
 }
 
+/**
+ * 产物名不许含未解析的 `{…}`。
+ *
+ * 起因：`--blank --name '{name}_{index:02}_{w}x{h}'` 曾产出 `{name}_{index_02}_{w}x{h}_01_8x8.png`——
+ * `{name}` 的替换值本身就是一段含占位符的模板，而 `String.replace` 会在**同一遍扫描**里
+ * 继续解析刚插入的 `{index:02}`，于是 `{` / `}` 被拆得七零八落（`{name}` 的 `{` 与 `{index:02}`
+ * 的 `}` 配了对）。留下这种名字的文件既难读也难被下游脚本匹配，且不会报错。
+ */
+export function assertNoPlaceholders(base, template) {
+  if (/\{[^}]*\}/.test(base)) {
+    throw new Error(
+      `命名模板解析后仍含占位符：${base}\n` +
+        `模板「${template}」用到的占位符只有 {name} {index} {w} {h} {scale}（可写 {index:02} 补零）。`,
+    )
+  }
+  return base
+}
+
 export function sanitizeName(s) {
   return String(s).replace(/[\\/:*?"<>|]/g, '_').replace(/[\s.]+$/, '').trim() || 'asset'
 }
@@ -233,7 +330,7 @@ export function sanitizeName(s) {
 
 function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wantSheet, wantPixbin, nameTemplate, index }) {
   const image = loadImageNode(src)
-  const { art: rendered, overflow, paletteSource } = runPipeline({ width: image.width, height: image.height, data: image.data }, params)
+  const { art: rendered, overflow, paletteSource, cleanup } = runPipeline({ width: image.width, height: image.height, data: image.data }, params)
   const applied = ops.length ? applyOps(rendered, ops, { allowApproxColor: !params.lockPalette }) : { art: rendered, changes: [], applied: false }
   const art = applied.art
 
@@ -241,7 +338,7 @@ function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wa
   const pngOpts = { transparentBg, bgHex: params.matteColor }
   const png = artToPngBytesNode(art, scale, pngOpts)
   const vars = { name: basename(src, extname(src)), index, w: art.width, h: art.height, scale }
-  const base = sanitizeName(applyTemplate(nameTemplate, vars))
+  const base = sanitizeName(assertNoPlaceholders(applyTemplate(nameTemplate, vars), nameTemplate))
 
   const result = {
     src,
@@ -251,6 +348,7 @@ function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wa
     paletteSize: art.palette.length,
     paletteSource,
     overflow,
+    cleanup,
     transparent: countTransparent(art.indices, art.alphaMask),
     usage: countUsage(art.indices, art.palette, art.alphaMask),
     changes: applied.changes,
@@ -634,6 +732,108 @@ async function selftest() {
     return '能力边界如实声明'
   })
 
+  /*
+   * ↓↓↓ 以下为「工具问题记录」修复的回归防线。
+   * 每条都必须能因为一个真实缺陷而失败——这正是它们存在的理由。
+   */
+
+  check('CLI：未知参数必须报错，不能静默忽略', () => {
+    // 曾经 `--exact 32x32` 完全静默：它进了没人读的 args.exact，32x32 落进没人读的位置参数，
+    // 命令"成功"退出但产物仍是默认尺寸。调用方会拿这份产物当真。
+    let threw = false
+    try {
+      assertKnownFlags(['--in', 'a.png', '--exact', '32x32'])
+    } catch (e) {
+      threw = true
+      assert(/--exact/.test(e.message), '错误信息要点出是哪个参数')
+      assert(/32x32/.test(e.message), '要提示它吞掉了后面的值')
+    }
+    assert(threw, '未知参数 --exact 应报错')
+    // 合法参数不能被误伤
+    assertKnownFlags(['--in', 'a.png', '--size', '32x32', '--no-cleanup', '--sheet', '4'])
+    return '未知参数报错且带纠正提示，合法参数不受影响'
+  })
+
+  check('CLI：帮助文本与参数允许集完全一致（两个方向）', () => {
+    const src = readFileSync(fileURLToPath(import.meta.url), 'utf8')
+    // 用 lastIndexOf 而不是 indexOf：本断言自身的说明文字里也含 'function printHelp()'，
+    // 取第一个会把区域截在自己的字符串里（真实踩过，表现为"帮助一个 flag 都没提到"）。
+    const start = src.lastIndexOf('function printHelp()')
+    const region = src.slice(start, src.indexOf('\n}\n', start))
+    const mentioned = new Set([...region.matchAll(/--([a-z][a-z0-9-]*)/g)].map((m) => m[1]))
+    const missingInSet = [...mentioned].filter((k) => !KNOWN_FLAGS.has(k))
+    const missingInHelp = [...KNOWN_FLAGS].filter((k) => !mentioned.has(k))
+    assert(missingInSet.length === 0, `帮助提到但未实现：${missingInSet.join(', ')}`)
+    assert(missingInHelp.length === 0, `已实现但帮助未提：${missingInHelp.join(', ')}`)
+    return `${mentioned.size} 个 flag 双向一致`
+  })
+
+  check('工程：artc.mjs 被 import 时不得执行 main()（否则导入方会被 process.exit 带走）', () => {
+    const src = readFileSync(fileURLToPath(import.meta.url), 'utf8')
+    assert(/const invokedDirectly =/.test(src), '缺少"直接执行"守卫')
+    assert(/if \(invokedDirectly\)/.test(src), 'main() 未被守卫包裹')
+    return '有直接执行守卫，可安全导入'
+  })
+
+  check('算子：--ops @文件 / --ops-file 读文件，路径错要报错', () => {
+    const tmp = join(tmpdir(), `artc-ops-${process.pid}.json`)
+    writeFileSync(tmp, '[{"op":"setAll","color":"#ff0000"}]', 'utf8')
+    try {
+      eq(loadOps({ 'ops-file': tmp }).length, 1, '--ops-file 应读到 1 条算子')
+      eq(loadOps({ ops: `@${tmp}` }).length, 1, '--ops @file 简写应等价')
+      eq(loadOps({}).length, 0, '不给算子时为空数组')
+      let threw = false
+      try {
+        loadOps({ 'ops-file': join(tmpdir(), 'definitely-missing-artc.json') })
+      } catch {
+        threw = true
+      }
+      assert(threw, '算子文件不存在必须报错，不能当成"没有算子"继续跑')
+    } finally {
+      try {
+        unlinkSync(tmp)
+      } catch {
+        /* 清理失败不影响断言结论 */
+      }
+    }
+    return '文件读取 + 缺失报错均正确'
+  })
+
+  check('管线：cleanup 吃掉的颜色必须如实上报（像素画的 1px 细节最容易被吞）', () => {
+    // 合成一张 32×32 图：一片实色 + 一个孤立像素。
+    // cleanupMinSize=2 必然把孤立像素并入邻色，而它正是像素画里的高光/眼神。
+    const w = 32
+    const h = 32
+    const data = new Uint8ClampedArray(w * h * 4)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const o = (y * w + x) * 4
+        const isolated = x === 20 && y === 20
+        data[o] = isolated ? 255 : 30
+        data[o + 1] = isolated ? 215 : 30
+        data[o + 2] = isolated ? 0 : 30
+        data[o + 3] = 255
+      }
+    }
+    const base = { ...DEFAULT_PARAMS, paletteMode: 'auto', paletteK: 8, cleanup: true, cleanupMinSize: 2, longEdge: 32, exactWidth: 32, exactHeight: 32 }
+    const withClean = runPipeline({ width: w, height: h, data }, coerceParams(base))
+    assert(withClean.cleanup !== null, '启用 cleanup 时必须给出报告，不能是 null')
+    assert(withClean.cleanup.changedCells > 0, '孤立像素应被清理改掉')
+    assert(withClean.cleanup.removedColors.length > 0, '被整幅吃掉的颜色必须出现在报告里')
+
+    const noClean = runPipeline({ width: w, height: h, data }, coerceParams({ ...base, cleanup: false }))
+    eq(noClean.cleanup, null, '关闭 cleanup 时不应报"有清理动作"')
+    // 报告的语义是"这些色在最终产物里一格都不剩"。cleanup 只改 indices 不动 palette，
+    // 所以消失的颜色仍留在色板里，但在最终像素中引用数必须为 0——这比对比色板长度更贴近事实。
+    for (const gone of withClean.cleanup.removedColors) {
+      assert(withClean.art.palette[gone.index] === gone.hex, `报告里的 hex 与色板第 ${gone.index} 项不一致`)
+      const stillUsed = withClean.art.indices.includes(gone.index)
+      assert(!stillUsed, `被报为"整幅消失"的 ${gone.hex} 其实仍在最终像素里被引用`)
+      assert(noClean.art.indices.includes(gone.index), `${gone.hex} 在关闭 cleanup 后应当仍在像素里`)
+    }
+    return `改掉 ${withClean.cleanup.changedCells} 格，消失 ${withClean.cleanup.removedColors.map((c) => c.hex).join('/')}`
+  })
+
   const passed = checks.filter((c) => c.ok).length
   const failed = checks.length - passed
   for (const c of checks) {
@@ -648,6 +848,17 @@ async function selftest() {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2))
+  assertKnownFlags(process.argv.slice(2))
+  /**
+   * 进度输出统一出口。
+   *
+   * `--json` 时默认静默：stdout 必须只剩那一份 JSON（原先进度行与 JSON 混在 stdout，
+   * 首字符是 ✔，JSON.parse / jq / ConvertFrom-Json 全部直接失败——而"给 agent 读"正是
+   * 这个开关存在的唯一理由）。要同时看进度就加 --progress，它会把人类可读行写到 stderr，
+   * 这样 `artc … --json --progress | jq` 依然成立。
+   */
+  const wantProgress = !args.quiet && (!args.json || !!args.progress)
+  const progress = wantProgress ? console.error : () => {}
 
   if (args.help || (!args.in && !args.blank && !args.selftest && !args.describe)) {
     printHelp()
@@ -665,7 +876,7 @@ async function main() {
   }
 
   const { params, fixed, notes, codes } = buildParams(args)
-  const ops = args.ops ? parseOps(String(args.ops), '--ops') : []
+  const ops = loadOps(args)
   const scale = args.scale !== undefined ? Number(args.scale) : 1
   const nameTemplate = args.name ?? '{name}_{w}x{h}_{scale}x'
   const outDir = resolve(String(args.out ?? 'out'))
@@ -678,10 +889,10 @@ async function main() {
   if (args['board'] !== undefined) beadingOptions.boardCells = Number(args['board'])
   else if (typeof args.bead === 'string') beadingOptions.boardCells = Number(args.bead)
 
-  if (!args.quiet) {
-    console.log(`参数：长边 ${params.longEdge}${params.exactWidth ? `（精确 ${params.exactWidth}×${params.exactHeight}）` : ''} · 降采样 ${params.downsample} · 色板 ${params.paletteMode}${params.paletteMode === 'preset' ? `(${params.presetPaletteId})` : ''} · 抖动 ${params.dither} · 透明 ${params.transparent}`)
-    if (notes.length) console.log(`来源：${notes.join(' · ')}`)
-    if (fixed.length) console.log(`已修正 ${fixed.length} 处参数：${fixed.map((f) => `${f.key}(${String(f.from)}→${String(f.to)})`).join('、')}`)
+  if (wantProgress) {
+    progress(`参数：长边 ${params.longEdge}${params.exactWidth ? `（精确 ${params.exactWidth}×${params.exactHeight}）` : ''} · 降采样 ${params.downsample} · 色板 ${params.paletteMode}${params.paletteMode === 'preset' ? `(${params.presetPaletteId})` : ''} · 抖动 ${params.dither} · 透明 ${params.transparent}`)
+    if (notes.length) progress(`来源：${notes.join(' · ')}`)
+    if (fixed.length) progress(`已修正 ${fixed.length} 处参数：${fixed.map((f) => `${f.key}(${String(f.from)}→${String(f.to)})`).join('、')}`)
   }
 
   if (args['dry-run']) {
@@ -692,18 +903,46 @@ async function main() {
   mkdirSync(outDir, { recursive: true })
   const results = []
   const failures = []
+  /** 非本命中的素材（例如目录里混进的 .svg/.jpg）：既不算成功也不算失败，只报数量 */
+  const skipped = []
 
   /** 空白画布模式：不读任何素材，纯程序化（拼豆图纸与资产原型常用） */
   if (args.blank) {
     const spec = parseBlankSpec(args.blank)
+    // 空白画布没有素材名，所以 {name} 恒为 'blank'，而 --name 只当**模板**用。
+    //
+    // 不要把 --name 的值再喂回 {name}：那会形成自引用（{name} → '{name}_…'），
+    // `String.replace` 虽然不会重扫替换结果，但结果里会残留字面占位符，
+    // 于是产出 `{name}_{index_02}_{w}x{h}_01_8x8.png` 这种既难读也难被脚本匹配的文件名。
+    // （--in 路径的 --name 是"素材名"，模板由 '{name}_{w}x{h}_{scale}x' 再拼；空白路径没有素材名，
+    //   --name 自然就退化为纯模板。）
+    const blankName = 'blank'
+    const blankIndex = Number(args.index ?? 1)
     const art0 = blankArt(spec.width, spec.height, args['blank-color'] ?? '#ffffff', !!args['blank-transparent'])
     const r = ops.length ? applyOps(art0, ops, { allowApproxColor: !params.lockPalette }) : { art: art0, changes: [], applied: false }
     const art = r.art
-    const base = sanitizeName(applyTemplate(nameTemplate, { name: 'blank', index: 1, w: art.width, h: art.height, scale }))
+    // index 用 blankIndex 而非写死 1：默认模板不含 index，但用户一旦用 --name '{name}_{index:02}'，
+    // 写死 1 会让同批多张空白画布全部撞名覆盖。
+    const blankVars = { name: blankName, index: blankIndex, w: art.width, h: art.height, scale }
+    const base = sanitizeName(assertNoPlaceholders(applyTemplate(nameTemplate, blankVars), nameTemplate))
     const png = artToPngBytesNode(art, scale, { transparentBg: params.transparent === 'key', bgHex: params.matteColor })
     writeFileSync(join(outDir, `${base}.png`), png)
-    const row = { file: `${base}.png`, width: art.width, height: art.height, paletteSize: art.palette.length, hash: artHash(art) }
-    if (beadingOptions) {
+    writeFileSync(join(outDir, `${base}.hex`), serializeHexPalette(art.palette, codes), 'utf8')
+    writeFileSync(join(outDir, `${base}.json`), pixelJSONString(art, { codes }), 'utf8')
+    if (args.pixbin) writeFileSync(join(outDir, `${base}.pixbin`), encodePixBin(art))
+    const row = {
+      file: `${base}.png`,
+      width: art.width,
+      height: art.height,
+      paletteSize: art.palette.length,
+      transparent: countTransparent(art.indices, art.alphaMask),
+      hash: artHash(art),
+      changes: r.changes.length,
+    }
+    // 只有显式 --bead 才产出拼豆文件。原先这里写 `if (beadingOptions)`，而 beadingOptions 在
+    // 上方恒为 {}（对象恒真），于是每次 --blank 都无条件多写一份 SVG+CSV——既不是用户要的产物，
+    // 也会在批量空白资产里堆一堆没人看的图纸。
+    if (args.bead) {
       const csv = beadListCsv(art, { codes, ...beadingOptions })
       const svg = beadSvg(art, { codes, ...beadingOptions, title: `${base} 拼豆图纸` })
       writeFileSync(join(outDir, `${base}_图纸.svg`), svg, 'utf8')
@@ -711,14 +950,25 @@ async function main() {
       row.bead = beadReport(art, beadingOptions).totalBeads
     }
     results.push(row)
-    console.log(`✔ 空白画布 ${spec.width}×${spec.height} → ${base}.png${row.bead ? `（${row.bead} 颗）` : ''}`)
+    progress(`✔ 空白画布 ${spec.width}×${spec.height} → ${base}.png${row.bead ? `（${row.bead} 颗）` : ''}`)
   }
 
   if (args.in) {
     const inputs = collectInputs(String(args.in))
-    if (!inputs.length) throw new Error(`输入目录里没有图片：${args.in}`)
-    for (let i = 0; i < inputs.length; i++) {
-      const src = inputs[i]
+    // collectInputs 按"是图片扩展名"收文件（含 .svg/.jpg/.webp），但 Node 端只有 PNG 解码器。
+    // 不预筛的话，素材目录里混进一张参考图 .svg 就会让整批以 exit 1 结束——而失败清单指向的
+    // 其实是一张本就不该被处理的文件。真正的 decode 失败（.png 损坏）才配得上非零退出。
+    const decodable = []
+    for (const f of inputs) {
+      if (canDecodeInNode(f)) decodable.push(f)
+      else skipped.push({ src: basename(f), reason: `Node 端只解码 PNG，已跳过 ${extname(f) || '（无扩展名）'}` })
+    }
+    if (!decodable.length) {
+      const exts = [...new Set(inputs.map((f) => extname(f).toLowerCase() || '（无扩展名）'))].join('、')
+      throw new Error(`输入目录里没有可处理的 PNG：${args.in}（发现 ${inputs.length} 个文件，扩展名 ${exts}）`)
+    }
+    for (let i = 0; i < decodable.length; i++) {
+      const src = decodable[i]
       try {
         const r = renderOne({
           src,
@@ -752,9 +1002,19 @@ async function main() {
           hash: r.hash,
           changes: r.changes.length,
           bead: r.beadSummary ?? undefined,
+          cleanup: r.cleanup ?? undefined,
           _sheet: r.sheet,
         })
-        if (!args.quiet) console.log(`✔ ${basename(src)} → ${r.base}.png（${r.width}×${r.height}，${r.paletteSize} 色${r.transparent ? `，透明 ${r.transparent}` : ''}${r.beadSummary ? `，拼豆 ${r.beadSummary.totalBeads} 颗` : ''}）`)
+        if (!args.quiet) progress(`✔ ${basename(src)} → ${r.base}.png（${r.width}×${r.height}，${r.paletteSize} 色${r.transparent ? `，透明 ${r.transparent}` : ''}${r.beadSummary ? `，拼豆 ${r.beadSummary.totalBeads} 颗` : ''}）`)
+        // 杂色清理吃掉了整幅消失的颜色时必须说出来。像素画资产里的"小连通块"常常正是
+        // 故意画的 1px 细节（高光/眼神/描边断点），被静默并入邻色后只能靠对图才发现。
+        if (r.cleanup && r.cleanup.removedColors.length) {
+          const detail = r.cleanup.removedColors.map((c) => `${c.hex}(${c.cells}格)`).join('、')
+          console.warn(
+            `⚠ ${basename(src)}：杂色清理改掉 ${r.cleanup.changedCells} 格，${r.cleanup.removedColors.length}${r.cleanup.truncated ? '+' : ''} 种颜色整幅消失：${detail}` +
+              `\n  若这些是刻意画的细节，请加 --no-cleanup（本张产物已按清理后写出）`,
+          )
+        }
       } catch (err) {
         // 单张失败不中断整批：agent 需要"跑一次 → 读失败清单 → 修素材 → 重跑"
         const reason = err instanceof UnsupportedImageError ? err.message : (err?.message ?? String(err))
@@ -762,26 +1022,31 @@ async function main() {
         console.error(`✘ ${basename(src)}：${reason}`)
       }
     }
+  }
 
-    if (wantSheet && results.length) {
-      const sheet = layoutSheet(results.map((r) => ({ name: r.file.replace(/\.png$/, ''), width: r.width, height: r.height })), sheetCols)
-      writeFileSync(join(outDir, '_sheet.json'), JSON.stringify(sheet, null, 2), 'utf8')
-      if (!args.quiet) console.log(`✔ 图集坐标表 _sheet.json（${sheet.columns}×${sheet.rows}，${sheet.frames.length} 帧）`)
-    }
+  // 图集坐标表对 --blank 与 --in 两条产出路径同样成立，因此放在两者之外：
+  // 原先它嵌在 if (args.in) 里，导致 `--blank 32x32 --sheet` 静默不产出 _sheet.json。
+  if (wantSheet && results.length) {
+    const sheet = layoutSheet(results.map((r) => ({ name: r.file.replace(/\.png$/, ''), width: r.width, height: r.height })), sheetCols)
+    writeFileSync(join(outDir, '_sheet.json'), JSON.stringify(sheet, null, 2), 'utf8')
+    if (!args.quiet) progress(`✔ 图集坐标表 _sheet.json（${sheet.columns}×${sheet.rows}，${sheet.frames.length} 帧）`)
   }
 
   const summary = {
     out: outDir,
     ok: results.length,
     failed: failures.length,
+    skipped: skipped.length,
     params,
     results,
     failures,
+    skippedFiles: skipped,
   }
   if (args.json) console.log(JSON.stringify(summary, null, 2))
   else {
-    console.log(`\n处理完成：成功 ${results.length}，失败 ${failures.length}`)
+    console.log(`\n处理完成：成功 ${results.length}，失败 ${failures.length}${skipped.length ? `，跳过 ${skipped.length}` : ''}`)
     if (failures.length) console.log('失败清单：' + failures.map((f) => `${f.src}（${f.reason}）`).join('；'))
+    if (skipped.length) console.log('跳过清单：' + skipped.map((f) => `${f.src}（${f.reason}）`).join('；'))
   }
   process.exit(failures.length ? 1 : 0)
 }
@@ -804,6 +1069,14 @@ function printHelp() {
   --json                  以 JSON 打印汇总（含每张的 hash/尺寸/用量）
   --dry-run               只打印解析后的参数，不处理任何图片
   --quiet                 少打印过程信息
+  --progress              与 --json 同用时把进度行写到 stderr（保证 stdout 仍是纯 JSON）
+  --help                  打印本帮助
+
+空白画布（--blank，不读任何素材）：
+  --blank <WxH>           建一张空画布，可继续用 --ops 作画
+  --blank-color <#rrggbb> 空白填充色（默认 #ffffff）
+  --blank-transparent     空白为透明（与 --palette/--size 无关，仅影响底）
+  --index <n>             命名模板里 {index} 的取值（批量时用于区分同名产物）
 
 转换参数（未给出的项用出厂默认，结果与"当前状态"无关，可复现）：
   --long-edge <n>         输出长边格数（8–2048，默认 64）
@@ -834,6 +1107,9 @@ function printHelp() {
 
 编辑算子（--ops '<json 数组>'，与页内 API 的 edit() 完全一致）：
 ${ops}
+  --ops '<json>'          直接给出算子数组
+  --ops @file.json        从文件读算子数组（也写作 --ops-file file.json）；
+                          批量 setCells 动辄十几 KB，走文件可避开 shell 长度与引号转义
 
 说明：
   · 颜色默认值：命令行路径允许省略 color（用默认主色 #1a1a1a）；**算子数组里建议显式给 color**，
@@ -842,7 +1118,20 @@ ${ops}
   · 单张素材失败不会中断整批，结尾给出失败清单并以非零码退出。`)
 }
 
-main().catch((err) => {
-  console.error(`错误：${err?.message ?? err}`)
-  process.exit(1)
-})
+/**
+ * 只在**直接被当命令行跑**时执行 main()。
+ *
+ * 没有这个守卫时，任何 `import './artc.mjs'` 都会顺带跑一遍 main()：
+ * 它读的是**导入方**的 process.argv，于是要么误处理参数、要么报错打印帮助并 process.exit(1)，
+ * 把导入方一起终结（真实踩过：一个只读 KNOWN_FLAGS 的检查脚本被它整死）。
+ * 顺带让本文件可被测试直接导入，不必 spawn 子进程。
+ */
+const invokedDirectly =
+  process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error(`错误：${err?.message ?? err}`)
+    process.exit(1)
+  })
+}

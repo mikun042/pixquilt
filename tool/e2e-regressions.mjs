@@ -10,8 +10,8 @@
  *
  * 用法：node tool/e2e-regressions.mjs [--app <html 路径>]
  */
-import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -437,6 +437,139 @@ await check('CLI：不存在"接受了但没有任何效果"的 flag（--keep-si
   assert(!/keep-size/.test(out), '帮助文本里仍宣传 --keep-size（该 flag 无实现）')
   assert(!/browser-decode/.test(out), '帮助文本里仍宣传 --browser-decode（该 flag 无实现）')
   return '帮助文本只列已实现的参数'
+})
+
+/* ------------------------------- CLI：工具问题记录（2026-09-13 第二轮）修复的回归 */
+
+/** 跑 artc 并拿到 { code, stdout, stderr }；不抛错，方便断言非零退出 */
+function runArtc(args) {
+  const r = spawnSync(process.execPath, ['tool/artc.mjs', ...args], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  return { code: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
+}
+
+await check('CLI：--blank 不再无条件产出拼豆图纸/清单（只有 --bead 才产出）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'artc-blank-'))
+  const out = join(dir, 'out')
+  const r = runArtc(['--blank', '8x8', '--out', out, '--quiet'])
+  assert(r.code === 0, `正常退出，实际 ${r.code}：${r.stderr}`)
+  const files = readdirSync(out)
+  assert(
+    !files.some((f) => f.endsWith('.svg') || f.endsWith('缺口清单.csv')),
+    `未指定 --bead 时不该出现拼豆产物，实际有：${files.join(', ')}`,
+  )
+  assert(files.some((f) => f.endsWith('.hex')), '空画布也应产出 .hex（原先只在 --in 分支产出）')
+  assert(files.some((f) => f.endsWith('.json')), '空画布也应产出像素 JSON')
+
+  // 显式 --bead 时必须有
+  const out2 = join(dir, 'out2')
+  const r2 = runArtc(['--blank', '8x8', '--bead', '--out', out2, '--quiet'])
+  assert(r2.code === 0, `--bead 应正常退出，实际 ${r2.code}：${r2.stderr}`)
+  const files2 = readdirSync(out2)
+  assert(files2.some((f) => f.endsWith('.svg')), '显式 --bead 必须产出图纸 SVG')
+  assert(files2.some((f) => f.endsWith('缺口清单.csv')), '显式 --bead 必须产出缺口清单 CSV')
+  rmSync(dir, { recursive: true, force: true })
+  return '无 --bead 不产出拼豆文件；有 --bead 产出；.hex/.json 补齐'
+})
+
+await check('CLI：--blank 命名模板解析正确，且 {index} 生效（不写死 1、不残留占位符）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'artc-idx-'))
+  // 默认模板：必须是 blank_<w>x<h>_<scale>x，曾因把模板自身当作 {name} 的值而产出 undefined.png
+  const outA = join(dir, 'a')
+  runArtc(['--blank', '8x8', '--out', outA, '--quiet'])
+  const def = readdirSync(outA).filter((f) => f.endsWith('.png'))
+  assert(def.length === 1 && def[0] === 'blank_8x8_1x.png', `默认命名应为 blank_8x8_1x.png，实际 ${def.join(', ')}`)
+
+  // 显式模板里的 {index:02}：两次调用必须得到两个不同文件名，且不含字面 {…}
+  const outB = join(dir, 'b')
+  const tpl = '{name}_{index:02}_{w}x{h}'
+  const r1 = runArtc(['--blank', '8x8', '--index', '1', '--name', tpl, '--out', outB, '--quiet'])
+  const r2 = runArtc(['--blank', '8x8', '--index', '2', '--name', tpl, '--out', outB, '--quiet'])
+  assert(r1.code === 0 && r2.code === 0, `两次调用都应成功（${r1.code}/${r2.code}）：${r1.stderr}${r2.stderr}`)
+  const pngs = readdirSync(outB).filter((f) => f.endsWith('.png')).sort()
+  assert(pngs.length === 2, `{index} 不同的两次调用应产出两个文件，实际 ${pngs.join(', ') || '无'}`)
+  assert(
+    pngs.every((f) => !/[{}]/.test(f)),
+    `文件名不该残留字面占位符，实际 ${pngs.join(', ')}`,
+  )
+  assert(pngs[0] === 'blank_01_8x8.png' && pngs[1] === 'blank_02_8x8.png', `实际 ${pngs.join(', ')}`)
+
+  // 未支持的占位符要报错，而不是原样写进文件名
+  const bad = runArtc(['--blank', '8x8', '--name', '{bogus}', '--out', join(dir, 'c')])
+  assert(bad.code !== 0, '未支持的占位符应报错')
+  assert(/占位符/.test(bad.stderr), `错误信息应说明占位符问题，实际：${bad.stderr.trim()}`)
+  rmSync(dir, { recursive: true, force: true })
+  return `${def[0]} / ${pngs.join(' / ')}；{bogus} 被拒`
+})
+
+await check('CLI：--blank 支持 --sheet（原先嵌在 --in 分支里，静默不产出）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'artc-sheet-'))
+  const out = join(dir, 'out')
+  const r = runArtc(['--blank', '8x8', '--sheet', '--out', out, '--quiet'])
+  assert(r.code === 0, `应正常退出，实际 ${r.code}：${r.stderr}`)
+  assert(existsSync(join(out, '_sheet.json')), '--blank --sheet 必须产出 _sheet.json')
+  rmSync(dir, { recursive: true, force: true })
+  return '_sheet.json 已产出'
+})
+
+await check('CLI：--in 目录里混入 .svg 不应让整批以非零码失败', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'artc-skip-'))
+  const src = join(dir, 'src')
+  mkdirSync(src, { recursive: true })
+  // 先造一张真 PNG，再把一个 .svg 混进同一目录
+  runArtc(['--blank', '8x8', '--name', 'a', '--out', src, '--quiet'])
+  const png = readdirSync(src).find((f) => f.endsWith('.png'))
+  assert(png, '前置：需要一个真实 PNG')
+  writeFileSync(join(src, 'ref.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>', 'utf8')
+
+  const out = join(dir, 'out')
+  const r = runArtc(['--in', src, '--out', out, '--json'])
+  assert(r.code === 0, `混入不可解码的 .svg 不该让整批失败（exit ${r.code}）：${r.stderr}`)
+  const parsed = JSON.parse(r.stdout) // 同时验证 stdout 是纯 JSON
+  assert(parsed.ok >= 1, `PNG 应处理成功，实际 ok=${parsed.ok}`)
+  assert(parsed.failed === 0, `不该有"失败"，实际 ${parsed.failed}：${JSON.stringify(parsed.failures)}`)
+  assert(parsed.skipped === 1, `应如实报告跳过 1 个，实际 ${parsed.skipped}`)
+  assert(
+    parsed.skippedFiles.some((f) => f.src === 'ref.svg'),
+    '跳过清单里要点名是哪个文件',
+  )
+  rmSync(dir, { recursive: true, force: true })
+  return 'exit 0 / ok>=1 / failed 0 / skipped 1'
+})
+
+await check('CLI：--json 的 stdout 必须是纯 JSON（可被严格解析）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'artc-json-'))
+  const out = join(dir, 'out')
+  const r = runArtc(['--blank', '8x8', '--out', out, '--json'])
+  assert(r.code === 0, `应正常退出，实际 ${r.code}：${r.stderr}`)
+  assert(r.stdout.trimStart().startsWith('{'), `stdout 首字符必须是 {，实际 "${r.stdout.slice(0, 20)}"`)
+  const parsed = JSON.parse(r.stdout)
+  assert(typeof parsed.ok === 'number', '解析结果应含 ok')
+  assert(!/✔/.test(r.stdout), 'stdout 里不该混入人类可读的进度标记')
+  rmSync(dir, { recursive: true, force: true })
+  return 'stdout 首字符 { 且可 JSON.parse'
+})
+
+await check('CLI：--ops-file 读文件；未知参数报错（不再静默忽略）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'artc-ops-'))
+  const opsFile = join(dir, 'ops.json')
+  writeFileSync(opsFile, JSON.stringify([{ op: 'setAll', color: '#ff0000' }]), 'utf8')
+  const out = join(dir, 'out')
+  const r = runArtc(['--blank', '4x4', '--ops-file', opsFile, '--out', out, '--json'])
+  assert(r.code === 0, `--ops-file 应成功，实际 ${r.code}：${r.stderr}`)
+  const parsed = JSON.parse(r.stdout)
+  assert(parsed.results[0].changes === 1, `算子应生效，实际 changes=${parsed.results[0].changes}`)
+  assert(parsed.results[0].paletteSize === 2, `setAll 后应为 2 色（底色+红），实际 ${parsed.results[0].paletteSize}`)
+
+  // 未知参数：曾经 `--exact 32x32` 被完全静默忽略，命令"成功"但产物与预期不符
+  const bad = runArtc(['--blank', '8x8', '--exact', '32x32', '--out', join(dir, 'x')])
+  assert(bad.code !== 0, '未知参数 --exact 必须以非零码退出，不能静默照常执行')
+  assert(/--exact/.test(bad.stderr), `错误信息要点出是哪个参数，实际：${bad.stderr.trim()}`)
+  rmSync(dir, { recursive: true, force: true })
+  return '--ops-file 生效；--exact 被拒且指名'
 })
 
 /* ---------------------------------------------- 结果 */

@@ -512,12 +512,56 @@ export function cleanup(indices: Uint8Array, w: number, h: number, minSize: numb
   return out
 }
 
+export interface CleanupReport {
+  /** 实际被清理改掉的格子数 */
+  changedCells: number
+  /** 清理前存在、清理后整幅图不再出现的色（调色板索引 + 原 hex） */
+  removedColors: { index: number; hex: string; cells: number }[]
+  /** removedColors 是否因数量上限被截断 */
+  truncated: boolean
+}
+
 export interface RunPipelineResult {
   art: PixelArt
   /** 色板是否因色板已满而出现近似匹配（lockPalette 时应为 0） */
   overflow: number
   /** 实际使用的色板来源，便于日志与复现 */
   paletteSource: 'preset' | 'custom' | 'auto'
+  /** 杂色清理的实际改动；未启用清理时为 null */
+  cleanup: CleanupReport | null
+}
+
+/**
+ * 统计杂色清理到底改了什么。
+ *
+ * 为什么必须上报：`cleanup` 出厂默认开启（cleanupMinSize=2），而它的作用是"把小连通块并入邻色"，
+ * 对像素画资产来说"小连通块"往往正是**故意画的 1px 细节**——高光、眼神、描边断点。
+ * 实测 64×64 精灵过一遍默认参数，1px 高光被整块吃掉且毫无提示，调用方只能靠对图才看得出来。
+ * 因此这里如实报出"改了多少格、哪些颜色整幅消失"，让损失可见、可判断、可回退（--no-cleanup）。
+ */
+function measureCleanup(
+  before: Uint8Array,
+  after: Uint8Array,
+  palette: string[],
+): CleanupReport {
+  const MAX_REPORTED = 16
+  const beforeCounts = new Map<number, number>()
+  const afterSeen = new Set<number>()
+  let changedCells = 0
+  for (let i = 0; i < before.length; i++) {
+    beforeCounts.set(before[i], (beforeCounts.get(before[i]) ?? 0) + 1)
+    afterSeen.add(after[i])
+    if (before[i] !== after[i]) changedCells++
+  }
+  const removed: CleanupReport['removedColors'] = []
+  for (const [index, cells] of beforeCounts) {
+    if (afterSeen.has(index)) continue
+    removed.push({ index, hex: palette[index] ?? '#??????', cells })
+  }
+  // 稳定排序：先按消失格数降序（损失最大的先看到），同格数按索引升序，保证同一输入产出同一份报告
+  removed.sort((a, b) => b.cells - a.cells || a.index - b.index)
+  const truncated = removed.length > MAX_REPORTED
+  return { changedCells, removedColors: removed.slice(0, MAX_REPORTED), truncated }
 }
 
 /** 像素化主管线：原始像素 → PixelArt */
@@ -542,7 +586,8 @@ export function runPipeline(src: SourceImage, params: ConvertParams): RunPipelin
   const effective: ConvertParams = params.dither !== 'none' ? { ...params, cleanup: false } : params
 
   const { indices, overflow } = quantize(data, w, h, palette, effective, alpha)
-  const finalIndices = effective.cleanup && effective.cleanupMinSize > 1 ? cleanup(indices, w, h, effective.cleanupMinSize, alpha) : indices
+  const willClean = effective.cleanup && effective.cleanupMinSize > 1
+  const finalIndices = willClean ? cleanup(indices, w, h, effective.cleanupMinSize, alpha) : indices
 
   return {
     art: {
@@ -554,5 +599,6 @@ export function runPipeline(src: SourceImage, params: ConvertParams): RunPipelin
     },
     overflow,
     paletteSource,
+    cleanup: willClean ? measureCleanup(indices, finalIndices, palette) : null,
   }
 }
