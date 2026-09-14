@@ -28,8 +28,14 @@ export interface AutomationDeps {
   getSource: () => { width: number; height: number; data: Uint8ClampedArray } | null
   setSource: (img: { width: number; height: number; data: Uint8ClampedArray } | null, name: string) => void
   regenerate: () => void
-  /** 提交一次编辑（进撤销栈） */
-  commit: (indices: Uint8Array, palette: string[], alphaMask: Uint8Array | null) => void
+  /**
+   * 提交一次**模型发起**的编辑（进撤销栈）：入参是整份新画布。
+   *
+   * 必须是整份 `PixelArt` 而不是"只有像素"的三个数组：算子里的 `transform`/`trim` 会改尺寸，
+   * 而且画布层需要被回灌一次（它自己那份像素副本是旧的）。见 `edit()` 的注释与
+   * docs/ARCHITECTURE.md §8.10 ⑥。
+   */
+  commitArt: (art: PixelArt) => void
   undo: () => void
   redo: () => void
   toast: (msg: string, kind?: 'info' | 'warn' | 'error') => void
@@ -59,7 +65,6 @@ export interface AutomationDeps {
    * 行为已经分叉。现在统一成本函数。
    */
   blankSpec: () => { width: number; height: number; color: string; transparent: boolean }
-  applyOpsToArt: (ops: EditOp[]) => { art: PixelArt; changes: { op: string; kind?: string; cells: number; changed: boolean; note?: string }[]; applied: boolean } | null
 }
 
 export interface EditSummary {
@@ -238,7 +243,12 @@ export function installAutomationApi(deps: AutomationDeps): void {
       const art = requireArt()
       const params = deps.getParams()
       const r = applyOps(art, ops, { fallbackColor: deps.getPrefs().primary, allowApproxColor: !params.lockPalette })
-      if (r.applied) deps.commit(r.art.indices, r.art.palette, r.art.alphaMask ?? null)
+      /*
+       * 走 `commitArt`（整份画布）而不是画布那条"只交像素"的提交回调：这里的新画布是**外部算出来的**，
+       * 画布里的像素副本还是旧的，必须由模型层回灌一次，否则屏幕不更新、并且下一次画笔会拿旧副本
+       * 把这次编辑覆盖掉。顺带把宽高一起交出去——`transform`/`trim` 会改尺寸，只交 indices 会丢尺寸。
+       */
+      if (r.applied) deps.commitArt(r.art)
       return summaryOf(r.art, r.changes, r.applied)
     },
     undo: (): void => deps.undo(),

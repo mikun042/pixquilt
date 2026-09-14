@@ -444,6 +444,85 @@ async function main() {
       return `可逆；${u.stats.past} 帧 / ${u.stats.bytes} 字节（上限 ${HISTORY_MAX_FRAMES} 帧 / ${HISTORY_MAX_BYTES} 字节）`
     })
 
+    /*
+     * 算子编辑（`ps.edit`）与画布副本的同步 —— 跨路径断言，本轮新增。
+     *
+     * 守的是一个**数据丢失级**缺陷：`ps.edit` 走画布自身的提交回调，只换了模型 `app.art`，
+     * 而画布闭包里的 `indices`/`palette`/`alpha` 是另一份副本（ui/canvas.ts）。后果连锁三环：
+     *   ① 屏幕不显示这次编辑（draw() 画的是画布旧副本）；
+     *   ② 画布侧取色 `pickAt` 读到旧像素（表现为 Alt+点击/吸管取到"编辑前"的颜色）；
+     *   ③ **下一次画笔把旧副本提交上去，把整幅算子编辑静默覆盖掉**（实测：编辑后 usage 有 #cc0000，
+     *      再画一笔后变成 {#ffffff:255,#0000ff:1}，红格消失）。
+     *
+     * 为什么原有断言全都没抓到：模型侧（artHash/getUsage）与画布侧（真实鼠标）**各自都被测过，
+     * 但从未交叉**。所以这里刻意两条腿都用上——先用**像素采样**看屏幕（不看模型），
+     * 再叠一次真实鼠标笔触看算子编辑是否还在。
+     * 见 docs/ARCHITECTURE.md §8.10 ⑥。
+     */
+    const syncPixel = async (cx, cy) =>
+      await cdp.eval(`(() => {
+        const b = document.getElementById('board')
+        const v = JSON.parse(b.dataset.lastDraw)
+        const dpr = b.width / b.getBoundingClientRect().width
+        const x = (v.ox + (${cx} + 0.5) * v.cell) * dpr, y = (v.oy + (${cy} + 0.5) * v.cell) * dpr
+        const d = b.getContext('2d').getImageData(Math.round(x), Math.round(y), 1, 1).data
+        return [d[0], d[1], d[2], d[3]].join(',')
+      })()`)
+    await cdp.eval(`(() => {
+      const ps = window.pixelArtStudio
+      ps.newCanvas({ width: 16, height: 16, color: '#ffffff' })
+      ps.setPrimary('#0000ff')
+      ps.setTool('pencil')
+      ps.setBrushSize(1)
+    })()`)
+    await sleep(400)
+    await cdp.eval(`window.pixelArtStudio.edit([{ op: 'setCells', cells: [[8, 8]], color: '#cc0000' }])`)
+    await sleep(500)
+    const opPixel = await syncPixel(8, 8)
+    const stroke = JSON.parse(await cdp.eval(`(() => {
+      const b = document.getElementById('board')
+      const v = JSON.parse(b.dataset.lastDraw)
+      const r = b.getBoundingClientRect()
+      return JSON.stringify({ x: r.left + v.ox + 2.5 * v.cell, y: r.top + v.oy + 2.5 * v.cell })
+    })()`))
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: stroke.x, y: stroke.y })
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: stroke.x, y: stroke.y, button: 'left', clickCount: 1 })
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: stroke.x, y: stroke.y, button: 'left', clickCount: 1 })
+    await sleep(600)
+    const afterStroke = JSON.parse(await cdp.eval(`JSON.stringify(window.pixelArtStudio.getUsage())`))
+    check('算子编辑（ps.edit）：屏幕当场显示，且随后的画笔不会把它盖掉（跨路径）', () => {
+      assert(opPixel === '204,0,0,255', `渲染出来的画布上格(8,8)应是 #cc0000，实际 rgba(${opPixel})——画布没被回灌？`)
+      assert('#cc0000' in afterStroke, `画一笔后算子编辑的颜色应仍在，实际 ${JSON.stringify(afterStroke)}——画布拿旧副本覆盖了模型`)
+      assert('#0000ff' in afterStroke, `画笔本身也要生效，实际 ${JSON.stringify(afterStroke)}`)
+      return `屏幕像素 rgba(${opPixel})；画笔后 usage ${JSON.stringify(afterStroke)}`
+    })
+
+    /*
+     * 同一条路径的**尺寸变化**分支：算子里含 `transform`/`trim` 时画布必须重算视图，
+     * 且模型宽高不能丢（旧实现只把 indices/palette/alphaMask 交给提交，`{...app.art}` 保留了旧宽高，
+     * 于是 getInfo().width 与 indices 长度不一致）。
+     */
+    await cdp.eval(`(() => {
+      const ps = window.pixelArtStudio
+      ps.newCanvas({ width: 24, height: 24, transparent: true })
+      ps.edit([{ op: 'setCells', cells: [[5, 7]], color: '#ff0000' }])
+    })()`)
+    await sleep(400)
+    await cdp.eval(`window.pixelArtStudio.edit([{ op: 'trim' }])`)
+    await sleep(600)
+    const trimState = JSON.parse(await cdp.eval(`JSON.stringify({
+      info: window.pixelArtStudio.getInfo(),
+      drawn: JSON.parse(document.getElementById('board').dataset.lastDraw),
+    })`))
+    const trimPixel = await syncPixel(0, 0)
+    check('算子编辑改尺寸（trim）：模型宽高、画布绘制尺寸、屏幕内容三者一致', () => {
+      const { info, drawn } = trimState
+      assert(info.width === 1 && info.height === 1, `24×24 里只有一格内容，trim 后应为 1×1，实际 ${info.width}×${info.height}`)
+      assert(drawn.w === info.width && drawn.h === info.height, `画布绘制尺寸 ${drawn.w}×${drawn.h} 应与模型 ${info.width}×${info.height} 一致（尺寸变化没同步？）`)
+      assert(trimPixel === '255,0,0,255', `裁切后唯一那格应是 #ff0000，实际 rgba(${trimPixel})`)
+      return `1×1，屏幕 rgba(${trimPixel})`
+    })
+
     const validate = await cdp.eval(`JSON.stringify(window.pixelArtStudio.validateParams({ longEdge: 99999, dither: 'nope' }))`)
     check('参数预演：validateParams 报告被修正的字段', () => {
       const v = JSON.parse(validate)

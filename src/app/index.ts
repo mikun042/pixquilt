@@ -15,7 +15,7 @@ import { PREFS_DEBOUNCE_MS } from '../core/limits.ts'
 import { createExportActions } from './export-actions.ts'
 import { artToPngBlob, artToPngDataURL, artToPngDataURLSync } from './canvas-png.ts'
 import { runPipeline } from '../core/pipeline.ts'
-import { applyOps, blankArt } from '../core/ops.ts'
+import { blankArt } from '../core/ops.ts'
 import { artStats } from '../core/stats.ts'
 import { colorTextOn } from '../core/color.ts'
 import { clear, el, store } from './store.ts'
@@ -58,7 +58,12 @@ function resetHistory(): void {
   history.reset()
 }
 
-/** 一次编辑的提交入口（UI 绘制与自动化接口共用）：进撤销栈后写回并重绘 */
+/**
+ * 一次编辑的提交入口（**画布自绘**路径）：画笔 / 油漆桶 / 形状 / 选区操作 / 粘贴走后这条。
+ *
+ * 画布已经在自己的像素副本上改完了，这里只把拷贝写回模型，**不需要回灌画布**（回灌反而多一次全量拷贝）。
+ * 与之相对的"模型发起"路径见下面的 `commitModelArt`：那条必须回灌，否则画布会停在旧像素上。
+ */
 function commitWithHistory(indices: Uint8Array, palette: string[], alphaMask: Uint8Array | null): void {
   if (!app.art) return
   // 入栈必须是**快照**而不是活对象引用：canvas 在提交时会就地改写 art.palette
@@ -68,6 +73,31 @@ function commitWithHistory(indices: Uint8Array, palette: string[], alphaMask: Ui
   // 提交前把"全不透明的 mask"归一成 null：core 的 fromCanvas 一直这么做，画布路径补上这步后
   // 常见手绘画布的单帧快照从 8MB 降到 4MB（见 history.ts 的 normalizeAlphaMask）
   app.art = { ...app.art, indices, palette, alphaMask: normalizeAlphaMask(alphaMask) }
+  store.set('hasEdits', true)
+  renderAll()
+}
+
+/**
+ * 一次编辑的提交入口（**模型发起**路径）：页内 API 的 `ps.edit(ops)` 这类"外部先算出新画布"的调用。
+ *
+ * 与 `commitWithHistory` 只差一步，但少了那一步曾经丢掉整幅编辑：**画布的像素是另一份副本**
+ * （`ui/canvas.ts` 的 `indices`/`palette`/`alpha`）。画布自绘那条路里副本本来就是新的，
+ * 所以不必回灌；这条路里副本还是**旧的**，不回灌就会：屏幕不显示这次编辑、画布侧取色
+ * （`pickAt`）读到旧像素、并且**下一次画笔把旧副本提交上去，把这次编辑静默覆盖掉**。
+ * 详见 docs/ARCHITECTURE.md §8.10 ⑥。
+ *
+ * 同步用 `applyIndices` 而不是 `setArt`：前者只换像素副本，**保留选区与视图**；后者会清空选区
+ * （`ui/canvas.ts` 的 `setArt` 里有 `selection = new Set()`）。只有尺寸真的变了
+ * （算子里含 `transform` / `trim`）才走 `setArt`——那种情况必须重算视图。
+ */
+function commitModelArt(next: PixelArt): void {
+  if (!app.art) return
+  history.commit(app.art)
+  const sizeChanged = app.art.width !== next.width || app.art.height !== next.height
+  const alphaMask = normalizeAlphaMask(next.alphaMask ?? null)
+  app.art = { ...next, alphaMask }
+  if (sizeChanged) canvasApi.setArt(app.art)
+  else canvasApi.applyIndices(app.art.indices, app.art.palette, alphaMask)
   store.set('hasEdits', true)
   renderAll()
 }
@@ -902,7 +932,7 @@ function boot(): void {
       app.sourceName = name
     },
     regenerate,
-    commit: commitWithHistory,
+    commitArt: commitModelArt,
     undo,
     redo,
     toast,
@@ -935,7 +965,6 @@ function boot(): void {
       const h = app.params.exactHeight ?? Math.min(58, app.params.longEdge)
       return { width: w, height: h, color: app.params.matteColor, transparent: app.params.transparent === 'alpha' }
     },
-    applyOpsToArt: (ops) => (app.art ? applyOps(app.art, ops, { fallbackColor: store.get('primary'), allowApproxColor: !app.params.lockPalette }) : null),
   })
 
   console.log('[像素画工作台] 已就绪。agent 可调用 window.pixelArtStudio.describe() 自省接口。')
