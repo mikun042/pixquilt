@@ -90,7 +90,8 @@ B05,#4A4A4A,442,442,35.36,1
 src/core/                ← 纯逻辑：零 DOM、零 node: 依赖，Node 可直接 import
    spec.ts               ←   算子/参数元数据的【单一真源】，驱动文档生成与一致性断言
    limits.ts             ←   全部魔法数字集中在此
-   pipeline.ts ops.ts    ←   像素化管线 / 12 类编辑算子
+   pipeline.ts           ←   像素化管线
+   ops.ts rasterize.ts   ←   12 类编辑算子 / 几何栅格化（+ canvas-query、ops-shapes）
    export.ts bead.ts     ←   序列化、拼豆图纸与缺口清单
 src/io/                  ← Node 侧平台绑定（PNG 编解码、文件 IO）
 src/app/                 ← 浏览器侧：UI、画布、页内 API（automation.ts）、可编辑预设（presets.ts）

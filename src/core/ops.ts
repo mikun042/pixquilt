@@ -9,10 +9,21 @@
  *    绘画类算子必须显式给 `color`，否则结果依赖"当前主色"而不可复现。由调用方把 fallback 传成
  *    undefined 来强制这一点。
  *  - 越界坐标**静默裁剪**并计入 cells；宽高上限**夹紧**而不是报错（批处理里"图比预期小"很常见）。
+ *
+ * 本文件只管"算子语义与画布状态"，纯几何栅格化在 `rasterize.ts`（这边 re-export 出去，
+ * 既有的 `from './ops.ts'` 导入路径不用改）。
  */
 import { ALPHA_THRESHOLD, MAX_CANVAS_SIDE, PALETTE_MAX } from './limits.ts'
-import { normalizeHex, type Anchor, type PixelArt } from './types.ts'
+import { normalizeHex, type PixelArt } from './types.ts'
 import { buildPaletteLabs, hexToRgb, nearestColorIndex, rgbToOklab } from './color.ts'
+import { brushCells, lineCells, rasterizeEllipse, rasterizeRect } from './rasterize.ts'
+import { anchorOffset, floodFillRegion, opaqueBounds } from './canvas-query.ts'
+import { mirrorCells, outlineCells } from './ops-shapes.ts'
+
+// 转发出去：既有的 `from './ops.ts'` 导入路径保持不变（画布层与单测都在用）
+export { brushCells, lineCells, rasterizeEllipse, rasterizeRect }
+export { anchorOffset, floodFillRegion, opaqueBounds }
+export { mirrorCells, outlineCells }
 
 export type EditOp =
   /** 油漆桶：把 (x,y) 所在连通区域整体换色；erase 则整块挖成透明 */
@@ -129,196 +140,6 @@ function ensureAlpha(c: Canvas): Uint8Array {
   return c.alpha
 }
 
-/** 实心/空心矩形栅格化（导出给单测与 UI 预览共用，避免各写一套坐标夹紧逻辑） */
-export function rasterizeRect(w: number, h: number, x0: number, y0: number, x1: number, y1: number, filled = true): number[] {
-  return filled ? rasterizeRectFilled(w, h, x0, y0, x1, y1) : rasterizeRectOutline(w, h, x0, y0, x1, y1)
-}
-
-function rasterizeRectFilled(w: number, h: number, x0: number, y0: number, x1: number, y1: number): number[] {
-  const ax = Math.max(0, Math.min(w - 1, Math.min(x0, x1)))
-  const bx = Math.max(0, Math.min(w - 1, Math.max(x0, x1)))
-  const ay = Math.max(0, Math.min(h - 1, Math.min(y0, y1)))
-  const by = Math.max(0, Math.min(h - 1, Math.max(y0, y1)))
-  const out: number[] = []
-  for (let y = ay; y <= by; y++) for (let x = ax; x <= bx; x++) out.push(y * w + x)
-  return out
-}
-
-function rasterizeRectOutline(w: number, h: number, x0: number, y0: number, x1: number, y1: number): number[] {
-  const ax = Math.max(0, Math.min(w - 1, Math.min(x0, x1)))
-  const bx = Math.max(0, Math.min(w - 1, Math.max(x0, x1)))
-  const ay = Math.max(0, Math.min(h - 1, Math.min(y0, y1)))
-  const by = Math.max(0, Math.min(h - 1, Math.max(y0, y1)))
-  const out: number[] = []
-  for (let x = ax; x <= bx; x++) {
-    out.push(ay * w + x)
-    if (by !== ay) out.push(by * w + x)
-  }
-  for (let y = ay + 1; y < by; y++) {
-    out.push(y * w + ax)
-    if (bx !== ax) out.push(y * w + bx)
-  }
-  return out
-}
-
-/** 椭圆：按像素中心到外接框中心的归一化距离判定，保证与界面拖拽预览一致 */
-export function rasterizeEllipse(w: number, h: number, x0: number, y0: number, x1: number, y1: number, filled = true): number[] {
-  const ax = Math.max(0, Math.min(w - 1, Math.min(x0, x1)))
-  const bx = Math.max(0, Math.min(w - 1, Math.max(x0, x1)))
-  const ay = Math.max(0, Math.min(h - 1, Math.min(y0, y1)))
-  const by = Math.max(0, Math.min(h - 1, Math.max(y0, y1)))
-  const cx = (ax + bx) / 2
-  const cy = (ay + by) / 2
-  const rx = Math.max(0.5, (bx - ax) / 2 + 0.5)
-  const ry = Math.max(0.5, (by - ay) / 2 + 0.5)
-  const inside = (x: number, y: number) => {
-    const dx = (x - cx) / rx
-    const dy = (y - cy) / ry
-    return dx * dx + dy * dy <= 1
-  }
-
-  const out: number[] = []
-  if (filled) {
-    for (let y = ay; y <= by; y++) for (let x = ax; x <= bx; x++) if (inside(x, y)) out.push(y * w + x)
-    return out
-  }
-  for (let y = ay; y <= by; y++) {
-    for (let x = ax; x <= bx; x++) {
-      if (!inside(x, y)) continue
-      // 空心：只保留"有一个四邻不在内部"的边界格
-      const edge = !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1)
-      if (edge) out.push(y * w + x)
-    }
-  }
-  return out
-}
-
-/** 笔刷足迹：size×size 的方块，围绕中心格（与界面悬停预览同一套） */
-export function brushCells(w: number, h: number, cx: number, cy: number, size: number): number[] {
-  const s = Math.max(1, Math.min(3, Math.round(size)))
-  const half = (s - 1) >> 1
-  const out: number[] = []
-  for (let dy = 0; dy < s; dy++) {
-    for (let dx = 0; dx < s; dx++) {
-      const x = cx - half + dx
-      const y = cy - half + dy
-      if (x >= 0 && x < w && y >= 0 && y < h) out.push(y * w + x)
-    }
-  }
-  return out
-}
-
-/** Bresenham 直线（含两端点），每步应用笔刷足迹 */
-export function lineCells(w: number, h: number, x0: number, y0: number, x1: number, y1: number, brushSize = 1): number[] {
-  const out = new Set<number>()
-  let x = x0
-  let y = y0
-  const dx = Math.abs(x1 - x0)
-  const dy = Math.abs(y1 - y0)
-  const sx = x0 < x1 ? 1 : -1
-  const sy = y0 < y1 ? 1 : -1
-  let err = dx - dy
-  // 上限保护：坐标可能来自越界拖拽（夹紧后仍可能很大），避免死循环
-  let guard = dx + dy + 2
-  for (;;) {
-    for (const c of brushCells(w, h, x, y, brushSize)) out.add(c)
-    if ((x === x1 && y === y1) || guard-- <= 0) break
-    const e2 = 2 * err
-    if (e2 > -dy) {
-      err -= dy
-      x += sx
-    }
-    if (e2 < dx) {
-      err += dx
-      y += sy
-    }
-  }
-  return [...out]
-}
-
-/** 不透明内容的外接框（trim 用）；全透明返回 null */
-export function opaqueBounds(art: PixelArt): { x0: number; y0: number; x1: number; y1: number } | null {
-  const { width: w, height: h, alphaMask } = art
-  let x0 = w
-  let y0 = h
-  let x1 = -1
-  let y1 = -1
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const p = y * w + x
-      const opaque = !alphaMask || alphaMask[p] >= ALPHA_THRESHOLD
-      if (!opaque) continue
-      if (x < x0) x0 = x
-      if (x > x1) x1 = x
-      if (y < y0) y0 = y
-      if (y > y1) y1 = y
-    }
-  }
-  return x1 < 0 ? null : { x0, y0, x1, y1 }
-}
-
-/** 内容相对固定尺寸画布的偏移（游戏资产锚点用：不裁边，只给引擎一个 pivot） */
-export function anchorOffset(art: PixelArt, anchor: Anchor): { offsetX: number; offsetY: number } {
-  const b = opaqueBounds(art)
-  if (!b) return { offsetX: 0, offsetY: 0 }
-  const cx = (b.x0 + b.x1) / 2
-  const cy = (b.y0 + b.y1) / 2
-  const mx = (art.width - 1) / 2
-  const my = (art.height - 1) / 2
-  if (anchor === 'top-left') return { offsetX: -b.x0, offsetY: -b.y0 }
-  if (anchor === 'bottom-center') return { offsetX: Math.round(mx - cx), offsetY: -(b.y1 - my) }
-  return { offsetX: Math.round(cx - mx), offsetY: Math.round(cy - my) }
-}
-
-/**
- * 连通区域（油漆桶）的纯函数实现。4 邻接 BFS，返回**格索引**数组（含起点）。
- *
- * 连通规则（这里曾经自相矛盾，改动前先读）：
- *  - **透明格之间一律连通**，不再比较残留的颜色索引。挖过洞的格子里仍留着旧索引，
- *    若按"索引也相同"判连通，把两种不同颜色的像素先后挖掉之后，那片空白会被切成两块——
- *    与"把这块整片抠掉"的直觉不符（canvas 层的自制实现一直是按这条规则做的）。
- *  - **不透明侧仍要求同色**，否则透明之外的区域会整幅串成一片。
- *
- * 导出它是为了让画布层复用同一套规则（原先 `src/app/ui/canvas.ts` 自己写了一份 BFS，
- * 两边的连通判据已经分叉，且没有任何断言能发现）。
- */
-export function floodFillRegion(indices: Uint8Array, w: number, h: number, x: number, y: number, alpha: Uint8Array | null): number[] {
-  if (x < 0 || x >= w || y < 0 || y >= h) return []
-  const start = y * w + x
-  const startTransparent = alpha ? alpha[start] === 0 : false
-  const target = indices[start]
-
-  const visited = new Uint8Array(w * h)
-  const queue = new Int32Array(w * h)
-  let head = 0
-  let tail = 0
-  queue[tail++] = start
-  visited[start] = 1
-  const out: number[] = []
-
-  while (head < tail) {
-    const c = queue[head++]
-    out.push(c)
-    const cx = c % w
-    const cy = (c / w) | 0
-    const neighbors = [
-      cx > 0 ? c - 1 : -1,
-      cx < w - 1 ? c + 1 : -1,
-      cy > 0 ? c - w : -1,
-      cy < h - 1 ? c + w : -1,
-    ]
-    for (const n of neighbors) {
-      if (n < 0 || visited[n]) continue
-      const nTransparent = alpha ? alpha[n] === 0 : false
-      if (nTransparent !== startTransparent) continue
-      if (!startTransparent && indices[n] !== target) continue
-      visited[n] = 1
-      queue[tail++] = n
-    }
-  }
-  return out
-}
-
 export interface ApplyOpsOptions {
   /** 算子省略 color 时用的默认色；无副作用路径必须传 undefined（结果才可复现） */
   fallbackColor?: string
@@ -421,11 +242,11 @@ export function applyOps(art: PixelArt, ops: EditOp[], options: ApplyOpsOptions 
         const col = resolveColor(op.color)
         if (col.missing || col.index < 0) throw new Error(`${op.op} 需要合法的 color`)
         const filled = op.filled ?? true
+        // 实心/空心由 rasterizeRect / rasterizeEllipse 自己的 filled 参数决定（别在这里再分一遍支，
+        // 之前那种"实心走这、空心走那"的写法在拆出几何模块后找不到 rasterizeRectOutline 了）
         const cells =
           op.op === 'rect'
-            ? filled
-              ? rasterizeRect(c.w, c.h, op.x0, op.y0, op.x1, op.y1)
-              : rasterizeRectOutline(c.w, c.h, op.x0, op.y0, op.x1, op.y1)
+            ? rasterizeRect(c.w, c.h, op.x0, op.y0, op.x1, op.y1, filled)
             : rasterizeEllipse(c.w, c.h, op.x0, op.y0, op.x1, op.y1, filled)
         for (const p of cells) c.indices[p] = col.index
         if (c.alpha) for (const p of cells) c.alpha[p] = 255
@@ -556,129 +377,6 @@ export function applyOps(art: PixelArt, ops: EditOp[], options: ApplyOpsOptions 
 
   const applied = changes.some((x) => x.changed)
   return { art: fromCanvas(c), changes, applied }
-}
-
-/**
- * 描边：找出所有"需要补色"的空白格（返回格子索引）。
- *
- * 语义分两层，都能一格格验证：
- *  - **第一圈**：与实心区切比雪夫距离 1 的空白格，即紧贴内容的完整外圈
- *    （2×2 方块外侧是 12 格；`connectivity:4` 时只保留正交相邻的那些）。
- *  - **第 n 圈**（`offset ≥ 2`）：从上一圈再向外扩一圈，仍是切比雪夫 1 环。
- *
- * 为什么先算出整圈再扩张，而不是逐格边搜边写：早期实现把"已描上的格"混进实心集合里同步扩张，
- * 9×9 上单像素 `offset:2` 只得到 12 格（正确是 33 = 3×3 + 5×5 两个外框减中心）。
- * 分两步写虽多一遍扫描，但每一步都能对上几何直觉。
- *
- * 只看 alpha 不看颜色索引：挖过洞的格子里仍留着旧索引值，只看索引会把透明格当成实心，
- * 描边就会贴着看不见的东西走。
- *
- * 只返回空白格，所以已有内容不会被覆盖，重复执行也不会越描越粗。
- */
-export function outlineCells(
-  w: number,
-  h: number,
-  alpha: Uint8Array | null,
-  connectivity: 4 | 8,
-  offset: number,
-): number[] {
-  const layers = Math.max(1, Math.floor(offset))
-  const isSolid = (x: number, y: number): boolean => {
-    if (x < 0 || y < 0 || x >= w || y >= h) return false
-    if (!alpha) return true
-    return alpha[y * w + x] >= ALPHA_THRESHOLD
-  }
-  const chebyshev1 = (x: number, y: number, test: (x: number, y: number) => boolean): boolean => {
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        if (dx === 0 && dy === 0) continue
-        if (test(x + dx, y + dy)) return true
-      }
-    }
-    return false
-  }
-
-  // 第一圈：紧贴内容的空白格。connectivity=4 时只保留正交相邻的那些，
-  // 只在对角相接的角落格留到第二圈（otherwise 描边会在凹角处出现孤立补丁）。
-  const outlined = new Set<number>()
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (isSolid(x, y)) continue
-      if (!chebyshev1(x, y, isSolid)) continue
-      if (connectivity === 4) {
-        const orth =
-          isSolid(x - 1, y) || isSolid(x + 1, y) || isSolid(x, y - 1) || isSolid(x, y + 1)
-        if (!orth) continue
-      }
-      outlined.add(y * w + x)
-    }
-  }
-
-  // 第 2..offset 圈：从上一圈的成果继续向外扩，仍然是切比雪夫 1 环。
-  // 分趟计算而不是边搜边写：中间状态混进判定里会漏格（9×9 单像素 offset:2 曾只得 12 格，应为 33）。
-  for (let layer = 2; layer <= layers; layer++) {
-    const found: number[] = []
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const p = y * w + x
-        if (isSolid(x, y) || outlined.has(p)) continue
-        if (found.includes(p)) continue
-        if (chebyshev1(x, y, (nx, ny) => {
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h) return false
-          return outlined.has(ny * w + nx)
-        })) {
-          found.push(p)
-        }
-      }
-    }
-    if (!found.length) break
-    for (const p of found) outlined.add(p)
-  }
-
-  // 按坐标顺序输出：同一输入必须产出同一顺序（确定性）
-  return [...outlined].sort((a, b) => a - b)
-}
-
-/**
- * 镜像加笔：以画布中线为轴，把内容镜像叠到另一侧。原内容保留。
- *
- * 用 `(w-1-x)` 而不是 `((w-x) % w)`：后者在 x=0 时会折到 x=w-1，
- * 内容是"贴着左边缘 8 格"时镜像副本会贴到右上角，而不是左侧留白 8 格——
- * 中线对称的意义就是让左右留白量相等。
- *
- * 副本里的透明格**不落笔**：否则镜像一次会顺手把原内容抹掉一半（对称图形看不出来，
- * 非对称图形必错）。
- */
-function mirrorCells(
-  w: number,
-  h: number,
-  alpha: Uint8Array | null,
-  kind: 'h' | 'v' | 'both',
-): number[] {
-  const solid = (x: number, y: number): boolean => {
-    const p = y * w + x
-    return alpha ? alpha[p] >= ALPHA_THRESHOLD : true
-  }
-  const result: number[] = []
-  const seen = new Set<number>()
-  const put = (x: number, y: number): void => {
-    if (x < 0 || y < 0 || x >= w || y >= h) return
-    const p = y * w + x
-    if (seen.has(p)) return
-    if (solid(x, y)) return // 已有内容不动
-    seen.add(p)
-    result.push(p)
-  }
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (!solid(x, y)) continue
-      if (kind === 'h' || kind === 'both') put(w - 1 - x, y)
-      if (kind === 'v' || kind === 'both') put(x, h - 1 - y)
-      if (kind === 'both') put(w - 1 - x, h - 1 - y)
-    }
-  }
-  return result
 }
 
 function snapshot(c: Canvas): { w: number; h: number; indices: Uint8Array; alpha: Uint8Array | null; palette: string } {

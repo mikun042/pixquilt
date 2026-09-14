@@ -6,6 +6,9 @@
 
 ```
 src/core/*        ←  纯逻辑：零 DOM、零框架、零 node: 内置模块，可被单测与 CLI 直接 import
+                    算子相关拆成三个文件：ops.ts（算子语义与状态提交）
+                    rasterize.ts（矩形/椭圆/笔刷/直线的几何）canvas-query.ts（外接框/锚点/连通）
+                    ops-shapes.ts（描边与镜像的几何辅助）
    ↑
 src/io/*          ←  Node 平台绑定（node:zlib / node:fs）——**只允许出现在这里**
 src/app/*         ←  浏览器：UI、画布、页内 API、canvas 编码
