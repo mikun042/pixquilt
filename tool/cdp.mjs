@@ -18,21 +18,73 @@ import { join } from 'node:path'
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /**
- * 浏览器候选路径，覆盖面取各脚本的并集（顺序：Edge 优先，然后 Chrome）。
- * 用 `--browser <路径>` 可覆盖（见 `startBrowser`）。
+ * **同步**睡眠：`exit` 钩子里不能用 `await`（事件循环已经停了），而删目录必须等浏览器真正退出。
+ * 零依赖做法是 `Atomics.wait` 卡住主线程——只在退出兜底里用，且有明确的上限。
+ */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/**
+ * 浏览器候选路径：**三个平台**的常见安装位置，顺序 Edge → Chrome → Chromium。
+ *
+ * 这里原先只有 Windows 的三处环境变量，于是在 macOS / Linux 上 `pickBrowser()` 恒为 null，
+ * 八个浏览器套件全部启动不了；而 `startBrowser` 的报错文案却对所有人宣传"可用 `--browser` 指定"
+ * ——而当时只有 `e2e.mjs` 一个脚本真的读这个参数。现在两件事一起修：候选路径补全 + 参数解析
+ * 收进 `startBrowser` 内部（见 `browserFromEnv()`），**任何脚本都不用各自记得传**。
+ *
+ * 注：macOS / Linux 的路径是按各发行版常规位置写的，作者无法在本机（Windows）实测；
+ * 找不到时会走 PATH 查找（`google-chrome` / `chromium` 等），仍然找不到才报错。
  */
 export const BROWSER_CANDIDATES = [
+  // Windows
   process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
   process.env['PROGRAMFILES(X86)'] && join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
   process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
   process.env['PROGRAMFILES(X86)'] && join(process.env['PROGRAMFILES(X86)'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
   process.env['LOCALAPPDATA'] && join(process.env['LOCALAPPDATA'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  // macOS
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  // Linux
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/snap/bin/chromium',
 ].filter(Boolean)
+
+/** PATH 里的可执行名（零依赖：自己按 `:` / `;` 拆，不引入 which 依赖） */
+const PATH_NAMES = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'msedge']
+
+/** 在 PATH 里找一个可执行文件；找不到返回 null */
+function findInPath() {
+  const dirs = (process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':')
+  for (const name of PATH_NAMES) {
+    for (const dir of dirs) {
+      if (!dir) continue
+      const full = join(dir, name)
+      if (existsSync(full)) return full
+    }
+  }
+  return null
+}
 
 /** 找一个可用的浏览器；显式路径优先，找不到返回 null（由调用方决定怎么报错） */
 export function pickBrowser(explicitPath) {
   if (explicitPath) return existsSync(explicitPath) ? explicitPath : null
-  return BROWSER_CANDIDATES.find((p) => existsSync(p)) ?? null
+  return BROWSER_CANDIDATES.find((p) => existsSync(p)) ?? findInPath()
+}
+
+/**
+ * 浏览器来源的统一优先级：`--browser <路径>` > `PIXEL_BROWSER` 环境变量 > 候选路径 / PATH。
+ *
+ * 放在 `cdp.mjs` 里由 `startBrowser` 自己调用，而不是让八个脚本各写一遍
+ * （此前只有 `e2e.mjs` 接了 `--browser`，其余七个脚本收到了也当没看见）。
+ */
+export function browserFromEnv() {
+  return argValue('browser') || process.env.PIXEL_BROWSER || undefined
 }
 
 /** 命令行取参小工具：`--name value` 或 `--flag` */
@@ -139,8 +191,18 @@ const LAUNCH_ARGS = (userDataDir, extra = []) => [
  *  - `'stdout'`（默认）：从进程输出里正则抓 `ws://…`，再查 `/json/list`；
  *  - `'portfile'`：读 profile 目录下的 `DevToolsActivePort`（某些环境下 stdout 抓不到）。
  *
- * 返回 `{ cdp, child, userDataDir, close() }`；**务必在 finally 里调 `close()`**，
- * 否则会留下无头进程与临时 profile。
+ * 浏览器路径的优先级由 `browserFromEnv()` 决定（`--browser` > `PIXEL_BROWSER` > 候选路径/PATH），
+ * 所以**脚本不必自己解析这个参数**。
+ *
+ * 清理有**三重**保障，都不依赖调用方记得写 finally：
+ *  1. 正常路径：调用方在 finally 里 `close()`；
+ *  2. **启动失败**：`mkdtemp` 之后的任何抛错（等端口超时 / 无 page target / 连不上）都在 catch 里
+ *     kill 掉子进程并删掉临时 profile——此前这段会漏，系统 temp 里积过 68 个残留 profile（1.1GB）；
+ *  3. **进程退出兜底**：注册一次 `exit` 钩子（同步 kill + 同步删目录），覆盖"脚本中途抛错但没写
+ *     finally"的情形。有了它，就不必为了清理去改写那几个几百行的顶层线性脚本。
+ *
+ * 返回 `{ cdp, child, browser, userDataDir, close() }`；**建议在 finally 里调 `close()`**（更及时），
+ * 忘了也不会留下残留。
  */
 export async function startBrowser(options = {}) {
   const {
@@ -151,41 +213,86 @@ export async function startBrowser(options = {}) {
     timeoutMs = 25000,
   } = options
 
-  const browser = pickBrowser(browserPath)
+  const browser = pickBrowser(browserPath ?? browserFromEnv())
   if (!browser) {
     throw new Error(
-      `找不到 Edge / Chrome（找过这些路径：\n  ${BROWSER_CANDIDATES.join('\n  ')}\n）——可用 --browser <路径> 指定`,
+      `找不到 Chrome / Edge / Chromium。找过这些路径：\n  ${BROWSER_CANDIDATES.join('\n  ')}\n` +
+        `也在 PATH 里找过：${PATH_NAMES.join(' / ')}\n` +
+        `——可用 --browser <路径> 指定，或设环境变量 PIXEL_BROWSER=<路径>`,
     )
   }
 
   const userDataDir = mkdtempSync(join(tmpdir(), profilePrefix))
-  const child = spawn(browser, LAUNCH_ARGS(userDataDir, extraArgs), { stdio: ['ignore', 'pipe', 'pipe'] })
-
-  const port = portStrategy === 'portfile' ? await waitPortFile(userDataDir, timeoutMs) : await waitPortFromStdout(child, timeoutMs)
-  const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
-  const page = list.find((t) => t.type === 'page')
-  if (!page) throw new Error('浏览器没有可用的 page target')
-  const cdp = await Cdp.connect(page.webSocketDebuggerUrl)
-
-  return {
-    cdp,
-    child,
-    browser,
-    userDataDir,
-    async close() {
-      cdp.close()
-      try {
-        child.kill()
-      } catch {
-        /* 已经退出 */
-      }
-      await sleep(300)
+  /** 同步清理：close() 与 exit 兜底共用，幂等 */
+  let cleaned = false
+  let child = null
+  const cleanup = () => {
+    if (cleaned) return
+    cleaned = true
+    try {
+      child?.kill()
+    } catch {
+      /* 已经退出 */
+    }
+    try {
+      rmSync(userDataDir, { recursive: true, force: true })
+    } catch {
+      /* 临时目录清理失败不影响结论 */
+    }
+  }
+  /**
+   * `exit` 兜底：Windows 上浏览器进程被杀后还会短暂占着 profile 里的文件句柄，
+   * 立刻删会 EBUSY/EPERM（实测：同步删一次删不掉，`close()` 因为有 300ms 等待才成功）。
+   * 这里在**退出路径**上同步重试几次——只能卡主线程，所以给一个明确上限（约 3 秒）。
+   */
+  const cleanupOnExit = () => {
+    if (cleaned) return
+    try {
+      child?.kill()
+    } catch {
+      /* 已经退出 */
+    }
+    for (let i = 0; i < 20; i++) {
       try {
         rmSync(userDataDir, { recursive: true, force: true })
+        cleaned = true
+        return
       } catch {
-        /* 临时目录清理失败不影响结论 */
+        sleepSync(150)
       }
-    },
+    }
+  }
+  process.once('exit', cleanupOnExit)
+
+  try {
+    child = spawn(browser, LAUNCH_ARGS(userDataDir, extraArgs), { stdio: ['ignore', 'pipe', 'pipe'] })
+    const port = portStrategy === 'portfile' ? await waitPortFile(userDataDir, timeoutMs) : await waitPortFromStdout(child, timeoutMs)
+    const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
+    const page = list.find((t) => t.type === 'page')
+    if (!page) throw new Error('浏览器没有可用的 page target')
+    const cdp = await Cdp.connect(page.webSocketDebuggerUrl)
+
+    return {
+      cdp,
+      child,
+      browser,
+      userDataDir,
+      async close() {
+        cdp.close()
+        cleanup()
+        await sleep(300)
+        // kill 之后浏览器可能还在收尾写盘，再删一次；`force: true` 让"目录已不存在"不成问题
+        try {
+          rmSync(userDataDir, { recursive: true, force: true })
+        } catch {
+          /* 忽略 */
+        }
+      },
+    }
+  } catch (err) {
+    // 失败路径：不留 profile、不留进程（见上面第 2 条）
+    cleanup()
+    throw err
   }
 }
 
