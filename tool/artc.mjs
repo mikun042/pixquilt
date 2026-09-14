@@ -13,7 +13,7 @@
  *   node tool/artc.mjs --selftest
  *   node tool/artc.mjs --describe
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { inflateSync } from 'node:zlib'
@@ -30,6 +30,8 @@ import { countTransparent, countUsage } from '../src/core/stats.ts'
 import { describeAll, OP_SPECS } from '../src/core/spec.ts'
 import { decodePngNode } from '../src/io/node-png.ts'
 import { artToPngBytesNode } from '../src/io/node-export.ts'
+import { sliceAuto, sliceByGrid } from '../src/core/slice.ts'
+import { encodePngNode } from '../src/io/node-png.ts'
 import { artToImageData } from '../src/core/raster.ts'
 import { canDecodeInNode, isImagePath, loadImageNode, UnsupportedImageError } from '../src/io/node-image.ts'
 
@@ -53,7 +55,7 @@ const VALUE_FLAGS = new Set([
   'in', 'out', 'name', 'index', 'scale', 'ops', 'ops-file', 'blank', 'blank-color', 'long-edge', 'size',
   'dither', 'contrast', 'saturation', 'brightness', 'crop', 'downsample', 'palette-k',
   'palette', 'preset', 'style', 'matte', 'cleanup-min', 'bead-mm', 'bead-gram', 'board',
-  'key-mode', 'key-tolerance',
+  'key-mode', 'key-tolerance', 'slice',
 ])
 /** 允许出现的全部开关。新增 flag 必须同时改这里与帮助文本（见 BOOL_FLAGS 上方注释）。 */
 export const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...OPTIONAL_VALUE_FLAGS, ...VALUE_FLAGS])
@@ -146,6 +148,36 @@ export function parseBlankSpec(text, flagName = '--blank') {
   const m = String(text).match(/^(\d+)\s*[xX*×]\s*(\d+)$/)
   if (!m) throw new Error(`${flagName} 需写成 宽x高，例如 ${flagName} 58x58`)
   return { width: Number(m[1]), height: Number(m[2]) }
+}
+
+/**
+ * `--slice` 的取值解析：
+ *   auto              自动推断（按全透明行/列分隔）
+ *   WxH               显式网格（列数 x 行数），要求能整除图尺寸
+ *   WxHpx             每格像素尺寸（后缀 px 消歧义），据此算出列数/行数
+ *
+ * 为什么需要 `px` 后缀：`32x32` 既可能是"32 列 32 行"也可能是"每格 32 像素"。
+ * 早先想靠"能否整除"自动判别，但两种解释常常同时成立（例如 1024 图上 32x32），
+ * 猜错会把图切成完全错误的样子。所以**不给后缀就按格数**，要用像素就显式写 `32x32px`。
+ */
+export function parseSliceSpec(text, imgWidth, imgHeight) {
+  const raw = String(text).trim()
+  if (raw === 'auto') return { kind: 'auto' }
+  const m = raw.match(/^(\d+)\s*[xX*×]\s*(\d+)\s*(px)?$/)
+  if (!m) throw new Error(`--slice 需写成 auto | 列数x行数 | 每格像素 WxHpx，例如 --slice 4x2 或 --slice 32x32px；收到 "${text}"`)
+  const a = Number(m[1])
+  const b = Number(m[2])
+  if (a < 1 || b < 1) throw new Error(`--slice 的两个数都必须是正整数，收到 "${text}"`)
+  const div = (n, d, label) => {
+    if (imgWidth % n !== 0) throw new Error(`--slice ${label}：图宽 ${imgWidth} 不能被 ${n} 整除`)
+    if (imgHeight % d !== 0) throw new Error(`--slice ${label}：图高 ${imgHeight} 不能被 ${d} 整除`)
+  }
+  if (m[3]) {
+    div(a, b, `每格 ${a}×${b} 像素`)
+    return { kind: 'cell', cellWidth: a, cellHeight: b, columns: imgWidth / a, rows: imgHeight / b }
+  }
+  div(a, b, `${a} 列 × ${b} 行`)
+  return { kind: 'grid', columns: a, rows: b }
 }
 
 export function collectInputs(dirOrFile) {
@@ -698,6 +730,43 @@ async function selftest() {
     return `8×4 → trim → fit → 16×16（透明 ${kept} 格）`
   })
 
+  check('CLI：--slice 解析三种写法，并对不可整除的网格报错', () => {
+    eq(parseSliceSpec('auto', 64, 32).kind, 'auto', 'auto 应识别为自动推断')
+    const g = parseSliceSpec('4x2', 64, 32)
+    eq(g.kind, 'grid', '4x2 应识别为网格')
+    eq(g.columns * g.rows, 8, '4×2 网格应有 8 格')
+    const c = parseSliceSpec('16x16px', 64, 32)
+    eq(c.kind, 'cell', '16x16px 应识别为每格像素')
+    eq(c.columns, 4, '64/16 = 4 列')
+    eq(c.rows, 2, '32/16 = 2 行')
+    // 不可整除必须报错，而不是静默丢掉余下像素
+    let threw = ''
+    try { parseSliceSpec('4x3', 64, 32) } catch (e) { threw = e.message }
+    assert(/不能被 3 整除/.test(threw), `不可整除应报错并指名，实际："${threw}"`)
+    return 'auto / 4x2 / 16x16px 三种写法正确；4x3 被拒'
+  })
+
+  check('核心：切片按网格拆图，像素逐块对应', () => {
+    // 4×2 的纯色块图（每块 2×2），切成 4 列 2 行
+    const W = 8
+    const H = 4
+    const data = new Uint8ClampedArray(W * H * 4)
+    const put = (x, y, rgb) => { const i = (y * W + x) * 4; data[i] = rgb[0]; data[i + 1] = rgb[1]; data[i + 2] = rgb[2]; data[i + 3] = 255 }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) put(x, y, [x < 4 ? 255 : 0, y < 2 ? 255 : 0, 128])
+    const pieces = sliceByGrid({ width: W, height: H, data }, 4, 2, { baseName: 'f' })
+    eq(pieces.length, 8, '应切出 8 块')
+    eq(pieces[0].image.width, 2, '每块宽 2')
+    eq(pieces[0].image.height, 2, '每块高 2')
+    eq(pieces[0].name, 'f_00', '首块命名应零填充')
+    eq(pieces[7].name, 'f_07', '末块命名应零填充')
+    // 第 0 块取自左上（红+绿），第 7 块取自右下（无红无绿）
+    eq(pieces[0].image.data[0], 255, '第 0 块 R 应为 255')
+    eq(pieces[0].image.data[1], 255, '第 0 块 G 应为 255')
+    eq(pieces[7].image.data[0], 0, '第 7 块 R 应为 0')
+    eq(pieces[7].image.data[1], 0, '第 7 块 G 应为 0')
+    return '8 块，像素对应正确'
+  })
+
   check('CLI：--key-mode / --key-tolerance 进入参数并被导出采用', () => {
     const a = buildParams({ 'key-mode': 'border' })
     eq(a.params.transparent, 'key', '给了 --key-mode 就应自动进入键控模式（否则选项静默失效）')
@@ -1140,12 +1209,40 @@ async function main() {
       if (canDecodeInNode(f)) decodable.push(f)
       else skipped.push({ src: basename(f), reason: `Node 端只解码 PNG，已跳过 ${extname(f) || '（无扩展名）'}` })
     }
-    if (!decodable.length) {
+    // --slice：把每张输入图先切成多张子图（写到临时文件），再走下面同一条渲染链路。
+    // 之所以落临时文件而不是把内存图直接喂给 renderOne：renderOne 的入口是**文件路径**
+    // （它内部要 loadImageNode、还要用 basename 生成 {name}），走文件能让切片与正常输入
+    // 完全共用一条代码路径——否则切片会变成第二套渲染逻辑，迟早分叉。
+    let sliceUnits = null
+    if (args.slice) {
+      sliceUnits = []
+      const tmpRoot = mkdtempSync(join(tmpdir(), 'artc-slice-'))
+      let pieceCount = 0
+      for (const f of decodable) {
+        const img = decodePngNode(new Uint8Array(readFileSync(f)))
+        const spec = parseSliceSpec(String(args.slice), img.width, img.height)
+        const base = basename(f, extname(f))
+        const pieces = spec.kind === 'auto' ? sliceAuto(img, { baseName: base }) : sliceByGrid(img, spec.columns, spec.rows, { baseName: base })
+        if (!pieces.length) throw new Error(`${basename(f)} 切片后没有任何子图`)
+        for (const p of pieces) {
+          const tmp = join(tmpRoot, `${p.name}.png`)
+          writeFileSync(tmp, encodePngNode(p.image))
+          sliceUnits.push(tmp)
+        }
+        pieceCount += pieces.length
+      }
+      if (!args.quiet) progress(`切片：${decodable.length} 张 → ${pieceCount} 张子图（--slice ${args.slice}）`)
+    }
+    const renderList = sliceUnits ?? decodable
+    // 切片临时目录用完即清（放在 try/finally 之外也可以：下面每张各自 try/catch，
+    // 不会带着异常跳过清理；这里在循环后统一删）。
+    const sliceTmp = sliceUnits ? dirname(sliceUnits[0]) : null
+    if (!renderList.length) {
       const exts = [...new Set(inputs.map((f) => extname(f).toLowerCase() || '（无扩展名）'))].join('、')
       throw new Error(`输入目录里没有可处理的 PNG：${args.in}（发现 ${inputs.length} 个文件，扩展名 ${exts}）`)
     }
-    for (let i = 0; i < decodable.length; i++) {
-      const src = decodable[i]
+    for (let i = 0; i < renderList.length; i++) {
+      const src = renderList[i]
       try {
         const r = renderOne({
           src,
@@ -1206,6 +1303,8 @@ async function main() {
         console.error(`✘ ${basename(src)}：${reason}`)
       }
     }
+    // 切片临时目录只服务于本轮渲染，渲染完即删（不清会像 CDP 的 profile 那样在系统 temp 里堆积）
+    if (sliceTmp) rmSync(sliceTmp, { recursive: true, force: true })
   }
 
   // 图集坐标表对 --blank 与 --in 两条产出路径同样成立，因此放在两者之外：
@@ -1282,6 +1381,8 @@ function printHelp() {
   --brightness/--contrast/--saturation <n>   预处理（-100..100）
   --alpha                 保留原图透明（真 alpha 通道）
   --transparent           背景色导出为透明（单色键控）
+  --slice <规格>          把输入图**切成多张**（与 --sheet 方向相反：--sheet 拼图集、--slice 拆图集）
+                          auto 按全透明行/列自动推断 | 列数x行数 | 每格像素 WxHpx
   --matte <#rrggbb>       合成/键控底色（默认 #ffffff）
   --key-mode <模式>       global（默认）全图同色都透明 | border 只键与四边连通的底色区域
                           （白底 + 主体内部有同色高光时必须用 border，否则高光会被挖穿）

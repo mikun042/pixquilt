@@ -28,6 +28,7 @@ import { beadPdf } from '../core/bead-pdf.ts'
 import { buildPdf, buildPdfAsync } from '../core/pdf.ts'
 import { OP_SPECS } from '../core/spec.ts'
 import { artToImageData } from '../core/raster.ts'
+import { sliceAuto, sliceByGrid } from '../core/slice.ts'
 import { hexToRgb, rgbToHex, rgbToOklab, oklabToRgb, gradientPalette } from '../core/color.ts'
 import type { PixelArt } from '../core/types.ts'
 
@@ -650,6 +651,69 @@ describe('导出与序列化', () => {
     const sheet = layoutSheet(Array.from({ length: 9 }, (_, i) => ({ name: `f${i}`, width: 8, height: 8 })), 0, 0)
     assert.equal(sheet.columns, 3)
     assert.equal(sheet.rows, 3)
+  })
+})
+
+describe('图集切片', () => {
+  /** 2×2 的纯色块网格铺在一张图上（每块 3×3），块间留 1px 透明缝 */
+  function atlasWithGaps() {
+    const cw = 3, ch = 3, gap = 1, cols = 2, rows = 2
+    const w = cols * cw + (cols - 1) * gap
+    const h = rows * ch + (rows - 1) * gap
+    const data = new Uint8ClampedArray(w * h * 4)
+    const colors = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]]
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c < cols; c++) {
+        const col = colors[r * cols + c]
+        const ox = c * (cw + gap)
+        const oy = r * (ch + gap)
+        for (let y = 0; y < ch; y++)
+          for (let x = 0; x < cw; x++) {
+            const i = ((oy + y) * w + (ox + x)) * 4
+            data[i] = col[0]; data[i + 1] = col[1]; data[i + 2] = col[2]; data[i + 3] = 255
+          }
+      }
+    return { width: w, height: h, data }
+  }
+
+  it('按网格切片：块数、尺寸、命名都对，像素逐块搬对', () => {
+    const src = { width: 8, height: 4, data: new Uint8ClampedArray(8 * 4 * 4) }
+    // 左上角画一个红点，只有第 0 块该有
+    src.data[0] = 255; src.data[3] = 255
+    const pieces = sliceByGrid(src, 4, 2, { baseName: 'a' })
+    assert.equal(pieces.length, 8)
+    assert.equal(pieces[0].image.width, 2)
+    assert.equal(pieces[0].image.height, 2)
+    assert.equal(pieces[0].name, 'a_00')
+    assert.equal(pieces[7].name, 'a_07')
+    assert.equal(pieces[0].image.data[0], 255, '第 0 块应含那个红点')
+    assert.equal(pieces[1].image.data[0], 0, '第 1 块不该有红')
+  })
+
+  it('不能整除时抛错并指名（不许静默丢掉余下像素）', () => {
+    const src = { width: 7, height: 4, data: new Uint8ClampedArray(7 * 4 * 4) }
+    assert.throws(() => sliceByGrid(src, 4, 2), /无法被 4×2 网格整除/)
+    assert.throws(() => sliceByGrid(src, 0, 2), /正整数/)
+  })
+
+  it('auto 靠全透明缝自动推断网格', () => {
+    const pieces = sliceAuto(atlasWithGaps(), { baseName: 't' })
+    assert.equal(pieces.length, 4, '2×2 图集应切出 4 块')
+    for (const p of pieces) {
+      assert.equal(p.image.width, 3, '每块宽应等于内容块宽 3（不含缝）')
+      assert.equal(p.image.height, 3, '每块高应等于内容块高 3')
+    }
+  })
+
+  it('auto 对尺寸不等的稀疏内容报错（宁可不切也不切错）', () => {
+    const w = 8, h = 8
+    const data = new Uint8ClampedArray(w * h * 4)
+    const fill = (x0: number, y0: number, x1: number, y1: number) => {
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) data[(y * w + x) * 4 + 3] = 255
+    }
+    fill(0, 0, 1, 1)   // 2×2 块
+    fill(5, 5, 7, 7)   // 3×3 块（尺寸不等）
+    assert.throws(() => sliceAuto({ width: w, height: h, data }), /规整图集|尺寸不等/)
   })
 })
 

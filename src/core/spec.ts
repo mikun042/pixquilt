@@ -240,6 +240,14 @@ export interface Capabilities {
   stylePresets: { id: string; name: string; desc: string }[]
   decodeFormatsInNode: readonly string[]
   decodeFormatsInBrowser: readonly string[]
+  /**
+   * L3「从零作画」可用的 core 导出清单。
+   *
+   * 为什么列进自描述：手册的 L3 段原先只写了"带源图转换"那条路（`runPipeline(src, params)`），
+   * agent 想做程序化生成（不读素材、直接画像素）时发现不了 `blankArt` / `applyOps`，
+   * 只能去读 CLI 源码。列在这里，冷启动即可见。
+   */
+  programmaticApi: { module: string; exports: string[]; desc: string }[]
   /** 多帧动画：字段已预留，尚未实现（见 docs/DEVELOPMENT.md §8 的 B1） */
   animation: false
   /** 是否支持只用已有色板（拼豆/资产批次） */
@@ -264,6 +272,15 @@ export const CAPABILITIES: Capabilities = {
   stylePresets: STYLE_PRESETS.map((s) => ({ id: s.id, name: s.name, desc: s.desc })),
   decodeFormatsInNode: ['png'],
   decodeFormatsInBrowser: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif', 'ico', 'svg'],
+  programmaticApi: [
+    { module: 'src/core/ops.ts', exports: ['blankArt', 'applyOps'], desc: '建空白画布 / 跑算子链（从零作画的主力）' },
+    { module: 'src/core/raster.ts', exports: ['artToImageData'], desc: '索引画布 → RGBA（含放大与可选键控）' },
+    { module: 'src/io/node-export.ts', exports: ['artToPngBytesNode'], desc: '一步到位：PixelArt → PNG 字节' },
+    { module: 'src/io/node-png.ts', exports: ['decodePngNode', 'encodePngNode'], desc: 'PNG 编解码（Node 端）' },
+    { module: 'src/core/pipeline.ts', exports: ['runPipeline'], desc: '带源图的转换管线（L3 的另一条路）' },
+    { module: 'src/core/export.ts', exports: ['layoutSheet', 'artHash', 'encodePixBin', 'pixelJSONString'], desc: '图集坐标 / 指纹 / 二进制 / 像素 JSON' },
+    { module: 'src/core/slice.ts', exports: ['sliceByGrid', 'sliceAuto'], desc: '图集切片（与 layoutSheet 方向相反）' },
+  ],
   animation: false,
   lockPalette: true,
   eyeDropper: false,

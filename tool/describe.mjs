@@ -131,6 +131,11 @@ export function build() {
     ],
     ['--lock-palette', '只允许使用给定色板（拼豆与资产批次必备）', ['lock-palette']],
 
+    [
+      '--slice',
+      '把输入图**切成多张**（与 `--sheet` 方向相反：`--sheet` 拼图集、`--slice` 拆图集）。`auto` 按全透明行/列自动推断；`列数x行数` 显式网格；`WxHpx` 每格像素尺寸',
+      ['slice'],
+    ],
     ['--sheet [列数]', '输出 `_sheet.json` 图集坐标表（帧等尺寸 + offsetX/offsetY）', ['sheet']],
     ['--pixbin', '额外输出 `.pixbin`（二进制像素数据，大画布往返更快）', ['pixbin']],
     ['--bead [每板格数]', '拼豆模式：输出 `*_图纸.svg` 与 `*_缺口清单.csv`（默认每板 58 格）', ['bead']],

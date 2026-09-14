@@ -46,18 +46,41 @@ node tool/quickstart.mjs        # 一条命令跑通全链路，产出落在 .qu
 > ```js
 > import { DEFAULT_PARAMS } from './src/core/types.ts'
 > import { runPipeline } from './src/core/pipeline.ts'
-> import { artToImageData } from './src/core/raster.ts'
-> import { decodePngNode, encodePngNode } from './src/io/node-png.ts'
+> import { decodePngNode } from './src/io/node-png.ts'
+> import { artToPngBytesNode } from './src/io/node-export.ts'
 > import { readFileSync, writeFileSync } from 'node:fs'
 >
 > const src = decodePngNode(new Uint8Array(readFileSync('原图.png')))
 > const { art } = runPipeline(src, { ...DEFAULT_PARAMS, longEdge: 32, paletteMode: 'preset', presetPaletteId: 'pico8' })
-> // art 是索引色画布（indices + palette），出文件前要展开成 RGBA
-> writeFileSync('out.png', encodePngNode(artToImageData(art)))
+> writeFileSync('out.png', artToPngBytesNode(art))   // 一步到位：索引画布 → PNG 字节
 > ```
 >
 > 这段路径只依赖 `src/core` + `src/io`，不需要浏览器；`tool/artc.mjs` 内部走的就是同一条链路。
 > 只是想要成品文件的话，**优先用 L2 的 CLI**——它把展开/编码/命名/图集都做好了。
+>
+> **L3 还有第二条路：不带源图、从零作画**（程序化生成素材，CLI 做不到的部分）。
+> 这条路原先没写进手册，agent 只能去读 CLI 源码才发现。最小可跑脚本：
+>
+> ```js
+> import { blankArt, applyOps } from './src/core/ops.ts'
+> import { artToPngBytesNode } from './src/io/node-export.ts'
+> import { writeFileSync } from 'node:fs'
+>
+> // ① 建画布（transparent=true 得到透明底）② 用算子链作画 ③ 出 PNG
+> const art = blankArt(32, 32, '#000000', true)
+> const { art: drawn } = applyOps(art, [
+>   { op: 'ellipse', x0: 6, y0: 6, x1: 25, y1: 25, color: '#7bc86c' },   // 算子必须显式给 color
+>   { op: 'setCells', cells: [[13, 14], [18, 14]], color: '#1a1c2c' },    // 眼睛
+>   { op: 'outline', color: '#1a1c2c' },                                  // 描边
+>   { op: 'fit', width: 32, height: 32 },                                 // 裁内容后适配定尺寸
+> ])
+> writeFileSync('sprite.png', artToPngBytesNode(drawn))
+> ```
+>
+> 也可以直接自建 `PixelArt`（`{ width, height, indices, palette, alphaMask }`）逐格填像素——
+> 需要精确控制每一格时用这条（本仓库 `output/` 下的程序化素材生成器就是这么做）。
+> 查"有哪些 core 导出可用"：`node tool/artc.mjs --describe` 的 `programmaticApi` 字段。
+
 
 ---
 
