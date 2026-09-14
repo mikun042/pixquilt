@@ -9,8 +9,8 @@
  * cleanup、photo 模式是空对象，切换还会互相残留参数）。现在统一由 `src/app/presets.ts`
  * 管理：出厂预设只读、用户可更新/恢复出厂/另存为自定义预设。见 docs/USAGE.md。
  */
-import { DEFAULT_PARAMS, DEFAULT_PREFS, TOOLS, coerceParams, sanitizePrefs, type ConvertParams, type EditorPrefs, type PixelArt } from '../core/types.ts'
-import { PRESETS, getPreset, parseHexPalette, serializeHexPalette } from '../core/palettes.ts'
+import { DEFAULT_PARAMS, DEFAULT_PREFS, TOOLS, sanitizePrefs, type ConvertParams, type EditorPrefs, type PixelArt } from '../core/types.ts'
+import { getPreset } from '../core/palettes.ts'
 import { EXPORT_SCALES, PREFS_DEBOUNCE_MS } from '../core/limits.ts'
 import { createExportActions } from './export-actions.ts'
 import { artToPngBlob, artToPngDataURL, artToPngDataURLSync } from './canvas-png.ts'
@@ -23,9 +23,9 @@ import { decodeToRgba, imageFromClipboard, makeThumbnail, looksLikeImage } from 
 import { createCanvas } from './ui/canvas.ts'
 import { createColorPicker, type ColorPickerApi, type ColorPickerCallbacks } from './ui/colorpicker.ts'
 import { createMatteField } from './matte-field.ts'
+import { createParamsPanel } from './ui/params-panel.ts'
 import { iconEl } from './ui/icons.ts'
 import { ArtHistory, normalizeAlphaMask } from './history.ts'
-import { addCustomPreset, effectivePresets, removeCustomPreset, resetPreset, sameParams, updatePreset } from './presets.ts'
 import { installAutomationApi } from './automation.ts'
 
 interface AppState {
@@ -128,10 +128,21 @@ const exports = createExportActions({
 
 /* ------------------------------------------------------------------ 参数与重转 */
 
-function patchParams(patch: Partial<ConvertParams>, opts: { regenerate?: boolean } = {}): void {
-  app.params = { ...app.params, ...patch }
-  if (opts.regenerate !== false && app.source) regenerate()
+/**
+ * 写入**整份**参数并决定后续：有原图就重转，没有就重绘。
+ *
+ * 参数面板（`ui/params-panel.ts`）里"套用预设"与"从精确尺寸切回长边"都需要这个决策，
+ * 因此从 `patchParams` 里提出来成为它的一条 dep——**决策留在这一层**，面板只负责收集用户意图。
+ */
+function commitParams(next: ConvertParams): void {
+  app.params = next
+  if (app.source) regenerate()
   else renderAll()
+}
+
+/** 改一小组参数（原先还带一个 `opts.regenerate`，全仓无人传，已删） */
+function patchParams(patch: Partial<ConvertParams>): void {
+  commitParams({ ...app.params, ...patch })
 }
 
 function regenerate(): void {
@@ -241,7 +252,7 @@ canvasApi.attachMagnifier(magBox, magCanvas)
 
 const leftRail = document.getElementById('rail-tools') as HTMLElement
 const palettePanel = document.getElementById('panel-palette') as HTMLElement
-const paramsPanel = document.getElementById('panel-params') as HTMLElement
+const paramsHost = document.getElementById('panel-params') as HTMLElement
 const statusbar = document.getElementById('statusbar') as HTMLElement
 
 /** 顶栏按钮引用：结构只建一次，render 时只更新可用状态（避免打断导出菜单的展开状态） */
@@ -441,6 +452,27 @@ const matteField = createMatteField({
   },
 })
 
+/**
+ * 参数面板（预设区 + 转换参数 + 显示开关），实现在 `src/app/ui/params-panel.ts`。
+ * 那边只做渲染，所有状态读写经下面这个 deps 走回来——方向单向：这里 → 那边。
+ */
+const paramsPanel = createParamsPanel({
+  host: paramsHost,
+  getParams: () => app.params,
+  patch: (patch) => patchParams(patch),
+  commitParams: (next) => commitParams(next),
+  getArt: () => app.art,
+  rerender: () => renderAll(),
+  toast,
+  getFlag: (key) => store.get(key),
+  setFlag: (key, value) => {
+    store.set(key, value)
+    // 必须顺带重绘：画布是在 draw() 里读这两个开关的，只改 store 会"勾了没反应"（§8.10 ④）
+    canvasApi.redraw()
+  },
+  matte: matteField,
+})
+
 function ensurePicker(host: HTMLElement): ColorPickerApi {
   if (!picker) {
     picker = createColorPicker(
@@ -573,414 +605,6 @@ function renderPalette(): void {
   if (pickerHost) palettePanel.append(pickerHost)
 }
 
-/** 参数面板：按模式分组，避免把 19 个参数全堆在一个长列表里 */
-/**
- * 自定义 / .hex 色板编辑区。
- *
- * 为什么需要它：`paletteMode: 'custom'` 与 `customPalette` 一直是 core 与 CLI/页内 API 支持的能力
- * （CLI 的 `--palette xxx.hex` 就是走它），但**参数面板从来没有对应控件**——
- * 《使用说明》却写了"支持导入 .hex"，于是用户选中"自定义 / .hex"后什么也做不了，
- * 转换还静默按自动取色进行。这是"文档说支持、界面不支持"的典型，测试报告里列为 P1。
- *
- * 输入兼容两种 .hex 行式（见 core/palettes.ts 的 parseHexPalette）：
- *   `#rrggbb` 每行一个；或 `S12 #ff8800` 两列带号色（拼豆图纸用）。
- */
-function renderCustomPaletteField(p: ConvertParams): HTMLElement {
-  const count = p.customPalette.length
-  const fileInput = el('input', {
-    type: 'file',
-    accept: '.hex,.txt,text/plain',
-    style: { display: 'none' },
-    onchange: (e: Event) => {
-      const f = (e.target as HTMLInputElement).files?.[0]
-      ;(e.target as HTMLInputElement).value = ''
-      if (!f) return
-      void f.text().then((text) => {
-        const parsed = parseHexPalette(text)
-        if (parsed.colors.length === 0) {
-          toast('这个文件里没有解析出颜色（需要每行一个 #rrggbb，或「编号 #rrggbb」两列）', 'warn')
-          return
-        }
-        patchParams({ paletteMode: 'custom', customPalette: parsed.colors })
-        toast(`已载入 ${parsed.colors.length} 个颜色${parsed.truncated ? `（超出 256 的部分已截断）` : ''}${parsed.skipped ? `，跳过 ${parsed.skipped} 行无法解析的内容` : ''}`)
-      })
-    },
-  })
-
-  const textarea = el('textarea', {
-    class: 'hex-textarea',
-    spellcheck: 'false',
-    rows: '5',
-    placeholder: '#0f380f\n#306230\n或带号色：S12 #ff8800',
-    onchange: (e: Event) => {
-      const parsed = parseHexPalette((e.target as HTMLTextAreaElement).value)
-      if (parsed.colors.length === 0) {
-        toast('没有解析出颜色：每行一个 #rrggbb，或「编号 #rrggbb」两列', 'warn')
-        return
-      }
-      patchParams({ customPalette: parsed.colors })
-      toast(`自定义色板已更新为 ${parsed.colors.length} 色`)
-    },
-  })
-
-  const row = el('div', { class: 'row wrap' })
-  row.append(
-    el('button', { class: 'btn tiny', type: 'button', onclick: () => fileInput.click() }, ['导入 .hex 文件']),
-    el('button', {
-      class: 'btn tiny',
-      type: 'button',
-      title: '把当前画布色板填进上面的输入框（便于改几个色再导入）',
-      disabled: app.art ? false : true,
-      onclick: () => {
-        if (!app.art) return
-        textarea.value = serializeHexPalette(app.art.palette).trim()
-        toast('已填入当前画布色板，改完按回车（或在别处点一下）生效')
-      },
-    }, ['填入当前画布色板']),
-    el('button', {
-      class: 'btn tiny',
-      type: 'button',
-      disabled: count === 0 ? true : false,
-      onclick: () => {
-        textarea.value = ''
-        patchParams({ customPalette: [] })
-      },
-    }, ['清空']),
-  )
-
-  textarea.value = count > 0 ? serializeHexPalette(p.customPalette).trim() : ''
-
-  return el('div', { class: 'field-inner' }, [
-    el('span', { class: 'hint' }, [
-      count > 0
-        ? `当前自定义色板：${count} 色（超 256 截断，空色板会退回自动取色）`
-        : '⚠ 自定义色板为空：此时会退回「自动取色」，请在下面输入颜色或导入 .hex 文件',
-    ]),
-    textarea,
-    row,
-    el('span', { class: 'hint' }, ['每行一个 #rrggbb；也可用「编号 #rrggbb」两列（拼豆号色，图纸与清单会带上编号）']),
-    fileInput,
-  ])
-}
-
-/** 预设「管理」区是否展开。模块级持有：面板每次 render 都重建，状态不能放在渲染函数里 */
-let presetEditorOpen = false
-
-/**
- * 套用预设 = **替换**，不是合并。
- *
- * 旧实现（模式与预设都）用 `patchParams(preset.params)` 合并进当前参数，于是上一个预设留下的
- * `exactWidth/exactHeight`、`lockPalette` 会残留——换预设后尺寸/锁色板并不是你选的那个
- * （实测：拼豆→游戏资产→图片，最后仍带着 exact 32×32 与锁色板）。以**出厂默认**为基底再叠预设，
- * 结果就只取决于"点了哪个预设"。
- */
-function applyPreset(params: Partial<ConvertParams>): void {
-  app.params = coerceParams({ ...DEFAULT_PARAMS, ...params })
-  if (app.source) regenerate()
-  else renderAll()
-}
-
-/** 当前参数的快照（自定义色板要复制，否则存下来的预设会跟着后续编辑一起变） */
-function presetSnapshot(): ConvertParams {
-  return { ...app.params, customPalette: [...app.params.customPalette] }
-}
-
-function saveCurrentAsPreset(): void {
-  const input = prompt('新预设名称（会出现在右侧预设里）', '我的预设')
-  if (input === null) return
-  const name = input.trim()
-  if (!name) {
-    toast('预设名称不能为空', 'warn')
-    return
-  }
-  const created = addCustomPreset(name, presetSnapshot())
-  if (!created) {
-    toast('自定义预设已达数量上限，请先删掉几个', 'warn')
-    return
-  }
-  toast(`已保存预设「${created.name}」`)
-  renderAll()
-}
-
-/**
- * 预设区：一排 chip（点击套用）+ 一行动作（存为预设 / 管理预设）。
- *
- * 「管理」默认收起——预设是"一次点一个"的控件，把更新/恢复出厂/删除全铺开会把面板压得很长。
- * 展开后每个预设一行：内置可「用当前参数更新」「恢复出厂」，自定义可「更新」「删除」。
- */
-function renderPresetSection(): void {
-  const presets = effectivePresets()
-  // 当前参数正好等于某个预设时高亮它——不然用户看不出"我现在用的是哪套"
-  const activeId = presets.find((ps) => sameParams(ps.params, app.params))?.id ?? ''
-
-  paramsPanel.append(el('div', { class: 'panel-title' }, ['预设']))
-  const row = el('div', { class: 'row wrap preset-row' })
-  for (const ps of presets) {
-    row.append(
-      el('button', {
-        class: `btn small preset-chip${ps.builtin ? '' : ' custom'}${ps.modified ? ' modified' : ''}${activeId === ps.id ? ' active' : ''}`,
-        title: `${ps.desc}${ps.modified ? '\n（已按你的参数改过）' : ''}\n点击套用；要改它请用下面的「管理预设」`,
-        onclick: () => applyPreset(ps.params),
-      }, [ps.builtin ? ps.name : `★ ${ps.name}`]),
-    )
-  }
-  paramsPanel.append(row)
-
-  const bar = el('div', { class: 'row wrap preset-bar' })
-  bar.append(
-    el('button', { class: 'btn tiny', title: '把当前面板里的参数存成一个新预设（可命名、可删除）', onclick: saveCurrentAsPreset }, ['＋ 存为预设']),
-    el('button', { class: 'btn tiny', onclick: () => { presetEditorOpen = !presetEditorOpen; renderAll() } }, [presetEditorOpen ? '收起管理 ▴' : '管理预设 ▾']),
-  )
-  paramsPanel.append(bar)
-
-  if (!presetEditorOpen) return
-  const list = el('div', { class: 'preset-editor' })
-  for (const ps of presets) {
-    list.append(
-      el('div', { class: 'preset-line' }, [
-        el('span', { class: 'preset-line-name', title: ps.desc }, [`${ps.name}${ps.modified ? ' ·已改' : ''}`]),
-        el('button', {
-          class: 'btn tiny',
-          title: '把当前面板里的参数写回这个预设',
-          onclick: () => {
-            updatePreset(ps.id, presetSnapshot())
-            toast(`已用当前参数更新「${ps.name}」`)
-            renderAll()
-          },
-        }, ['用当前参数更新']),
-        ps.builtin
-          ? el('button', {
-              class: 'btn tiny',
-              disabled: !ps.modified,
-              title: '丢弃你的改动，恢复出厂参数',
-              onclick: () => {
-                resetPreset(ps.id)
-                toast(`「${ps.name}」已恢复出厂`)
-                renderAll()
-              },
-            }, ['恢复出厂'])
-          : el('button', {
-              class: 'btn tiny',
-              title: '删除这个自定义预设',
-              onclick: () => {
-                removeCustomPreset(ps.id)
-                toast(`已删除预设「${ps.name}」`)
-                renderAll()
-              },
-            }, ['删除']),
-      ]),
-    )
-  }
-  paramsPanel.append(list)
-}
-
-/**
- * 从「精确尺寸」切回「长边格数」：**必须显式删掉这两个字段**。
- * 留着它们时 `computeGridSize` 会用精确尺寸（exact 优先于 longEdge），
- * 于是长边控件看起来调了却没效果——实测踩过，所以单独一个函数、不走 patchParams。
- */
-function clearExactSize(): void {
-  const next = { ...app.params }
-  delete next.exactWidth
-  delete next.exactHeight
-  app.params = next
-  if (app.source) regenerate()
-  else renderAll()
-}
-
-function renderParams(): void {
-  // 只移除面板自己的子节点，**保留合成底色字段**（它含取色盘宿主，必须跨渲染存活，
-  // 否则拖动中指针捕获会断、手感全失）——见 matte-field.ts 顶部第 2 条坑
-  for (const child of [...paramsPanel.children]) {
-    if (child !== matteField.element) child.remove()
-  }
-  const p = app.params
-
-  renderPresetSection()
-
-  paramsPanel.append(el('div', { class: 'panel-title' }, ['转换参数']))
-
-  /**
-   * 一行参数：标签 + 控件 + 提示。
-   * `forId` 可选：给了就把标签关联到那个控件——`<label for>` 对 `<button>` 同样有效，
-   * 于是"点标签也能触发"（用户点"合成底色"那四个字而没点色块是很常见的）。
-   */
-  const field = (label: string, control: HTMLElement, hint?: string, forId?: string) =>
-    el('div', { class: 'field' }, [
-      el('label', forId ? { for: forId } : {}, [label]),
-      control,
-      hint ? el('span', { class: 'hint' }, [hint]) : null,
-    ])
-
-  // 尺寸：**一套控件管两种方式**。「精确尺寸」时写入 exactWidth/Height，「长边」时显式删除（见 clearExactSize）
-  const exactW = p.exactWidth ?? 0
-  const exactH = p.exactHeight ?? 0
-  const exact = exactW > 0 && exactH > 0
-  paramsPanel.append(
-    field(
-      '尺寸方式',
-      selectInput(
-        exact ? 'exact' : 'long',
-        [
-          ['long', '长边格数（按比例）'],
-          ['exact', '精确尺寸 W×H'],
-        ],
-        (v) => {
-          if (v === 'exact') {
-            const side = Math.max(1, Math.min(2048, Math.min(58, p.longEdge) || 32))
-            patchParams({ exactWidth: exact ? exactW : side, exactHeight: exact ? exactH : side })
-          } else {
-            clearExactSize()
-          }
-        },
-      ),
-      exact ? '帧尺寸恒等，引擎侧无需二次对齐' : '短边按原图宽高比取整',
-    ),
-  )
-  if (exact) {
-    paramsPanel.append(
-      field(
-        '画布尺寸（格）',
-        el('div', { class: 'row' }, [
-          numberInput(exactW, 1, 2048, (v) => patchParams({ exactWidth: v, exactHeight: exactH })),
-          el('span', {}, ['×']),
-          numberInput(exactH, 1, 2048, (v) => patchParams({ exactWidth: exactW, exactHeight: v })),
-        ]),
-        '常见：拼豆方板 58×58（29×29 孔）· 游戏资产 16/24/32/48/64/128',
-      ),
-    )
-    const quick = el('div', { class: 'row wrap' })
-    for (const n of [16, 24, 32, 48, 58, 64, 96, 128]) {
-      quick.append(el('button', { class: `btn tiny${exactW === n && exactH === n ? ' active' : ''}`, onclick: () => patchParams({ exactWidth: n, exactHeight: n }) }, [`${n}²`]))
-    }
-    paramsPanel.append(quick)
-  } else {
-    paramsPanel.append(field('长边格数', numberInput(p.longEdge, 8, 2048, (v) => patchParams({ longEdge: v })), `${p.longEdge} 格`))
-    const quick = el('div', { class: 'row wrap' })
-    for (const n of [16, 32, 48, 64, 96, 128, 256, 512]) {
-      quick.append(el('button', { class: `btn tiny${p.longEdge === n ? ' active' : ''}`, onclick: () => patchParams({ longEdge: n }) }, [String(n)]))
-    }
-    paramsPanel.append(quick)
-  }
-
-  // 裁剪比例：core 与 CLI（--crop）一直支持，但参数面板此前没有入口——
-  // 用户只能靠 CLI/API 设置（测试报告 B6）。这里补上四档选择。
-  paramsPanel.append(
-    field(
-      '裁剪比例',
-      selectInput(
-        p.cropRatio,
-        [
-          ['free', '保持原比例'],
-          ['1:1', '1:1 方形'],
-          ['4:3', '4:3'],
-          ['16:9', '16:9'],
-        ],
-        (v) => patchParams({ cropRatio: v as ConvertParams['cropRatio'] }),
-      ),
-      '按所选比例从中心裁剪原图（拼豆常用 1:1，游戏资产常用 1:1）',
-    ),
-  )
-
-  paramsPanel.append(
-    field('色板', selectInput(p.paletteMode, [['auto', '自动提取'], ['preset', '预置色卡'], ['custom', '自定义 / .hex']], (v) => patchParams({ paletteMode: v as ConvertParams['paletteMode'] }))),
-  )
-  if (p.paletteMode === 'preset') {
-    const colors = PRESETS.map((x) => [x.id, `${x.name}`] as [string, string])
-    paramsPanel.append(
-      el('div', { class: 'field-inner' }, [
-        selectInput(p.presetPaletteId, colors, (v) => patchParams({ presetPaletteId: v })),
-        el('span', { class: 'hint' }, [getPreset(p.presetPaletteId)?.desc ?? '']),
-      ]),
-    )
-  }
-  if (p.paletteMode === 'auto') {
-    paramsPanel.append(field('颜色数', numberInput(p.paletteK, 2, 64, (v) => patchParams({ paletteK: v }))))
-  }
-  if (p.paletteMode === 'custom') {
-    paramsPanel.append(renderCustomPaletteField(p))
-  }
-
-  paramsPanel.append(
-    field('降采样', selectInput(p.downsample, [['average', '区域平均（照片）'], ['nearest', '最近邻（硬边）']], (v) => patchParams({ downsample: v as ConvertParams['downsample'] }))),
-    field('抖动', selectInput(p.dither, [['none', '关闭'], ['floyd', 'Floyd–Steinberg'], ['bayer', 'Bayer']], (v) => patchParams({ dither: v as ConvertParams['dither'] }))),
-    field('杂色清理', checkbox(p.cleanup, (v) => patchParams({ cleanup: v })), '开启抖动时自动关闭（抖动的点就是杂色）'),
-    field('亮度 / 对比度 / 饱和度', el('div', { class: 'row' }, [
-      numberInput(p.brightness, -100, 100, (v) => patchParams({ brightness: v })),
-      numberInput(p.contrast, -100, 100, (v) => patchParams({ contrast: v })),
-      numberInput(p.saturation, -100, 100, (v) => patchParams({ saturation: v })),
-    ])),
-    field('透明处理', selectInput(p.transparent, [['none', '不透明（合成到底色）'], ['key', '单色键控（导出透明）'], ['alpha', '真 alpha（保留原图透明）']], (v) => patchParams({ transparent: v as ConvertParams['transparent'] }))),
-  )
-  if (p.transparent !== 'alpha') {
-    /*
-     * 合成底色用**自家取色盘**，不用原生 `<input type="color">`：原生控件会弹出操作系统的调色板
-     * （Windows 那个带吸管的弹窗），外观与本工具的取色器完全两回事，也没法用"本图用色 / 最近 / 预置色卡"。
-     *
-     * 字段本身（含就地展开的取色盘）由 `matte-field.ts` 的工厂负责：它持有那 5 个必须跨渲染
-     * 存活的状态。这里只做两件事——**把稳定的 `element` 放回序列中的位置**，再让它同步一次外观。
-     * `element` 是同一个节点（只创建一次），所以拖动中的指针捕获不会因为重渲染而断。
-     */
-    paramsPanel.append(matteField.element)
-    matteField.render()
-  } else {
-    // 切到「真 alpha」后这个字段会消失，把就地的取色器一起收掉，别留下孤儿宿主
-    matteField.collapseForAlpha()
-  }
-  // 锁定色板对三种用途都成立（拼豆/资产批次），因此常显，不再按"模式"藏起来
-  paramsPanel.append(field('锁定色板', checkbox(!!p.lockPalette, (v) => patchParams({ lockPalette: v })), '只用给定色板，绝不新增颜色（拼豆/资产批次必备）'))
-
-  paramsPanel.append(el('div', { class: 'panel-title' }, ['显示']))
-  paramsPanel.append(
-    el('div', { class: 'field' }, [
-      /*
-       * 勾完必须**通知画布重绘**。`store.set('showGrid', …)` 只通知关心这个 key 的订阅者，
-       * 而画布不是在订阅里读它、而是在 `draw()` 里读——于是原先表现为"勾了没反应"：
-       * 网格一直留在画面上，直到下一次无关的 renderAll 才突然跟着变（实测点一下
-       * `board.dataset.draws` 一个都不涨）。见 docs/ARCHITECTURE.md §8.10。
-       */
-      checkbox(store.get('showGrid'), (v) => { store.set('showGrid', v); canvasApi.redraw() }),
-      el('span', {}, [' 网格线']),
-      el('br'),
-      // 同理：`showMag` 同时管"笔刷足迹预览"（draw() 里读）与放大镜，不重绘的话预览也不更新
-      checkbox(store.get('showMag'), (v) => { store.set('showMag', v); canvasApi.redraw() }),
-      el('span', {}, [' 笔刷预览 / 放大镜']),
-    ]),
-  )
-}
-
-function numberInput(value: number, min: number, max: number, onCommit: (v: number) => void): HTMLInputElement {
-  return el('input', {
-    class: 'num',
-    type: 'number',
-    value: String(value),
-    min: String(min),
-    max: String(max),
-    onchange: (e: Event) => {
-      const raw = Number((e.target as HTMLInputElement).value)
-      const v = Math.min(max, Math.max(min, Number.isFinite(raw) ? Math.round(raw) : value))
-      onCommit(v)
-    },
-  })
-}
-
-function selectInput(value: string, options: [string, string][], onChange: (v: string) => void): HTMLSelectElement {
-  const sel = el('select', { onchange: (e: Event) => onChange((e.target as HTMLSelectElement).value) })
-  for (const [val, label] of options) {
-    const opt = el('option', { value: val }, [label])
-    if (val === value) opt.setAttribute('selected', '')
-    sel.append(opt)
-  }
-  return sel
-}
-
-function checkbox(checked: boolean, onChange: (v: boolean) => void): HTMLInputElement {
-  const input = el('input', { type: 'checkbox', onchange: (e: Event) => onChange((e.target as HTMLInputElement).checked) })
-  if (checked) input.setAttribute('checked', '')
-  input.checked = checked
-  return input
-}
-
 function renderStatusbar(): void {
   clear(statusbar)
   const art = app.art
@@ -1048,7 +672,7 @@ function renderEmptyState(): void {
 function renderAll(): void {
   renderTools()
   renderPalette()
-  renderParams()
+  paramsPanel.render()
   renderStatusbar()
   renderEmptyState()
   updateHeaderState()

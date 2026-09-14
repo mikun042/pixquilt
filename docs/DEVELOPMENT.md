@@ -149,9 +149,13 @@ npm run probe -- "<js表达式>" [--pre "<js>"] [--click 选择器] [--wheel 选
 - 单个源文件 ≤ 400 行；`core/` 单文件 ≤ 500 行；单函数 ≤ 60 行。
 - 对照旧项目（`App.tsx` 974 行、`pixelate.ts` 1085 行、`batch.mjs` 664 行）——重构就是为了切开它们。
 - **注意**：这是软门，没有自动化检查。改动时如果不小心超了，要么拆，要么说明理由。
-- **当前实际超限（2026-09-14 实测，尚未拆分）**：`src/app/index.ts` 1478、`src/app/ui/canvas.ts` 922、
-  `src/app/ui/colorpicker.ts` 714（以上超 400 行）；`src/core/ops.ts` 756、`src/core/pipeline.ts` 606
-  （以上超 core 的 500 行）。这些是已知欠账，不是"没超"。
+- **当前实际超限（2026-09-14 实测，尚未拆分）**：`src/app/index.ts` 1297、`src/app/ui/canvas.ts` 897、
+  `src/app/ui/colorpicker.ts` 730（以上超 400 行）；`src/core/pipeline.ts` 606（超 core 的 500 行）。
+  这些是已知欠账，不是"没超"。
+  - `index.ts` 已从 1783 拆到 1297：导出动作（`export-actions.ts`）、合成底色字段（`matte-field.ts`）、
+    参数面板（`ui/params-panel.ts`）先后搬出。剩下的是画布装配、调色板列、状态栏、顶栏、启动流程。
+  - `canvas.ts`（897）**建议不再拆**：指针捕获与闭包状态（`drag`/`selection`/`clipboard`/`view`）
+    耦合太紧，拆分的收益低于回归风险；真要做，只拆"离屏渲染"那块并单独一轮验证。
 
 ### 4.3 代码约定
 
