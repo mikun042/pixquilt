@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
  * 元素放大截图：改 UI / 排查交互时用。
- *   node .tmp/el-shot.mjs <css选择器> [输出名] [放大倍数]
- * 例：node .tmp/el-shot.mjs .tool-grid tool-grid 6
+ *   node tool/shot-el.mjs <css选择器> [输出名] [放大倍数]
+ * 例：node tool/shot-el.mjs .tool-grid tool-grid 6
+ * 产出落在 .tmp-shots/（已 gitignore，纯缓存：删掉后下次运行会自动重建）。
  */
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'

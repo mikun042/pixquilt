@@ -178,8 +178,10 @@ async function main() {
 
     // 调试用：把浏览器产出的 PDF 落盘，便于逐字节核对（--keep 时保留）
     if (process.argv.includes('--keep')) {
-      const { writeFileSync } = await import('node:fs')
+      const { mkdirSync, writeFileSync } = await import('node:fs')
       const p = join(ROOT, '.tmp', 'browser-bead.pdf')
+      // `.tmp/` 是 gitignore 的临时目录，不保证存在（清理过、或刚 clone）：不建目录就直接写会 ENOENT
+      mkdirSync(dirname(p), { recursive: true })
       writeFileSync(p, bytes)
       console.log(`  （已保存浏览器产出的 PDF：${p}）`)
     }

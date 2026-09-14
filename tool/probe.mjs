@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * 页面内跑 JS（可发真实鼠标/滚轮/移动）：改 UI / 排查交互时用。
- *   node .tmp/dom-probe.mjs "<js 表达式>"
+ *   node tool/probe.mjs "<js 表达式>"            # 也接受 `() => ...` 或 `async () => ...`
+ *   node tool/probe.mjs "<表达式>" --click "#sel" --wheel "#sel" --move "#sel" --pre "<表达式>"
  * 表达式里可用 document/window/getComputedStyle 等。
  */
 import { existsSync } from 'node:fs'
