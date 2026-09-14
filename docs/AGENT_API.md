@@ -359,10 +359,13 @@ ps.exportBeadCsv()                 // 缺口清单（照着买）
 ps.layoutSheet(frames, columns, padding)  // 图集坐标表：帧等尺寸 + offsetX/offsetY
 ```
 
-### 后台编辑（不必碰界面）
+### 编辑（不必依赖界面操作，但**会改当前画布**）
+
+> 下面这些都写**当前工作区**：画布、撤销栈会跟着变，屏幕（如果开着）也会跟着刷新。
+> 想要"完全不碰工作区"的批处理，用 `render()` / `renderBlank()`——它们才是无副作用的。
 
 ```js
-ps.newCanvas({ width: 32, height: 32, transparent: true })   // 空白画布（无需原图）
+ps.newCanvas({ width: 32, height: 32, transparent: true })   // 空白画布（无需原图），并清空撤销栈
 ps.edit([{ op: "rect", x0: 4, y0: 4, x1: 27, y1: 27, color: "#223344" }, { op: "trim" }])
 ps.undo()  ps.redo()
 ps.render(fileOrDataURL, params, scale, { transparentBg, ops })      // 无副作用一站式
@@ -385,10 +388,10 @@ ps.thumbnail(160)          // 原图缩略图 dataURL
 - **确定性**：同一张图 + 同一组参数 + 同一串算子 = 同一结果；用 `artHash()` / `--json` 里的 `hash` 跨运行比对。
 - **镜像同步**：`setParams` / `importImage` / `reset` / `loadProject` 之后，**同一次 JS 调用内**紧接读 `getInfo` / `getUsage` / `exportPNG` 就能拿到最新值，不需要等下一帧。
 - **无副作用路径**：`render()` 不碰当前画布、撤销栈与偏好，适合批量；`edit()` / `newCanvas()` 会改当前画布并进撤销栈。
-- **整体替换 = 新基线**：`newCanvas` / `loadProject` / `importPixBin` / `convert` / `reset`（以及 UI 的导入、重新转换、新建）
-  都是**换掉整幅画布**，因此会**清空撤销栈**——之后 `undo()` 不会回到上一张画布。只有 `edit()` 这类"在现有画布上改"
-  的操作才可以通过 `undo()` 回退。
 - **错误**：一律 `throw Error`（中文原因），例如无画布导出、色板里没有该颜色、图片解码失败、项目文件损坏。
+- **整体替换 = 新基线**：`newCanvas` / `loadProject` / `importPixBin` / `convert` / `reset`（以及界面上的导入、重新转换、新建）
+  都是**换掉整幅画布**，因此会**清空撤销栈**——之后 `undo()` 不会回到上一张画布。
+  只有 `edit()` 这类"在现有画布上改"的操作才可以用 `undo()` 回退。
 - **越界**：坐标静默裁剪；画布尺寸超上限夹紧到 2048 并通过返回值/自省告知实际尺寸。
 
 ## 6. 边界与注意事项

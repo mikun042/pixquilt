@@ -13,7 +13,7 @@
  *   node tool/artc.mjs --selftest
  *   node tool/artc.mjs --describe
  */
-import { mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { inflateSync } from 'node:zlib'
@@ -134,10 +134,15 @@ export function parseArgs(argv) {
   return out
 }
 
-/** `--blank 58x58`（也接受 58X58 / 58*58 / 58×58） */
-export function parseBlankSpec(text) {
+/**
+ * `--blank 58x58` / `--size 32x32`（也接受 58X58 / 58*58 / 58×58）。
+ *
+ * `flagName` 由调用方传入：同一个解析器被 `--blank` 与 `--size` 共用，而错误文案必须说用户
+ * **实际写的那个开关**——原先写死 `--blank`，于是 `--size abc` 会被告知"--blank 需写成 宽x高"。
+ */
+export function parseBlankSpec(text, flagName = '--blank') {
   const m = String(text).match(/^(\d+)\s*[xX*×]\s*(\d+)$/)
-  if (!m) throw new Error('--blank 需写成 宽x高，例如 --blank 58x58')
+  if (!m) throw new Error(`${flagName} 需写成 宽x高，例如 ${flagName} 58x58`)
   return { width: Number(m[1]), height: Number(m[2]) }
 }
 
@@ -168,8 +173,16 @@ export function resolvePaletteFlag(value) {
     if (!colors.length) throw new Error(`--palette 里的颜色都不合法：${value}`)
     return { patch: { paletteMode: 'custom', customPalette: colors } }
   }
-  // 当成 .hex 文件路径
+  // 当成 .hex 文件路径（既不是 auto / 预置 id / #颜色，就只剩这条路）
   const path = resolve(value)
+  if (!existsSync(path)) {
+    // 原先直接 readFileSync，报的是裸 ENOENT（`open '不存在'`）——agent 看不出这个开关接受什么。
+    // 与 --preset 的措辞对齐：把可选值列出来。
+    throw new Error(
+      `未知色板：${value}——--palette 接受 auto / 预置 id（${PRESETS.map((x) => x.id).join(' / ')}）/ ` +
+        `*.hex 文件路径 / #rrggbb[,#rrggbb…]；若要按路径加载，确认文件存在`,
+    )
+  }
   const text = readFileSync(path, 'utf8')
   const parsed = parseHexPalette(text)
   if (!parsed.colors.length) throw new Error(`色板文件里没有合法颜色：${value}（每行一个 #rrggbb，可带号色）`)
@@ -215,7 +228,7 @@ export function buildParams(args) {
 
   if (args['long-edge'] !== undefined) params.longEdge = Number(args['long-edge'])
   if (args.size !== undefined) {
-    const spec = parseBlankSpec(args.size)
+    const spec = parseBlankSpec(args.size, '--size')
     params.exactWidth = spec.width
     params.exactHeight = spec.height
   }
@@ -750,7 +763,15 @@ async function selftest() {
       threw = true
     }
     assert(threw, '非法规格应报错')
-    return '三种写法正确'
+    // 文案必须指认用户实际写的开关（原先写死 --blank，--size abc 也会被说成 --blank）
+    let msg = ''
+    try {
+      parseBlankSpec('abc', '--size')
+    } catch (err) {
+      msg = err.message
+    }
+    assert(msg.includes('--size') && !msg.includes('--blank'), `--size 的报错不该提 --blank，实际：${msg}`)
+    return '三种写法正确；报错文案跟随调用方的开关名'
   })
 
   check('IO：Node 端只承诺自己能解码的格式（不冒充支持 JPEG）', () => {

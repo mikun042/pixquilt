@@ -34,10 +34,30 @@ node tool/quickstart.mjs        # 一条命令跑通全链路，产出落在 .qu
 |---|---|---|---|
 | **L1 页内 API** | `window.pixelArtStudio`（46 个方法） | 操作**已打开的工作台**；Playwright / CDP `evaluate` | 是 |
 | **L2 批处理 CLI** | `node tool/artc.mjs` | 整套素材批量出图；agent 主力入口 | **否** |
-| **L3 库内直调** | `import { render } from './src/core/...'` | 自己写脚本、CI、无头批处理（同一份 core 算法） | 否 |
+| **L3 库内直调** | `src/core/pipeline.ts` 的 `runPipeline` + `src/io/node-*.ts` 的编解码器 | 自己写脚本、CI、无头批处理（同一份 core 算法） | 否 |
 | **L4 自省/预演** | `--describe` / `ps.describe()` / `ps.validateParams()` | 冷启动时确认能力、改参前预演 | 否 / 是 |
 
 **没有任何 HTML/浏览器也能出图**——这是本项目的设计目标之一（`src/core` 零 DOM 依赖）。
+
+> **L3 怎么用（`core` 没有桶文件，按模块路径导入）**：入口是 `runPipeline(src, params)`，
+> 它进 `SourceImage`（`{ width, height, data: Uint8ClampedArray }`）、出 `{ art, overflow, paletteSource, cleanup }`；
+> PNG 编解码在 `src/io/node-png.ts`（`decodePngNode` / `encodePngNode`）。一个最小可跑脚本：
+>
+> ```js
+> import { DEFAULT_PARAMS } from './src/core/types.ts'
+> import { runPipeline } from './src/core/pipeline.ts'
+> import { artToImageData } from './src/core/raster.ts'
+> import { decodePngNode, encodePngNode } from './src/io/node-png.ts'
+> import { readFileSync, writeFileSync } from 'node:fs'
+>
+> const src = decodePngNode(new Uint8Array(readFileSync('原图.png')))
+> const { art } = runPipeline(src, { ...DEFAULT_PARAMS, longEdge: 32, paletteMode: 'preset', presetPaletteId: 'pico8' })
+> // art 是索引色画布（indices + palette），出文件前要展开成 RGBA
+> writeFileSync('out.png', encodePngNode(artToImageData(art)))
+> ```
+>
+> 这段路径只依赖 `src/core` + `src/io`，不需要浏览器；`tool/artc.mjs` 内部走的就是同一条链路。
+> 只是想要成品文件的话，**优先用 L2 的 CLI**——它把展开/编码/命名/图集都做好了。
 
 ---
 
