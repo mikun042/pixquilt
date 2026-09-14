@@ -12,13 +12,11 @@
 import { DEFAULT_PARAMS, DEFAULT_PREFS, TOOLS, coerceParams, sanitizePrefs, type ConvertParams, type EditorPrefs, type PixelArt } from '../core/types.ts'
 import { PRESETS, getPreset, parseHexPalette, serializeHexPalette } from '../core/palettes.ts'
 import { EXPORT_SCALES, PREFS_DEBOUNCE_MS } from '../core/limits.ts'
-import { pixelJSONString, projectJSONString, safeFileBase } from '../core/export.ts'
+import { createExportActions } from './export-actions.ts'
 import { artToPngBlob, artToPngDataURL, artToPngDataURLSync } from './canvas-png.ts'
-import { beadPdfBrowser } from './pdf.ts'
 import { runPipeline } from '../core/pipeline.ts'
 import { applyOps, blankArt } from '../core/ops.ts'
 import { artStats } from '../core/stats.ts'
-import { beadListCsv, beadReport, beadSvg } from '../core/bead.ts'
 import { colorTextOn } from '../core/color.ts'
 import { clear, el, store } from './store.ts'
 import { decodeToRgba, imageFromClipboard, makeThumbnail, looksLikeImage } from './decode.ts'
@@ -108,15 +106,6 @@ async function copyPNG(): Promise<void> {
   }
 }
 
-function download(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  setTimeout(() => URL.revokeObjectURL(url), 4000)
-}
-
 function toast(message: string, kind: 'info' | 'warn' | 'error' = 'info'): void {
   const host = document.getElementById('toasts')
   if (!host) return
@@ -124,6 +113,17 @@ function toast(message: string, kind: 'info' | 'warn' | 'error' = 'info'): void 
   host.append(node)
   setTimeout(() => node.remove(), kind === 'error' ? 7000 : 4000)
 }
+
+/**
+ * 导出动作集中在 `export-actions.ts`（依赖注入，方向单向：这里 → 那边）。
+ * 在这里建一次实例，界面各处直接用它。
+ */
+const exports = createExportActions({
+  getArt: () => app.art,
+  getParams: () => app.params,
+  getSourceName: () => app.sourceName,
+  toast,
+})
 
 /* ------------------------------------------------------------------ 参数与重转 */
 
@@ -1102,80 +1102,6 @@ function renderAll(): void {
   canvasApi.redraw()
 }
 
-/* ------------------------------------------------------------------ 导出 */
-
-async function exportPNG(scale: number): Promise<void> {
-  if (!app.art) {
-    toast('还没有画布', 'warn')
-    return
-  }
-  try {
-    const blob = await artToPngBlob(app.art, scale, { transparentBg: app.params.transparent === 'key', bgHex: app.params.matteColor })
-    const name = `${safeFileBase(app.sourceName)}_${app.art.width}x${app.art.height}_${scale}x.png`
-    download(blob, name)
-    toast(`已导出 ${name}`)
-  } catch (err) {
-    toast(`导出失败：${(err as Error).message}`, 'error')
-  }
-}
-
-function exportBeadFiles(): void {
-  if (!app.art) return toast('还没有画布', 'warn')
-  const codes = getPreset(app.params.presetPaletteId)?.codes
-  const base = safeFileBase(app.sourceName || 'beads')
-  download(new Blob([beadSvg(app.art, { codes, title: `${base} 拼豆图纸` })], { type: 'image/svg+xml' }), `${base}_图纸.svg`)
-  download(new Blob([`\ufeff${beadListCsv(app.art, { codes })}`], { type: 'text/csv' }), `${base}_缺口清单.csv`)
-  const rep = beadReport(app.art, { codes })
-  toast(`图纸与清单已导出：${rep.colorCount} 色 / ${rep.totalBeads} 颗 / ${rep.totalGrams} g`)
-}
-
-/**
- * 导出可打印的拼豆图纸 PDF（A4 分页，每块板一页）。
- *
- * 浏览器侧用 `CompressionStream('deflate')` 提供压缩——与 Node 侧注入 `node:zlib`
- * 是同一个契约（见 core/pdf.ts 与 io/node-pdf.ts）。**没有它就不能静默降级成
- * "导出个空文件"**：`CompressionStream` 在 2023+ 的 Chrome/Edge 都有，
- * 缺失时明确告诉用户换浏览器，而不是给一份打不开的文件。
- */
-async function exportBeadPdf(): Promise<void> {
-  if (!app.art) return toast('还没有画布', 'warn')
-  if (typeof CompressionStream === 'undefined') {
-    return toast('当前浏览器不支持 CompressionStream，无法生成 PDF。请用较新的 Chrome/Edge，或改用「图纸 SVG」。', 'error')
-  }
-  const codes = getPreset(app.params.presetPaletteId)?.codes
-  const base = safeFileBase(app.sourceName || 'beads')
-  try {
-    const bytes = await beadPdfBrowser(app.art, { codes, title: `Bead Pattern ${app.art.width}x${app.art.height}` })
-    // 用 bytes.buffer 而不是 bytes 本身：TS 5.7 起 Uint8Array 的底层可能是
-    // SharedArrayBuffer，不能直接当 BlobPart（类型上会报，运行期也无意义）
-    download(new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' }), `${base}_拼豆图纸.pdf`)
-    const rep = beadReport(app.art, { codes })
-    const boards = rep.board.columns * rep.board.rows
-    toast(`可打印图纸已导出：${boards} 块板 / ${rep.totalBeads} 颗`)
-  } catch (err) {
-    toast(`PDF 导出失败：${(err as Error)?.message ?? err}`, 'error')
-  }
-}
-
-function exportPixelJSON(): void {
-  if (!app.art) return
-  download(new Blob([pixelJSONString(app.art)], { type: 'application/json' }), `${safeFileBase(app.sourceName)}_像素数据.json`)
-}
-
-/** 导出色板 .hex：与 CLI 的 `<名字>.hex` 产物、页内 API 的 `exportPaletteHex()` 对齐 */
-function exportPaletteHex(): void {
-  if (!app.art) return
-  const preset = getPreset(app.params.presetPaletteId)
-  const text = serializeHexPalette(app.art.palette, preset?.codes)
-  download(new Blob([text], { type: 'text/plain' }), `${safeFileBase(app.sourceName)}_色板.hex`)
-  toast(`已导出 ${app.art.palette.length} 色调色板`)
-}
-
-function exportProject(): void {
-  if (!app.art) return
-  download(new Blob([projectJSONString(app.art, app.params, true)], { type: 'application/json' }), `${safeFileBase(app.sourceName)}_项目.json`)
-}
-
 /* ------------------------------------------------------------------ 顶栏装配 */
 
 /**
@@ -1462,7 +1388,7 @@ function renderExportMenu(menu: HTMLElement): void {
   menu.append(
     item('PNG 1x（原尺寸）', `文件名自动带源图名${keyed ? ' · 透明底' : ''}`, () => {
       closeExportMenu()
-      void exportPNG(1)
+      void exports.exportPNG(1)
     }, { disabled: !hasArt, testid: 'export-png' }),
   )
   const scaleRow = el('div', { class: 'dropdown-row' })
@@ -1476,7 +1402,7 @@ function renderExportMenu(menu: HTMLElement): void {
         title: `按 ${s} 倍最近邻放大导出`,
         onclick: () => {
           closeExportMenu()
-          void exportPNG(s)
+          void exports.exportPNG(s)
         },
       }, [`${s}x`]),
     )
@@ -1493,11 +1419,11 @@ function renderExportMenu(menu: HTMLElement): void {
   menu.append(
     item('图纸 SVG + 缺口清单 CSV', '格内标号色、分板、图例；清单含珠数与重量', () => {
       closeExportMenu()
-      exportBeadFiles()
+      exports.exportBeadFiles()
     }, { disabled: !hasArt, testid: 'export-bead' }),
     item('可打印图纸 PDF（A4 分页）', '每块板一页，含号色与图例；打印/送人比 SVG 稳', () => {
       closeExportMenu()
-      void exportBeadPdf()
+      void exports.exportBeadPdf()
     }, { disabled: !hasArt, testid: 'export-bead-pdf' }),
   )
 
@@ -1505,15 +1431,15 @@ function renderExportMenu(menu: HTMLElement): void {
   menu.append(
     item('像素数据 JSON', '每格颜色 + 每色用量表（原料清单）', () => {
       closeExportMenu()
-      exportPixelJSON()
+      exports.exportPixelJSON()
     }, { disabled: !hasArt }),
     item('色板 .hex', '当前画布用到的颜色，可导入 Lospec 等工具', () => {
       closeExportMenu()
-      exportPaletteHex()
+      exports.exportPaletteHex()
     }, { disabled: !hasArt }),
     item('项目 JSON', '参数 + 色板 + 像素，不含原图，可分享继续编辑', () => {
       closeExportMenu()
-      exportProject()
+      exports.exportProject()
     }, { disabled: !hasArt }),
   )
 
@@ -1620,7 +1546,7 @@ window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && k === 's') {
     // 主流软件的肌肉记忆：Ctrl+S = 导出图片（这里是浏览器工具，没有"保存文件"的概念）
     e.preventDefault()
-    void exportPNG(1)
+    void exports.exportPNG(1)
     return
   }
   if (e.ctrlKey || e.metaKey || e.altKey) return

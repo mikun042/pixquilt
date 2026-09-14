@@ -52,6 +52,8 @@ npm run verify
 |---|---|---|---|
 | 类型检查 | `npm run typecheck` | `tsc --noEmit`，开着 `noUnusedLocals`——**未使用的变量会直接报错** | 否 |
 | 单元测试 | `npm test` | 87 项（管线 / 12 类算子 / sanitize / 导出格式 / PDF 结构 / 常量表 / 撤销栈双上限 / 油漆桶连通规则） | 否 |
+
+（`npm test` 只跑 `src/test/`，**不启浏览器**；`src/app` 里能单测的逻辑都尽量抽成了纯模块，例如 `history.ts`。）
 | 构建 | `npm run build` | 内联 CSS+JS 出单文件，核对两个产物哈希一致 | 否 |
 | 链路自检 | `npm run selftest` | 32 项（引擎→算子→导出→拼豆→PDF→CLI 参数），不需要素材 | 否 |
 | 端到端 | `npm run e2e` | 27 项（UI 装配 + 绘制 + 导出 + 导入 + 尺寸方式 + 预设编辑 + 合成底色取色盘 + 放大镜 + 油漆桶 + 撤销栈记账 + 页面算子可执行性） | **是** |

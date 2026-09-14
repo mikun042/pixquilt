@@ -94,7 +94,8 @@ src/core/                ← 纯逻辑：零 DOM、零 node: 依赖，Node 可�
    ops.ts rasterize.ts   ←   12 类编辑算子 / 几何栅格化（+ canvas-query、ops-shapes）
    export.ts bead.ts     ←   序列化、拼豆图纸与缺口清单
 src/io/                  ← Node 侧平台绑定（PNG 编解码、文件 IO）
-src/app/                 ← 浏览器侧：UI、画布、页内 API（automation.ts）、可编辑预设（presets.ts）
+src/app/                 ← 浏览器侧：UI、画布、页内 API（automation.ts）、预设（presets.ts）、
+                            导出动作（export-actions.ts）、撤销栈（history.ts）
 tool/artc.mjs            ← 批处理 CLI（agent 主入口）
 tool/quickstart.mjs      ← Agent 快速上手（一条命令跑通全链路）
 tool/build.mjs           ← 单文件构建（内联 CSS + JS，核对产物哈希）
