@@ -226,20 +226,6 @@ html, body {
 .empty-actions { display: flex; gap: 8px; margin: 10px 0 4px; pointer-events: auto; }
 .empty-actions .btn { pointer-events: auto; }
 
-/* 画布右下角视图浮层：给鼠标用户可见的缩放入口（键盘 +/-/0 之外） */
-.view-toolbar {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  display: flex;
-  gap: 4px;
-  padding: 4px;
-  border-radius: var(--radius);
-  background: rgba(20, 22, 28, 0.82);
-  border: 1px solid var(--line);
-  backdrop-filter: blur(4px);
-}
-
 .magnifier {
   position: absolute;
   top: 0;

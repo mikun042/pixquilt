@@ -25,6 +25,7 @@ import { decodeToRgba, imageFromClipboard, makeThumbnail, looksLikeImage } from 
 import { createCanvas } from './ui/canvas.ts'
 import { createColorPicker, type ColorPickerApi, type ColorPickerCallbacks } from './ui/colorpicker.ts'
 import { iconEl } from './ui/icons.ts'
+import { ArtHistory, normalizeAlphaMask } from './history.ts'
 import { addCustomPreset, effectivePresets, removeCustomPreset, resetPreset, sameParams, updatePreset } from './presets.ts'
 import { installAutomationApi } from './automation.ts'
 
@@ -44,27 +45,17 @@ const app: AppState = {
   refImage: null,
 }
 
-/** 历史快照用的深拷贝：索引/色板/alpha 都必须复制，否则会被后续就地编辑污染 */
-function cloneArt(art: PixelArt): PixelArt {
-  return {
-    width: art.width,
-    height: art.height,
-    indices: art.indices.slice(),
-    palette: [...art.palette],
-    alphaMask: art.alphaMask ? art.alphaMask.slice() : null,
-  }
-}
-
 /**
- * 撤销栈：存 `PixelArt` 快照（索引是 Uint8Array，浅拷贝即可）。
- * 上限 50 步 + 由 core/limits 的常量约束；全不透明的 alphaMask 在提交前已被 core 归一为 null，
- * 因此这里不必再处理"空 mask 占内存"的问题。
+ * 撤销 / 重做栈。逻辑在 `src/app/history.ts`（纯模块，可脱离浏览器单测）：
+ * **双上限**——`HISTORY_MAX_FRAMES` 步 或 累计 `HISTORY_MAX_BYTES`，先到先算。
+ *
+ * 这里曾经只有硬编码的 `> 50`、没有任何字节记账，而 limits 里的字节上限只写在文档里，
+ * 于是 2048² 带 alpha 的画布单帧 8MB × 50 帧最坏约 400MB（弱机 OOM）。
  */
-const history = { past: [] as PixelArt[], future: [] as PixelArt[] }
+const history = new ArtHistory()
 
 function resetHistory(): void {
-  history.past = []
-  history.future = []
+  history.reset()
 }
 
 /** 一次编辑的提交入口（UI 绘制与自动化接口共用）：进撤销栈后写回并重绘 */
@@ -73,34 +64,33 @@ function commitWithHistory(indices: Uint8Array, palette: string[], alphaMask: Ui
   // 入栈必须是**快照**而不是活对象引用：canvas 在提交时会就地改写 art.palette
   // （src/app/ui/canvas.ts 的 `art.palette = palette`），若入栈共享同一对象，
   // 已撤销的颜色会残留在色板里，artHash 与导出的 .hex/项目 JSON 随之被污染（测试报告 P2-05）。
-  history.past.push(cloneArt(app.art))
-  if (history.past.length > 50) history.past.shift()
-  history.future = []
-  app.art = { ...app.art, indices, palette, alphaMask }
+  history.commit(app.art)
+  // 提交前把"全不透明的 mask"归一成 null：core 的 fromCanvas 一直这么做，画布路径补上这步后
+  // 常见手绘画布的单帧快照从 8MB 降到 4MB（见 history.ts 的 normalizeAlphaMask）
+  app.art = { ...app.art, indices, palette, alphaMask: normalizeAlphaMask(alphaMask) }
   store.set('hasEdits', true)
   renderAll()
 }
 
 function undo(): void {
-  const prev = history.past.pop()
-
-  if (!prev || !app.art) return
-  history.future.push(app.art)
+  if (!app.art) return
+  const prev = history.undo(app.art)
+  if (!prev) return
   app.art = prev
   resetCanvasTo(prev)
 }
 
 function redo(): void {
-  const next = history.future.pop()
-  if (!next || !app.art) return
-  history.past.push(cloneArt(app.art))
+  if (!app.art) return
+  const next = history.redo(app.art)
+  if (!next) return
   app.art = next
   resetCanvasTo(next)
 }
 
 function resetCanvasTo(art: PixelArt): void {
   canvasApi.setArt(art)
-  store.set('hasEdits', history.past.length > 0)
+  store.set('hasEdits', history.canUndo)
   renderAll()
 }
 
@@ -165,6 +155,9 @@ async function importFile(file: File): Promise<void> {
     app.source = image
     app.sourceName = file.name
     app.refImage = await rgbaToImageElement(image)
+    // 参考图交给画布：放大镜的"原图对照"要用它。
+    // `show=false` —— 只启用放大镜，**不**把原图半透明叠在像素画上（那是"照着描"，要显式开）。
+    canvasApi.setReference(app.refImage, false)
     regenerate()
     toast(`已导入 ${file.name}（${image.width}×${image.height}）`)
   } catch (err) {
@@ -172,6 +165,12 @@ async function importFile(file: File): Promise<void> {
   }
 }
 
+/**
+ * 把 RGBA 缓冲变成 `<img>`（放大镜按原图取景需要 `naturalWidth/naturalHeight` 与 `drawImage`）。
+ *
+ * 用 `toBlob` + `createObjectURL` 而不是 `toDataURL`：后者要把整个 PNG 编成 **base64 字符串**
+ * 再交给浏览器解析回来，大图上多一份全量字符串的编码与驻留；blob URL 只是一个引用。
+ */
 async function rgbaToImageElement(image: { width: number; height: number; data: Uint8ClampedArray }): Promise<HTMLImageElement> {
   const canvas = document.createElement('canvas')
   canvas.width = image.width
@@ -184,13 +183,20 @@ async function rgbaToImageElement(image: { width: number; height: number; data: 
     buffer.set(image.data)
     ctx.putImageData(new ImageData(buffer, image.width, image.height), 0, 0)
   }
-  const url = canvas.toDataURL('image/png')
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+  if (!blob) throw new Error('参考图层生成失败（画布尺寸可能超出浏览器上限）')
+  const url = URL.createObjectURL(blob)
   const img = new Image()
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve()
-    img.onerror = () => reject(new Error('参考图层生成失败'))
-    img.src = url
-  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve()
+      img.onerror = () => reject(new Error('参考图层生成失败'))
+      img.src = url
+    })
+  } finally {
+    // 图已解码完成，URL 不必再留着（不撤会一直占着这份 blob）
+    URL.revokeObjectURL(url)
+  }
   return img
 }
 
@@ -211,7 +217,7 @@ const canvasApi = createCanvas(canvasHost, canvasEl, {
   onSelectionChange: (count) => store.set('selectedCount', count),
   onZoom: (pct) => store.set('zoomPct', pct),
 })
-;(canvasApi as unknown as { attachMagnifier: (a: HTMLElement, b: HTMLCanvasElement) => void }).attachMagnifier(magBox, magCanvas)
+canvasApi.attachMagnifier(magBox, magCanvas)
 
 /* ------------------------------------------------------------------ 面板渲染 */
 
@@ -1254,6 +1260,7 @@ function buildHeader(): void {
         app.source = null
         app.sourceName = ''
         app.refImage = null
+        canvasApi.setReference(null, false)
         resetHistory()
         canvasApi.setArt(null)
         store.setMany({ hasEdits: false, selectedCount: 0, clipboardHas: false })
@@ -1528,8 +1535,8 @@ function closeExportMenu(): void {
 /** 只更新顶栏按钮的可用状态（不重建 DOM，因此不会打断菜单） */
 function updateHeaderState(): void {
   const art = app.art
-  if (undoBtn) undoBtn.disabled = history.past.length === 0
-  if (redoBtn) redoBtn.disabled = history.future.length === 0
+  if (undoBtn) undoBtn.disabled = !history.canUndo
+  if (redoBtn) redoBtn.disabled = !history.canRedo
   if (regenerateBtn) regenerateBtn.disabled = !app.source
   // 「新建」不再因"没有画布"而禁用——那是第一次使用时的死路（点不动、又找不到别的入口）。
   // 它的语义随之变成"没有画布就直接建一张，有画布才确认清空"，见顶栏按钮的 onclick。
@@ -1770,4 +1777,5 @@ function writePrefs(s: {
 boot()
 
 // 供自动化接口与调试使用
-;(window as unknown as { __app?: unknown }).__app = { app, store, canvasApi }
+// 供自动化接口与调试使用（`history` 暴露出来是为了让 e2e 能断言"双上限真的生效"）
+;(window as unknown as { __app?: unknown }).__app = { app, store, canvasApi, history }

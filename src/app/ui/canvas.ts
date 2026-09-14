@@ -34,11 +34,18 @@ export interface CanvasApi {
   redraw: () => void
   fitView: () => void
   zoomBy: (factor: number, atCenter?: boolean) => void
-  zoomToCell: (cell: number) => void
   clearSelection: () => void
   selectionCount: () => number
   /** 重置工作副本（导入新图或撤销之后调用） */
   syncFromArt: () => void
+  /**
+   * 参考图层：由 UI 传入原图。
+   * `show=false` 时**不叠原图**，但放大镜仍然取它做"原图对照"——
+   * 放大镜需要这张图，UI 又不一定想要那层半透明叠加，所以两者共用一个入参但彼此独立。
+   */
+  setReference: (img: HTMLImageElement | null, show: boolean) => void
+  /** 放大镜容器由 UI 提供（Canvas 模块只负责更新内容） */
+  attachMagnifier: (box: HTMLElement, canvas: HTMLCanvasElement) => void
   dispose: () => void
 }
 
@@ -808,17 +815,6 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
     scheduleDraw()
   }
 
-  function zoomToCell(cell: number): void {
-    if (!art) return
-    const rect = container.getBoundingClientRect()
-    const mx = rect.width / 2
-    const my = rect.height / 2
-    const factor = clampCell(cell) / view.cell
-    view = zoomAtPoint(view, mx, my, factor)
-    reportZoom()
-    scheduleDraw()
-  }
-
   /* ------------------------------------------------------------ 外部接口 */
 
   function syncFromArt(): void {
@@ -858,7 +854,6 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
     redraw: scheduleDraw,
     fitView,
     zoomBy,
-    zoomToCell,
     clearSelection: () => {
       selection = new Set()
       callbacks.onSelectionChange(0)
@@ -866,6 +861,17 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
     },
     selectionCount: () => selection.size,
     syncFromArt,
+    /** 参考图层（半透明叠原图"照着描"）：`show=false` 时不叠，但放大镜仍用这张图 */
+    setReference: (img, show) => {
+      refImage = img
+      showRef = show
+      scheduleDraw()
+    },
+    /** 放大镜容器由 UI 提供（Canvas 模块只负责更新内容） */
+    attachMagnifier: (box, canvas) => {
+      magEl = box
+      magCanvas = canvas
+    },
     dispose: () => {
       disposed = true
       if (rafId) cancelAnimationFrame(rafId)
@@ -895,18 +901,6 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
     scheduleDraw()
   })
   ro.observe(container)
-
-  /** 参考图层：由 UI 传入原图（半透明叠加"照着描"） */
-  ;(api as CanvasApi & { setReference: (img: HTMLImageElement | null, show: boolean) => void }).setReference = (img, show) => {
-    refImage = img
-    showRef = show
-    scheduleDraw()
-  }
-  /** 放大镜容器由 UI 提供（Canvas 模块只负责更新内容） */
-  ;(api as CanvasApi & { attachMagnifier: (box: HTMLElement, cv: HTMLCanvasElement) => void }).attachMagnifier = (box, cv) => {
-    magEl = box
-    magCanvas = cv
-  }
 
   return api
 }

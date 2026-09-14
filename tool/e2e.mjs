@@ -18,6 +18,10 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
+// 断言里要用到撤销栈的真实上限：**直接 import 源码里的常量**，避免在测试里另抄一份数字
+// （抄一份的话，常量改了测试不会红，就失去意义了）
+import { HISTORY_MAX_BYTES, HISTORY_MAX_FRAMES } from '../src/core/limits.ts'
+
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 
 const BROWSER_CANDIDATES = [
@@ -288,6 +292,9 @@ async function main() {
       importBtn: document.getElementById('btn-import')?.textContent || '',
       exportBtn: document.getElementById('btn-export')?.textContent || '',
       hasModeSelect: !!document.querySelector('#header-mode, .mode-select'),
+      // 右下角曾有一组"适配/100%/正负号"按钮，样式齐全但没有任何事件绑定（点了没反应）。
+      // 能力由快捷键 0 / + / - 与滚轮覆盖，所以整条工具栏已删除——这条防它被误加回来。
+      hasDeadViewToolbar: !!document.querySelector('.view-toolbar, #view-fit, #view-100, #view-out, #view-in'),
       presetChips: document.querySelectorAll('#panel-params .preset-chip').length,
       hasSavePreset: [...document.querySelectorAll('#panel-params button')].some((b) => b.textContent.includes('存为预设')),
       panelHasSizeMode: [...document.querySelectorAll('#panel-params .field > label')].some((e) => e.textContent.includes('尺寸方式')),
@@ -308,6 +315,7 @@ async function main() {
       assert(u.exportBtn.includes('导出'), `右上角缺「导出」按钮：${u.exportBtn}`)
       // 工作模式选择器已移除：图片→像素 / 拼豆图纸 / 游戏资产 三个用途并入右侧预设
       assert(!u.hasModeSelect, '工作模式选择器应已移除（用途并入预设，见 docs/USAGE.md）')
+      assert(!u.hasDeadViewToolbar, '画布右下角的视图工具栏已删除（曾是无绑定的死按钮）；缩放请走快捷键')
       assert(u.presetChips >= 6, `预设 chip 至少应有 6 个出厂预设，实际 ${u.presetChips}`)
       assert(u.hasSavePreset, '预设区应提供「＋ 存为预设」入口')
       // 「尺寸方式」与「锁定色板」对三种用途都成立，必须常显（旧版按模式把锁定色板藏起来过）
@@ -524,14 +532,28 @@ async function main() {
       const afterUndo = ps.artHash()
       ps.redo()
       const afterRedo = ps.artHash()
-      return JSON.stringify({ changed: before !== afterEdit, undone: before === afterUndo, redone: afterRedo === afterEdit })
+      // 撤销栈的**字节记账**：旧实现只有硬编码的 50 帧、没有字节数，
+      // 于是 limits.ts 里的 HISTORY_MAX_BYTES 从来没生效（2048² 带 alpha 单帧 8MB × 50 ≈ 400MB）。
+      const info = ps.getInfo()
+      const per = info.width * info.height * (info.hasAlpha ? 2 : 1)
+      const s = window.__app.history.stats()
+      return JSON.stringify({ changed: before !== afterEdit, undone: before === afterUndo, redone: afterRedo === afterEdit,
+        stats: s, perFrame: per })
     })()`)
-    check('撤销 / 重做：edit → undo → redo 状态可逆', () => {
+    check('撤销 / 重做：edit → undo → redo 状态可逆，且撤销栈按上限记账', () => {
       const u = JSON.parse(undoRedo)
       assert(u.changed, 'edit 应改变画布')
       assert(u.undone, 'undo 应回到编辑前')
       assert(u.redone, 'redo 应回到编辑后')
-      return '可逆'
+      assert(u.stats.past >= 1 && u.stats.future === 0, `栈状态不对：${JSON.stringify(u.stats)}`)
+      // 旧实现只有硬编码的 50 帧、**一个字节都不记**（limits 里的 HISTORY_MAX_BYTES 从未生效）
+      assert(u.stats.bytes > 0, `撤销栈应当有字节记账，实际 ${u.stats.bytes}`)
+      assert(u.stats.bytes <= HISTORY_MAX_BYTES, `撤销栈字节超上限：${u.stats.bytes} > ${HISTORY_MAX_BYTES}`)
+      assert(
+        u.stats.past <= HISTORY_MAX_FRAMES && u.stats.future <= HISTORY_MAX_FRAMES,
+        `帧数超上限：${JSON.stringify(u.stats)} > ${HISTORY_MAX_FRAMES}`,
+      )
+      return `可逆；${u.stats.past} 帧 / ${u.stats.bytes} 字节（上限 ${HISTORY_MAX_FRAMES} 帧 / ${HISTORY_MAX_BYTES} 字节）`
     })
 
     const validate = await cdp.eval(`JSON.stringify(window.pixelArtStudio.validateParams({ longEdge: 99999, dither: 'nope' }))`)
@@ -755,6 +777,45 @@ async function main() {
       return '标签可点'
     })
     await cdp.send('Emulation.clearDeviceMetricsOverride')
+
+    /*
+     * 放大镜（"原图对照"）：导入后悬停画布应当出现。
+     *
+     * 这条守的是**死功能**这一类：`setReference` 曾经全仓没有调用点，canvas 内部的 refImage
+     * 恒为 null，而 `updateMagnifier()` 的第一个守卫就是它——于是放大镜永远不出现，
+     * 界面上也没有任何错误信号（只有参数面板里那个"笔刷预览 / 放大镜"勾选框在承诺它）。
+     * 所以这里用**真实鼠标移动**触发悬停，并且同时断言"它真的画了内容"：
+     * 只看 display:block 的话，画布空白同样会漏过去。
+     */
+    const magProbe = JSON.parse(await cdp.eval(`(() => {
+      const b = document.getElementById('board')
+      const r = b.getBoundingClientRect()
+      if (r.width < 10 || r.height < 10) return JSON.stringify({ error: '画布没有布局尺寸' })
+      return JSON.stringify({ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) })
+    })()`))
+    if (!magProbe.error) {
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: magProbe.x, y: magProbe.y })
+      await new Promise((r) => setTimeout(r, 120))
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: magProbe.x + 6, y: magProbe.y + 6 })
+      await new Promise((r) => setTimeout(r, 300))
+    }
+    const mag = magProbe.error
+      ? { error: magProbe.error }
+      : JSON.parse(await cdp.eval(`(() => {
+        const box = document.getElementById('magnifier')
+        const cv = document.getElementById('magnifier-canvas')
+        const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data
+        let painted = 0
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) painted++
+        return JSON.stringify({ display: getComputedStyle(box).display, painted, hover: window.__app.store.get('hoverText') })
+      })()`))
+    check('放大镜：导入后悬停画布会显示"原图对照"，且里面真的画了内容', () => {
+      assert(!mag.error, mag.error)
+      assert(mag.hover, '鼠标移动到画布上应产生悬停坐标（否则是悬停事件没派发，不是放大镜的问题）')
+      assert(mag.display === 'block', `放大镜应当显示（display=${mag.display}）——检查是否又没人调 setReference 了`)
+      assert(mag.painted > 100, `放大镜画布应当是空的（非空像素 ${mag.painted}）`)
+      return `display=block / 非空像素 ${mag.painted} / 悬停 ${mag.hover}`
+    })
 
     check('运行期无控制台错误', () => {
       assert(consoleErrors.length === 0, `控制台报错 ${consoleErrors.length} 条：${consoleErrors.slice(0, 2).join(' | ')}`)

@@ -66,7 +66,7 @@ ConvertParams = { longEdge, downsample, cropRatio, paletteMode, paletteK, preset
 |---|---|---|
 | `MAX_CANVAS_SIDE` | 2048 | 2048² ≈ 419 万格，索引约 4MB，浏览器仍可交互 |
 | `PALETTE_MAX` | 256 | 索引是 Uint8Array |
-| `HISTORY_MAX_FRAMES` / `_BYTES` | 50 / 64MB | 只按帧数封顶会让内存随画布面积线性膨胀 |
+| `HISTORY_MAX_FRAMES` / `_BYTES` | 50 / 64MB | 只按帧数封顶会让内存随画布面积线性膨胀；两条上限**先到先算**。注意单帧是 `indices + alphaMask` 两份字节，2048² 带 alpha 时单帧 8MB（不是 4MB），所以 64MB 实际约 8 帧。实现见 `src/app/history.ts`（可在 Node 里单测） |
 | `MAX_EXPORT_SIDE` / `MAX_EXPORT_PIXELS` | 16384 / 64M | Chromium 硬上限附近，按面积再夹一道 |
 | `ALPHA_THRESHOLD` | 128 | 全项目唯一的透明判定口径 |
 | `MEDIAN_CUT_SAMPLE_LIMIT` | 250k | 切分是统计性聚类，几百万像素只会让盒内排序白白变慢 |
