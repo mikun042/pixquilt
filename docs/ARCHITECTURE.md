@@ -56,7 +56,7 @@ ConvertParams = { longEdge, downsample, cropRatio, paletteMode, paletteK, preset
 | 色板满时怎么办 | 自由模式退化为 OKLab 最近色并记 `note`；`lockPalette`（拼豆/资产）则**报错** | 拼豆用户不可能买到图纸上没有的颜色，"悄悄换色"是不可接受的 |
 | PNG 编码放哪 | Node 在 `src/io/node-png.ts`；浏览器在 `src/app/canvas-png.ts` | 见 §1 的分层教训 |
 | 算子放 core 还是 API | core 纯函数 + API 只做校验/提交 | 旧版把 `replaceColor` 的业务逻辑在 UI 与 API 各写了一遍（40 行逐行同构），且行为已分叉 |
-| 文档怎么保证不漂移 | `docs/AGENT_API.md` 由 `src/core/spec.ts` 生成，测试比对逐字节一致 | 旧版的算子表只活在 Markdown 里，代码改了文档没改，agent 会按错的信息干活 |
+| 文档怎么保证不漂移 | `docs/AGENT_API.md` 由 `src/core/spec.ts` 生成（算子/参数/色卡/上限），CLI 参数表在生成时与 `KNOWN_FLAGS` 对账 | 旧版的算子表只活在 Markdown 里，代码改了文档没改，agent 会按错的信息干活。**注意**：`AGENT_API.md` 的"生成物与仓库文件逐字节一致"目前**没有断言守着**（早期文档曾误称有单测比对），需人工重跑 `npm run describe`；见 `DEVELOPMENT.md` §5 |
 | 绘制调度 | rAF + 定时器双保险 | 后台标签页/无头环境下 rAF 可能永不回调；只用 rAF 会让画布永远空白（端到端测试真实抓到过） |
 | 图集帧尺寸 | **恒等**，用 `offsetX/offsetY` 表达内容偏移，不裁边 | 引擎按固定尺寸切片最省事；帧尺寸不等会让导出侧与引擎侧都要额外处理 |
 
@@ -262,6 +262,16 @@ stdout，首字符是 `✔`，于是 `JSON.parse` / `jq` / `ConvertFrom-Json` �
 教训不是"记得写 CSS"，而是：**一个类名如果意图是"控制行为"，就必须有对应的断言**。
 现在 `e2e-regressions` 里有三条锁住这两个交互（含真实鼠标点击，
 因为合成 `.click()` 绕过命中测试，测不出 `pointer-events` 与遮挡问题）。
+
+> **后续（2026-09-14）**：这套开关最终搬到了**栏外的画布边上**（画布左上角 / 右上角，
+> 紧贴对应侧栏的边），图标改成三角形箭头（展开时指向收纳方向、收起后指向展开方向），
+> `.narrow-only` 这个类名随之删除。放栏外而不是栏内的原因是：栏内的话面板一 `display:none`
+> 开关就跟着没了，只能让面板收成一条窄边来"顺便"留住开关（空窄边白占宽度）；
+> 浮在栏外则面板可以真正收干净、开关永远在原地（栏收起后它自然贴到画布/屏幕边缘）。
+> 由此带出两条必须记住的 CSS 约束：**隐藏一栏时必须同时把 grid 模板改成两列**
+> （`display:none` 会把网格项摘出布局、剩下两项自动重排，只改 display 会让画布宽度变成 0）；
+> **滚动容器换成内层 `.rail-body` 时必须补 `min-height: 0`**
+> （grid/flex 子项的自动最小高度是内容高度，漏了会让面板不再滚动、页面反而变长）。
 
 **修完当场就翻的车**：把按钮改成"桌面折叠侧栏"之后，折叠状态存的是
 `let desktopHidden: 'none' | 'tools' | 'panel'`——**单个三值变量**。

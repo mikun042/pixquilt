@@ -45,8 +45,11 @@ node tool/artc.mjs --in 素材目录 --out 输出 ...   # 直接批量出图
 node tool/artc.mjs --describe      # 机器可读：能力 / 算子 / 参数 / 预置色卡
 ```
 
-- [`docs/AGENT_API.md`](docs/AGENT_API.md) —— 完整接口手册，**由 `src/core/spec.ts` 生成**，
-  有测试保证不与实现漂移。手改它没用，改的是 `spec.ts`。
+- [`docs/AGENT_API.md`](docs/AGENT_API.md) —— 完整接口手册，**由 `src/core/spec.ts` 生成**
+  （`npm run describe`）。手改它没用，改的是 `spec.ts`；改完元数据记得重跑生成。
+  > 注意：算子 / 参数 / 色卡 / 上限是自动投影的；**CLI 参数表在生成时与 `KNOWN_FLAGS` 对账**
+  > （不一致直接报错）。但"改了元数据必须重跑生成"目前**没有自动化断言守着**——
+  > 提交前请自觉跑一次 `npm run describe`。
 - 别依赖本文档里的示例数字（格数、体积、测试项数都可能变），以命令输出为准。
 
 ## 项目结构（够用就行）

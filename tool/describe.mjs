@@ -3,8 +3,12 @@
  * 文档生成：由 `src/core/spec.ts`（元数据单一真源）生成 `docs/AGENT_API.md`。
  *
  * 为什么生成而不是手写：旧项目的算子表只活在 Markdown 里，代码改了文档没改，agent 就按错的信息干活。
- * 这里把"文档 = 元数据的投影"，`npm test` 会比对重新生成的结果与仓库内文件是否逐字节一致，
- * 不一致即失败——文档漂移从此是**编译期问题**，不是纪律问题。
+ * 这里把「文档 = 元数据的投影」：算子、参数、色卡、上限全部从 `src/core/spec.ts` 投影而来。
+ *
+ * **诚实说明**：只有"投影"这半是自动的。"改了元数据必须重跑本脚本"目前**没有自动化断言守着**
+ * （`npm run verify` 链里不含 describe，`npm test` 也没有比对新旧产物的断言）——见
+ * docs/DEVELOPMENT.md §5 的诚实说明。唯一的例外是下面的 CLI 参数表：它每次运行都会与
+ * `tool/artc.mjs` 的 `KNOWN_FLAGS` 对账，少收录或多收录都会直接抛错。
  */
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -12,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 
 import { CAPABILITIES, OP_SPECS, PARAM_SPECS } from '../src/core/spec.ts'
 import { STYLE_PRESETS } from '../src/core/types.ts'
+import { KNOWN_FLAGS } from './artc.mjs'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const OUT = join(ROOT, 'docs', 'AGENT_API.md')
@@ -41,7 +46,7 @@ function build() {
   lines.push('# 像素画工作台 · Agent 接口手册')
   lines.push('')
   lines.push('> **本文件由 `node tool/describe.mjs --write` 从 `src/core/spec.ts` 生成，请勿手改。**')
-  lines.push('> 改了代码却忘了改文档时，`npm test` 会直接失败（比对重新生成的结果）。')
+  lines.push('> 改了 `src/core/spec.ts` 里的算子 / 参数元数据后，必须重跑 `npm run describe` 再提交。')
   lines.push('')
   lines.push('这份手册是给 **AI agent 与脚本** 用的：不点界面就能完成「导入 → 调参 → 转换 → 编辑 → 导出」，')
   lines.push('并覆盖本项目的两个主要用途——**拼豆图纸**与**可批量生产的游戏美术资产**。')
@@ -54,7 +59,7 @@ function build() {
   lines.push('node tool/artc.mjs --in 素材目录 --out 输出 --palette gameboy --size 32x32 --alpha --sheet 4')
   lines.push('')
   lines.push('# ② 自检与自省（先确认环境与能力，再写脚本）')
-  lines.push('node tool/artc.mjs --selftest      # 25 项链路自检，无需任何素材')
+  lines.push('node tool/artc.mjs --selftest      # 32 项链路自检，无需任何素材')
   lines.push('node tool/artc.mjs --describe     # 打印完整的算子/参数/能力 JSON')
   lines.push('')
   lines.push('# ③ 页内 API（浏览器自动化 / Playwright / CDP evaluate）')
@@ -75,36 +80,78 @@ function build() {
   lines.push('')
   lines.push('| 参数 | 说明 |')
   lines.push('|---|---|')
+  /*
+   * CLI 参数表：每行是 `[显示名, 说明, 它覆盖的 flag 名]`。
+   *
+   * 这张表**必须覆盖 tool/artc.mjs 的 KNOWN_FLAGS 全集**，下面有对账逻辑强制这一点。
+   * 起因：它原先是一张手写且不完整的表，漏掉了 `--blank` / `--blank-transparent` / `--ops-file` /
+   * `--no-cleanup` / `--preset` / `--pdf` / `--progress` / `--quiet` 等已经实现的开关——
+   * 因为文档的"单一真源"只覆盖算子与参数元数据，**不含 CLI 开关**，于是这一块悄悄漂移了很久。
+   */
   const cli = [
-    ['--in', '输入目录（递归）或单张图片；Node 端仅 PNG 可直接解码，其他格式需先转 PNG 或用浏览器通道'],
-    ['--out', '输出目录（默认 out/）'],
-    ['--palette', '`auto` \\| 预置 id（见下）\\| `*.hex` 文件 \\| `#aabbcc,#112233`'],
-    ['--long-edge', '输出长边格数（8–2048）'],
-    ['--size', '强制精确尺寸 `WxH`（游戏资产用，覆盖 --long-edge）'],
-    ['--palette-k', '自动取色颜色数（2–64）'],
-    ['--style', STYLE_PRESETS.map((s) => s.id).join(' / ')],
-    ['--dither', '`none` \\| `floyd` \\| `bayer`'],
-    ['--downsample', '`average` \\| `nearest`'],
-    ['--crop', '`free` \\| `1:1` \\| `4:3` \\| `16:9`'],
-    ['--brightness / --contrast / --saturation', '预处理（-100…100）'],
-    ['--alpha', '保留原图透明（真 alpha 通道）'],
-    ['--transparent', '背景色导出为透明（单色键控）'],
-    ['--matte', '合成 / 键控底色（默认 #ffffff）'],
-    ['--lock-palette', '只允许使用给定色板（拼豆与资产批次必备）'],
-    ['--ops', '算子数组 JSON（见第 3 节），与页内 edit() 完全一致'],
-    ['--bead [每板格数]', '拼豆模式：输出 `*_图纸.svg` 与 `*_缺口清单.csv`（默认每板 58 格）'],
-    ['--bead-mm / --bead-gram / --board', '单颗直径 mm / 单颗重量 g / 每板格数'],
-    ['--sheet [列数]', '输出 `_sheet.json` 图集坐标表（帧等尺寸 + offsetX/offsetY）'],
-    ['--pixbin', '额外输出 `.pixbin`（二进制像素数据，大画布往返更快）'],
-    ['--scale', 'PNG 整数倍放大（默认 1，超限自动降档）'],
-    ['--name', '命名模板：`{name}` `{index}` `{index:02}` `{w}` `{h}` `{scale}`'],
-    ['--json', '以 JSON 打印汇总（含每张的 hash / 尺寸 / 用量），便于脚本消费'],
-    ['--dry-run', '只打印解析后的参数，不处理图片'],
-    ['--selftest', '跑内置链路自检（无需素材）'],
-    ['--describe', '打印完整能力 / 算子 / 参数 JSON'],
+    ['--in', '输入目录（递归）或单张图片；Node 端仅 PNG 可直接解码，其他格式需先转 PNG 或用浏览器通道', ['in']],
+    ['--out', '输出目录（默认 out/）', ['out']],
+    ['--name', '命名模板：`{name}` `{index}` `{index:02}` `{w}` `{h}` `{scale}`', ['name']],
+    ['--scale', 'PNG 整数倍放大（默认 1，超限自动降档）', ['scale']],
+    ['--json', '以 JSON 打印汇总（含每张的 hash / 尺寸 / 用量）；stdout 只有这一份 JSON，可直接 parse', ['json']],
+    ['--dry-run', '只打印解析后的参数，不处理图片', ['dry-run']],
+    ['--quiet', '少打印过程信息', ['quiet']],
+    ['--progress', '与 `--json` 同用时把进度行写到 stderr（保证 stdout 仍是纯 JSON）', ['progress']],
+    ['--help', '打印帮助；**未知参数一律报错**（不会静默忽略），错误信息会给出最接近的正确参数名', ['help']],
+
+    ['--blank <WxH>', '建一张空白画布（不读任何素材），可继续用 `--ops` 作画', ['blank']],
+    ['--blank-color', '空白填充色（默认 #ffffff）', ['blank-color']],
+    ['--blank-transparent', '空白为透明（只影响底色，与 `--palette` / `--size` 无关）', ['blank-transparent']],
+    ['--index', '命名模板里 `{index}` 的取值（批量空白时用于区分同名产物）', ['index']],
+
+    ['--long-edge', '输出长边格数（8–2048）', ['long-edge']],
+    ['--size', '强制精确尺寸 `WxH`（游戏资产用，覆盖 --long-edge）', ['size']],
+    ['--downsample', '`average` \\| `nearest`', ['downsample']],
+    ['--crop', '`free` \\| `1:1` \\| `4:3` \\| `16:9`', ['crop']],
+    ['--palette', '`auto` \\| 预置 id（见下）\\| `*.hex` 文件 \\| `#aabbcc,#112233`', ['palette']],
+    ['--preset', '只指定预置色卡（等价于 `--palette <预置 id>`；带号色的卡会把号色写进图纸 / 清单 / `.hex`）', ['preset']],
+    ['--palette-k', '自动取色颜色数（2–64）', ['palette-k']],
+    ['--style', STYLE_PRESETS.map((s) => s.id).join(' / '), ['style']],
+    ['--dither', '`none` \\| `floyd` \\| `bayer`', ['dither']],
+    ['--no-cleanup', '关闭杂色清理（像素素材请开它：清理会吃掉 1px 高光/描边断点）', ['no-cleanup']],
+    ['--cleanup-min', '杂色清理阈值（1–10）', ['cleanup-min']],
+    ['--brightness / --contrast / --saturation', '预处理（-100…100）', ['brightness', 'contrast', 'saturation']],
+    ['--alpha', '保留原图透明（真 alpha 通道）', ['alpha']],
+    ['--transparent', '背景色导出为透明（单色键控）', ['transparent']],
+    ['--matte', '合成 / 键控底色（默认 #ffffff）', ['matte']],
+    ['--lock-palette', '只允许使用给定色板（拼豆与资产批次必备）', ['lock-palette']],
+
+    ['--sheet [列数]', '输出 `_sheet.json` 图集坐标表（帧等尺寸 + offsetX/offsetY）', ['sheet']],
+    ['--pixbin', '额外输出 `.pixbin`（二进制像素数据，大画布往返更快）', ['pixbin']],
+    ['--bead [每板格数]', '拼豆模式：输出 `*_图纸.svg` 与 `*_缺口清单.csv`（默认每板 58 格）', ['bead']],
+    ['--pdf', '额外输出 `*_拼豆图纸.pdf`（A4 分页可打印；需同时用 `--bead`）', ['pdf']],
+    ['--bead-mm / --bead-gram', '单颗直径 mm（默认 5）/ 单颗重量 g（默认 0.08）', ['bead-mm', 'bead-gram']],
+    ['--board', '每板格数（默认 58）', ['board']],
+
+    ['--ops', '算子数组 JSON（见第 3 节），与页内 `edit()` 完全一致', ['ops']],
+    ['--ops-file', '从文件读算子数组（也写作 `--ops @file.json`）；批量 setCells 动辄十几 KB，走文件可避开 shell 长度与引号转义', ['ops-file']],
+
+    ['--selftest', '跑内置链路自检（无需素材）', ['selftest']],
+    ['--describe', '打印完整能力 / 算子 / 参数 JSON', ['describe']],
   ]
   for (const [k, v] of cli) lines.push(`| \`${k}\` | ${v} |`)
   lines.push('')
+  lines.push('> 上表与 CLI 真正接受的开关集**每次生成时对账**（对的是 `tool/artc.mjs` 的 `KNOWN_FLAGS`）：')
+  lines.push('> 少收录或多收录任何一项都会让本脚本直接报错，不再靠人记得同步。')
+  lines.push('')
+  {
+    const documented = new Set(cli.flatMap(([, , flags]) => flags))
+    const missing = [...KNOWN_FLAGS].filter((f) => !documented.has(f))
+    const extra = [...documented].filter((f) => !KNOWN_FLAGS.has(f))
+    if (missing.length || extra.length) {
+      throw new Error(
+        'CLI 参数表与 tool/artc.mjs 的 KNOWN_FLAGS 不一致：' +
+          (missing.length ? `未收录 ${missing.map((f) => `--${f}`).join(' / ')}` : '') +
+          (missing.length && extra.length ? '；' : '') +
+          (extra.length ? `多出（CLI 里并不存在）${extra.map((f) => `--${f}`).join(' / ')}` : ''),
+      )
+    }
+  }
   lines.push('**退出码**：单张素材失败不会中断整批（逐张隔离），结尾给出失败清单；只要有失败就以非零码退出。')
   lines.push('因此推荐流程是：跑一次 → 读失败清单 → 修素材 → 重跑。')
   lines.push('')

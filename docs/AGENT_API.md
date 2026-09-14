@@ -1,7 +1,7 @@
 # 像素画工作台 · Agent 接口手册
 
 > **本文件由 `node tool/describe.mjs --write` 从 `src/core/spec.ts` 生成，请勿手改。**
-> 改了代码却忘了改文档时，`npm test` 会直接失败（比对重新生成的结果）。
+> 改了 `src/core/spec.ts` 里的算子 / 参数元数据后，必须重跑 `npm run describe` 再提交。
 
 这份手册是给 **AI agent 与脚本** 用的：不点界面就能完成「导入 → 调参 → 转换 → 编辑 → 导出」，
 并覆盖本项目的两个主要用途——**拼豆图纸**与**可批量生产的游戏美术资产**。
@@ -14,7 +14,7 @@ node tool/artc.mjs --in 素材目录 --out 输出 --palette beads16 --long-edge 
 node tool/artc.mjs --in 素材目录 --out 输出 --palette gameboy --size 32x32 --alpha --sheet 4
 
 # ② 自检与自省（先确认环境与能力，再写脚本）
-node tool/artc.mjs --selftest      # 25 项链路自检，无需任何素材
+node tool/artc.mjs --selftest      # 32 项链路自检，无需任何素材
 node tool/artc.mjs --describe     # 打印完整的算子/参数/能力 JSON
 
 # ③ 页内 API（浏览器自动化 / Playwright / CDP evaluate）
@@ -37,30 +37,46 @@ node tool/artc.mjs --ops '[{"op":"eraseColor","color":"#ffffff"},{"op":"trim"}]'
 |---|---|
 | `--in` | 输入目录（递归）或单张图片；Node 端仅 PNG 可直接解码，其他格式需先转 PNG 或用浏览器通道 |
 | `--out` | 输出目录（默认 out/） |
-| `--palette` | `auto` \| 预置 id（见下）\| `*.hex` 文件 \| `#aabbcc,#112233` |
+| `--name` | 命名模板：`{name}` `{index}` `{index:02}` `{w}` `{h}` `{scale}` |
+| `--scale` | PNG 整数倍放大（默认 1，超限自动降档） |
+| `--json` | 以 JSON 打印汇总（含每张的 hash / 尺寸 / 用量）；stdout 只有这一份 JSON，可直接 parse |
+| `--dry-run` | 只打印解析后的参数，不处理图片 |
+| `--quiet` | 少打印过程信息 |
+| `--progress` | 与 `--json` 同用时把进度行写到 stderr（保证 stdout 仍是纯 JSON） |
+| `--help` | 打印帮助；**未知参数一律报错**（不会静默忽略），错误信息会给出最接近的正确参数名 |
+| `--blank <WxH>` | 建一张空白画布（不读任何素材），可继续用 `--ops` 作画 |
+| `--blank-color` | 空白填充色（默认 #ffffff） |
+| `--blank-transparent` | 空白为透明（只影响底色，与 `--palette` / `--size` 无关） |
+| `--index` | 命名模板里 `{index}` 的取值（批量空白时用于区分同名产物） |
 | `--long-edge` | 输出长边格数（8–2048） |
 | `--size` | 强制精确尺寸 `WxH`（游戏资产用，覆盖 --long-edge） |
+| `--downsample` | `average` \| `nearest` |
+| `--crop` | `free` \| `1:1` \| `4:3` \| `16:9` |
+| `--palette` | `auto` \| 预置 id（见下）\| `*.hex` 文件 \| `#aabbcc,#112233` |
+| `--preset` | 只指定预置色卡（等价于 `--palette <预置 id>`；带号色的卡会把号色写进图纸 / 清单 / `.hex`） |
 | `--palette-k` | 自动取色颜色数（2–64） |
 | `--style` | photo / gameboy / retro / silhouette / sprite / beads |
 | `--dither` | `none` \| `floyd` \| `bayer` |
-| `--downsample` | `average` \| `nearest` |
-| `--crop` | `free` \| `1:1` \| `4:3` \| `16:9` |
+| `--no-cleanup` | 关闭杂色清理（像素素材请开它：清理会吃掉 1px 高光/描边断点） |
+| `--cleanup-min` | 杂色清理阈值（1–10） |
 | `--brightness / --contrast / --saturation` | 预处理（-100…100） |
 | `--alpha` | 保留原图透明（真 alpha 通道） |
 | `--transparent` | 背景色导出为透明（单色键控） |
 | `--matte` | 合成 / 键控底色（默认 #ffffff） |
 | `--lock-palette` | 只允许使用给定色板（拼豆与资产批次必备） |
-| `--ops` | 算子数组 JSON（见第 3 节），与页内 edit() 完全一致 |
-| `--bead [每板格数]` | 拼豆模式：输出 `*_图纸.svg` 与 `*_缺口清单.csv`（默认每板 58 格） |
-| `--bead-mm / --bead-gram / --board` | 单颗直径 mm / 单颗重量 g / 每板格数 |
 | `--sheet [列数]` | 输出 `_sheet.json` 图集坐标表（帧等尺寸 + offsetX/offsetY） |
 | `--pixbin` | 额外输出 `.pixbin`（二进制像素数据，大画布往返更快） |
-| `--scale` | PNG 整数倍放大（默认 1，超限自动降档） |
-| `--name` | 命名模板：`{name}` `{index}` `{index:02}` `{w}` `{h}` `{scale}` |
-| `--json` | 以 JSON 打印汇总（含每张的 hash / 尺寸 / 用量），便于脚本消费 |
-| `--dry-run` | 只打印解析后的参数，不处理图片 |
+| `--bead [每板格数]` | 拼豆模式：输出 `*_图纸.svg` 与 `*_缺口清单.csv`（默认每板 58 格） |
+| `--pdf` | 额外输出 `*_拼豆图纸.pdf`（A4 分页可打印；需同时用 `--bead`） |
+| `--bead-mm / --bead-gram` | 单颗直径 mm（默认 5）/ 单颗重量 g（默认 0.08） |
+| `--board` | 每板格数（默认 58） |
+| `--ops` | 算子数组 JSON（见第 3 节），与页内 `edit()` 完全一致 |
+| `--ops-file` | 从文件读算子数组（也写作 `--ops @file.json`）；批量 setCells 动辄十几 KB，走文件可避开 shell 长度与引号转义 |
 | `--selftest` | 跑内置链路自检（无需素材） |
 | `--describe` | 打印完整能力 / 算子 / 参数 JSON |
+
+> 上表与 CLI 真正接受的开关集**每次生成时对账**（对的是 `tool/artc.mjs` 的 `KNOWN_FLAGS`）：
+> 少收录或多收录任何一项都会让本脚本直接报错，不再靠人记得同步。
 
 **退出码**：单张素材失败不会中断整批（逐张隔离），结尾给出失败清单；只要有失败就以非零码退出。
 因此推荐流程是：跑一次 → 读失败清单 → 修素材 → 重跑。

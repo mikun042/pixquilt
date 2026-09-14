@@ -42,7 +42,7 @@ node tool/quickstart.mjs      # 一条命令跑通：自省 → 造素材 → �
 | 我想…… | 看这里 |
 |---|---|
 | 知道有哪些参数/算子、怎么调 | **[docs/AGENT-QUICKSTART.md](docs/AGENT-QUICKSTART.md)** |
-| 要精确的接口契约 | **[docs/AGENT_API.md](docs/AGENT_API.md)**（**由代码生成**，不会与实现漂移） |
+| 要精确的接口契约 | **[docs/AGENT_API.md](docs/AGENT_API.md)**（**生成物**：`npm run describe`，改了 `src/core/spec.ts` 要重跑） |
 | 让工具自己说 | `node tool/artc.mjs --describe`（JSON） / `--help` |
 
 最常用的三条命令：
@@ -93,7 +93,7 @@ src/core/                ← 纯逻辑：零 DOM、零 node: 依赖，Node 可�
    pipeline.ts ops.ts    ←   像素化管线 / 12 类编辑算子
    export.ts bead.ts     ←   序列化、拼豆图纸与缺口清单
 src/io/                  ← Node 侧平台绑定（PNG 编解码、文件 IO）
-src/app/                 ← 浏览器侧：UI、画布、页内 API（automation.ts）
+src/app/                 ← 浏览器侧：UI、画布、页内 API（automation.ts）、可编辑预设（presets.ts）
 tool/artc.mjs            ← 批处理 CLI（agent 主入口）
 tool/quickstart.mjs      ← Agent 快速上手（一条命令跑通全链路）
 tool/build.mjs           ← 单文件构建（内联 CSS + JS，核对产物哈希）
@@ -129,7 +129,7 @@ npm run verify     # 一次跑完全部，全绿才算通过
 | `test` | 73 项单元测试 | 否 |
 | `build` | 单文件产物 + 核对两份 HTML 哈希一致 | 否 |
 | `selftest` | 32 项链路自检（不需要素材） | 否 |
-| `e2e` | 20 项端到端 | **是** |
+| `e2e` | 25 项端到端 | **是** |
 | `e2e:picker` / `e2e:slider` | 取色器 17 项 / 滑条 12 项 | **是** |
 | `e2e:regressions` | 23 项已修缺陷的回归防线 | **是** |
 | `e2e:pdf` | 10 项：PDF 在真实浏览器里的压缩格式 + 吸管图标几何 | **是** |

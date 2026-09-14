@@ -199,10 +199,11 @@ node tool/artc.mjs --in 精灵.png --size 64x64 --alpha \
 ## 五、页内 API（浏览器路径）
 
 ```js
-await page.evaluate(() => window.pixelArtStudio.whenReady())   // 等草稿恢复完成
+await page.evaluate(() => window.pixelArtStudio.whenReady())   // 就绪信号（等 UI 初始化完成）
 const info = await page.evaluate(() => window.pixelArtStudio.describe())   // 先自省
 
-// 无副作用一站式：不碰工作区状态、撤销栈与自动草稿 → 适合批量并行
+// 无副作用一站式：不碰工作区状态与撤销栈 → 适合批量并行
+// （注意：本项目**没有自动草稿**功能，whenReady() 不做任何恢复，只是一个就绪信号）
 const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
   { width: 32, height: 32, transparent: true,
     ops: [{ op: 'ellipse', x0: 4, y0: 4, x1: 27, y1: 27, color: '#ff004d' }, { op: 'trim' }] },
@@ -240,7 +241,7 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 | **单画布模型** | 引擎一次持有一张画布；批量时逐张处理（CLI 已这么做） |
 | **拼豆内建色卡是近似色** | 非品牌官方色号；要严格对应请导入官方 `.hex` |
 | **无文本渲染** | 没有"打字生成像素字"的能力，字形请自己用算子拼 |
-| **导出上限** | 单边 ≤16384px 且面积 ≤6400 万像素，超出自动降倍 |
+| **导出上限** | 单边 ≤16384px 且面积 ≤67108864（约 6710 万）像素，超出自动降倍 |
 | **色板上限 256** | 索引是 Uint8Array；自定义色板超出会被截断 |
 
 ---
@@ -269,7 +270,7 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 
 | 文档 | 内容 |
 |---|---|
-| `docs/AGENT_API.md` | **完整接口契约**（由 `src/core/spec.ts` 生成，测试保证不与实现漂移） |
+| `docs/AGENT_API.md` | **完整接口契约**（由 `src/core/spec.ts` 生成：`npm run describe`；改元数据后要重跑，目前无断言守着） |
 | `docs/TESTING-GUIDE.md` | 如何系统性测试本项目（含自动化清单与防坑要点） |
 | `docs/USAGE.md` | 用户向：界面、参数表、快捷键、FAQ |
 | `docs/DEVELOPMENT.md` | 贡献者向：铁律、验证链、结构规则、踩过的坑、路线图 |
