@@ -590,8 +590,19 @@ async function main() {
       const r = el.getBoundingClientRect()
       const x = r.left + r.width / 2, y = r.top + r.height / 2
       const top = document.elementFromPoint(x, y)
+      // 色块按钮里的圆形色片必须显示**当前**合成底色：外观同步逻辑搬进工厂后
+      // （改用 setAttribute('style') 而非建节点时的 style 对象），这里顺手锁一下。
+      // 期望值从页内 API 现读，不写死——默认底色是 #ffffff，写死一个值只会测出我自己的假设。
+      const cur = window.pixelArtStudio.getInfo().params.matteColor
+      const n = parseInt(cur.slice(1), 16)
+      const chip = el.querySelector('.chip')
+      const hexSpan = el.querySelector('.color-pick-hex')
       return JSON.stringify({ x, y,
         rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+        chipBg: chip ? getComputedStyle(chip).backgroundColor : '',
+        chipWant: 'rgb(' + ((n >> 16) & 255) + ', ' + ((n >> 8) & 255) + ', ' + (n & 255) + ')',
+        hexText: hexSpan ? hexSpan.textContent : '',
+        hexWant: cur.toUpperCase(),
         topTag: top ? top.tagName : '(null)', topClass: top ? String(top.className) : '',
         hitSelf: top ? el.contains(top) || top === el : false })
     })()`))
@@ -620,6 +631,8 @@ async function main() {
       assert(s.topVisible, '取色盘展开后应能直接在视口里看到（顶边在视口内）')
       assert(!s.alphaVisible, '编辑合成底色时不应显示「透明度」行')
       assert(!s.transparentSwatch, '编辑合成底色时不应显示「透明」色块')
+      assert(matteBox.chipBg === matteBox.chipWant, `色块里的色片应显示当前合成底色（期望 ${matteBox.chipWant}），实际 ${matteBox.chipBg}`)
+      assert(matteBox.hexText === matteBox.hexWant, `色块右侧的 hex 文案应同步当前底色（期望 ${matteBox.hexWant}），实际 ${matteBox.hexText}`)
       return `原生 0 个 / 就地展开在参数面板 / 透明度行已隐藏 / Hex ${s.hex}`
     })
     // 再点一次收起（同时验证是个开关）。展开时面板滚过，必须**重新取一次坐标**再点，

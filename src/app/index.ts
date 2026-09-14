@@ -22,6 +22,7 @@ import { clear, el, store } from './store.ts'
 import { decodeToRgba, imageFromClipboard, makeThumbnail, looksLikeImage } from './decode.ts'
 import { createCanvas } from './ui/canvas.ts'
 import { createColorPicker, type ColorPickerApi, type ColorPickerCallbacks } from './ui/colorpicker.ts'
+import { createMatteField } from './matte-field.ts'
 import { iconEl } from './ui/icons.ts'
 import { ArtHistory, normalizeAlphaMask } from './history.ts'
 import { addCustomPreset, effectivePresets, removeCustomPreset, resetPreset, sameParams, updatePreset } from './presets.ts'
@@ -211,12 +212,11 @@ const canvasApi = createCanvas(canvasHost, canvasEl, {
   onCommit: commitWithHistory,
   onPickColor: (hex) => {
     /*
-     * 合成底色吸管的**去向**。`onPickFromCanvas` 在那边把 pickIntoMatte 置位、并提示用户
-     * "颜色会填到合成底色"，这里必须真的消费它——否则颜色悄悄写进主色，而提示语说的是另回事，
-     * 界面没有任何错误信号（这正是本项目最忌讳的一类）。e2e 有一条真实鼠标断言守在这里。
+     * 合成底色吸管的**去向**：那一侧的取色盘按下吸管时会置一个待办，这里必须消费它——
+     * 否则颜色悄悄写进主色，而提示语说的是另回事，界面没有任何错误信号
+     * （这正是本项目最忌讳的一类，e2e 有一条真实鼠标断言守在这里）。
      */
-    if (pickIntoMatte) {
-      pickIntoMatte = false
+    if (matteField.takePendingPick()) {
       const back = pickRestoreTool
       pickRestoreTool = null
       // 一次性动作：取完把工具还原，别让用户莫名停在吸管上（下一次点击又变成取色）
@@ -332,7 +332,7 @@ function swapColors(): void {
   renderAll()
 }
 
-/** 左侧取色器编辑的两路**绘制色**（合成底色走参数面板里就地展开的那个，见 renderMattePicker） */
+/** 左侧取色器编辑的两路**绘制色**（合成底色不走这里，它是 `matte-field.ts` 里的独立实例） */
 type PickerTarget = 'primary' | 'bg'
 
 let pickerTarget: PickerTarget = 'primary'
@@ -344,26 +344,6 @@ function openPicker(target: PickerTarget): void {
 
 /** 主色 / 背景色的取色器实例（挂在左侧色板列里，见 ui/colorpicker.ts） */
 let picker: ColorPickerApi | null = null
-/** 合成底色的取色器：**就地**展开在参数面板里它那个字段下面 */
-let mattePicker: ColorPickerApi | null = null
-let mattePickerHost: HTMLElement | null = null
-let mattePickerOpen = false
-/**
- * 「刚展开」的一次性标记：展开后要把取色盘滚进视野。
- *
- * 为什么需要：合成底色这个字段本来就在参数面板**靠底部**的位置，取色盘插在它下面就直接落到
- * 视口之外——用户点完看到的画面毫无变化，反馈就是"点击没反应"。只在刚展开时滚一次，
- * 之后的每次重渲染不再滚（否则拖动调色时会跟用户自己的滚动打架）。
- */
-let mattePickerJustOpened = false
-/**
- * 吸管下一步取到的颜色往哪儿写。
- *
- * 画布的取色回调只会把颜色写进**主色**；而合成底色的取色器里也有一个吸管按钮，
- * 不区分的话用户在那边点吸管、再去画布点一格，颜色会悄悄进主色（又一处"静默失效"）。
- * 置位在 `onPickFromCanvas`，消费在画布装配处的 `onPickColor`，两者必须成对。
- */
-let pickIntoMatte = false
 /**
  * 进吸管之前正在用的工具。吸管是**一次性**动作（提示语就是"点一格"），
  * 取完/取消后还原，否则用户会莫名停在吸管上——下一次点击又变成取色，而不是继续画。
@@ -376,32 +356,26 @@ function currentPickerValue(): string {
 }
 
 /** 预览（拖动中每帧都会调）：只改状态，**不重转管线** */
-function applyPickerPreview(target: PickerTarget | 'matte', hex: string): void {
+function applyPickerPreview(target: PickerTarget, hex: string): void {
   if (target === 'primary') store.set('primary', hex)
-  else if (target === 'bg') store.set('bg', hex)
-  else app.params = { ...app.params, matteColor: hex }
+  else store.set('bg', hex)
   renderAll()
 }
 
 /** 提交（松手 / 输入 / 点色块）：一次拖动进一条撤销 */
-function applyPickerCommit(target: PickerTarget | 'matte', hex: string): void {
+function applyPickerCommit(target: PickerTarget, hex: string): void {
   if (target === 'primary') {
     store.setMany({ primary: hex, transparent: false })
     addRecent(hex)
-  } else if (target === 'bg') {
-    store.setMany({ bg: hex, transparent: false })
   } else {
-    addRecent(hex)
-    // 预览期刻意没重转，这里补上那一次（patchParams 在有原图时会走 regenerate）
-    patchParams({ matteColor: hex })
-    return
+    store.setMany({ bg: hex, transparent: false })
   }
   renderAll()
   canvasApi.redraw()
 }
 
-/** 两个取色器实例共用的一套回调；`getTarget` 让回调自己知道在编辑哪一路颜色 */
-function pickerCallbacks(getTarget: () => PickerTarget | 'matte'): ColorPickerCallbacks {
+/** 左侧取色器（主色 / 背景色）的一套回调；`getTarget` 让回调自己知道在编辑哪一路颜色 */
+function pickerCallbacks(getTarget: () => PickerTarget): ColorPickerCallbacks {
   return {
     onPreview: (hex) => applyPickerPreview(getTarget(), hex),
     onCommit: (hex) => applyPickerCommit(getTarget(), hex),
@@ -417,65 +391,55 @@ function pickerCallbacks(getTarget: () => PickerTarget | 'matte'): ColorPickerCa
     },
     isTransparent: () => store.get('transparent'),
     onPickFromCanvas: () => {
-      const matte = getTarget() === 'matte'
-      pickIntoMatte = matte
       pickRestoreTool = store.get('tool')
       store.set('tool', 'picker')
-      toast(pickIntoMatte ? '吸管已就绪：到画布点一格，颜色会填到「合成底色」（Esc 取消）' : '吸管已就绪：到画布上点一格即可取色（Esc 取消）')
+      toast('吸管已就绪：到画布上点一格即可取色（Esc 取消）')
       renderAll()
     },
     onClose: () => {
-      if (getTarget() === 'matte') {
-        mattePickerOpen = false
-        pickIntoMatte = false
-        pickRestoreTool = null
-        renderAll()
-      } else {
-        store.set('showPicker', false)
-        renderAll()
-      }
+      store.set('showPicker', false)
+      renderAll()
     },
   }
 }
 
 /**
- * 合成底色的取色器：**就地**展开在参数面板里（挂在它那个字段正下方）。
+ * 合成底色字段（含就地展开的取色盘）。状态与三条踩坑记录都搬进了 `matte-field.ts`：
+ * 那几个变量原先既被这里的渲染读、又被控件闭包写，正是"拆参数面板"上一轮失败的原因。
  *
- * 为什么不像主色/背景色那样复用左侧那一个：入口在右侧面板，取色器却在左侧出现——
- * 用户的实际反馈就是"点了没反应"，因为他的视线在右边，左边出现什么都不会被注意到。
- * 一个"点了就在这里展开"的动作才符合直觉。
+ * deps 全是延迟调用的闭包（`patchParams` / `renderAll` / `addRecent` 都是提升的函数声明），
+ * 因此此刻创建不会碰到未初始化的绑定；画布的 `onPickColor` 引用它也是同一个道理
+ * （真正调用发生在用户点击时，那时模块早已求值完毕）。
  */
-function renderMattePicker(): void {
-  if (!mattePickerOpen || !mattePickerHost) {
-    mattePicker?.dispose()
-    mattePicker = null
-    return
-  }
-  try {
-    if (!mattePicker) {
-      mattePicker = createColorPicker(
-        mattePickerHost,
-        {
-          target: 'matte',
-          value: app.params.matteColor,
-          groups: pickerGroups(),
-          // 合成底色是 6 位 hex、没有 alpha：透明度行（画笔的"透明色"开关）放在这里会误导。
-          // 见 colorpicker.ts 的 showAlpha。
-          showAlpha: false,
-        },
-        pickerCallbacks(() => 'matte'),
-      )
-    }
-    mattePicker.update({ target: 'matte', value: app.params.matteColor, groups: pickerGroups(), showAlpha: false })
-  } catch (err) {
-    // 构建失败不能静默（否则又是"点了没反应"）：把原因留在 DOM 上并把错误显示出来
-    const target = document.getElementById('canvas-host')
-    if (target) target.dataset.pickerError = (err as Error)?.message ?? String(err)
-    console.error('[取色器] 合成底色取色器构建失败：', err)
-    clear(mattePickerHost)
-    mattePickerHost.append(el('div', { class: 'hint' }, [`取色器不可用：${(err as Error)?.message ?? err}`]))
-  }
-}
+const matteField = createMatteField({
+  getValue: () => app.params.matteColor,
+  preview: (hex) => {
+    app.params = { ...app.params, matteColor: hex }
+    renderAll()
+  },
+  commit: (hex) => {
+    addRecent(hex)
+    // 预览期刻意没重转，这里补上那一次（patchParams 在有原图时会走 regenerate）
+    patchParams({ matteColor: hex })
+  },
+  groups: () => pickerGroups(),
+  armPick: () => {
+    pickRestoreTool = store.get('tool')
+    store.set('tool', 'picker')
+    toast('吸管已就绪：到画布点一格，颜色会填到「合成底色」（Esc 取消）')
+    renderAll()
+  },
+  rerender: () => renderAll(),
+  isTransparent: () => store.get('transparent'),
+  setTransparent: () => {
+    store.setMany({ transparent: true, tool: 'pencil' })
+    renderAll()
+  },
+  setOpaque: () => {
+    store.set('transparent', false)
+    renderAll()
+  },
+})
 
 function ensurePicker(host: HTMLElement): ColorPickerApi {
   if (!picker) {
@@ -825,9 +789,10 @@ function clearExactSize(): void {
 }
 
 function renderParams(): void {
-  // 只移除面板自己的子节点，**保留取色器宿主**（宿主必须跨渲染存活，否则一拖动就重建、手感全失）
+  // 只移除面板自己的子节点，**保留合成底色字段**（它含取色盘宿主，必须跨渲染存活，
+  // 否则拖动中指针捕获会断、手感全失）——见 matte-field.ts 顶部第 2 条坑
   for (const child of [...paramsPanel.children]) {
-    if (child !== mattePickerHost) child.remove()
+    if (child !== matteField.element) child.remove()
   }
   const p = app.params
 
@@ -949,62 +914,18 @@ function renderParams(): void {
   )
   if (p.transparent !== 'alpha') {
     /*
-     * 合成底色用**自家取色盘**，不再用原生 `<input type="color">`：
-     * 原生控件会弹出操作系统的调色板（Windows 那个带吸管的弹窗），外观与本工具的取色器完全两回事，
-     * 也没法用"本图用色 / 最近 / 预置色卡"。
+     * 合成底色用**自家取色盘**，不用原生 `<input type="color">`：原生控件会弹出操作系统的调色板
+     * （Windows 那个带吸管的弹窗），外观与本工具的取色器完全两回事，也没法用"本图用色 / 最近 / 预置色卡"。
      *
-     * 取色盘**就地展开在这个字段下面**（`renderMattePicker`），而不是切到左侧那一个——
-     * 第一版就是复用左侧取色器，结果用户反馈"点击没反应"：他的视线在右侧面板，
-     * 左边冒出来的东西根本注意不到。色块在这里，调色盘就该在这里。
+     * 字段本身（含就地展开的取色盘）由 `matte-field.ts` 的工厂负责：它持有那 5 个必须跨渲染
+     * 存活的状态。这里只做两件事——**把稳定的 `element` 放回序列中的位置**，再让它同步一次外观。
+     * `element` 是同一个节点（只创建一次），所以拖动中的指针捕获不会因为重渲染而断。
      */
-    paramsPanel.append(
-      field(
-        '合成底色',
-        el('button', {
-          class: `btn tiny color-pick${mattePickerOpen ? ' active' : ''}`,
-          type: 'button',
-          id: 'matte-swatch-btn',
-          'data-testid': 'matte-swatch',
-          'aria-expanded': mattePickerOpen ? 'true' : 'false',
-          title: `合成底色 ${p.matteColor}——点击${mattePickerOpen ? '收起' : '展开'}取色盘（Blender 式色轮）`,
-          onclick: () => {
-            mattePickerOpen = !mattePickerOpen
-            mattePickerJustOpened = mattePickerOpen
-            if (!mattePickerOpen) pickIntoMatte = false
-            renderAll()
-          },
-        }, [
-          el('span', { class: 'chip', style: { background: p.matteColor } }),
-          el('span', { class: 'color-pick-hex' }, [p.matteColor.toUpperCase()]),
-        ]),
-        '不透明模式把原图透明区合成到这个颜色；单色键控模式下它就是要被扣掉的键控色',
-        'matte-swatch-btn',
-      ),
-    )
-    // 宿主必须跨渲染存活：拖动中若把它摘出文档，指针捕获会丢、手感直接断掉。
-    // 所以 renderParams 开头只删"面板自己的子节点"、留下宿主；这里再决定挂上还是摘掉。
-    if (mattePickerOpen) {
-      if (!mattePickerHost) mattePickerHost = el('div', { class: 'picker-wrap inline' })
-      paramsPanel.append(mattePickerHost)
-      renderMattePicker()
-      if (mattePickerJustOpened) {
-        mattePickerJustOpened = false
-        // 'nearest'：已经看得见就不动，避免每次重渲染都抢用户的滚动
-        mattePickerHost.scrollIntoView({ block: 'nearest' })
-      }
-    } else if (mattePickerHost) {
-      // 收起：`dispose()` 只摘全局监听，不会清 DOM，所以这里要显式摘掉并清空
-      mattePickerHost.remove()
-      clear(mattePickerHost)
-      renderMattePicker()
-    }
-  } else if (mattePickerOpen) {
+    paramsPanel.append(matteField.element)
+    matteField.render()
+  } else {
     // 切到「真 alpha」后这个字段会消失，把就地的取色器一起收掉，别留下孤儿宿主
-    mattePickerOpen = false
-    pickIntoMatte = false
-    mattePickerHost?.remove()
-    if (mattePickerHost) clear(mattePickerHost)
-    renderMattePicker()
+    matteField.collapseForAlpha()
   }
   // 锁定色板对三种用途都成立（拼豆/资产批次），因此常显，不再按"模式"藏起来
   paramsPanel.append(field('锁定色板', checkbox(!!p.lockPalette, (v) => patchParams({ lockPalette: v })), '只用给定色板，绝不新增颜色（拼豆/资产批次必备）'))
@@ -1582,7 +1503,7 @@ window.addEventListener('keydown', (e) => {
   if (k === 'escape' && store.get('tool') === 'picker') {
     store.set('tool', pickRestoreTool ?? 'pencil')
     pickRestoreTool = null
-    pickIntoMatte = false
+    matteField.clearPendingPick()
     renderAll()
     return
   }
