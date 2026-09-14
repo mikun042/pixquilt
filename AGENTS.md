@@ -26,7 +26,9 @@ node tool/artc.mjs --in 素材目录 --out 输出 ...   # 直接批量出图
 ```
 
 只有 `npm run build`（esbuild）与 `npm run typecheck`（tsc）需要先 `npm install`；
-`npm run e2e*` 另外需要本机 Edge 或 Chrome。**纯出图不需要其中任何一项。**
+`npm run e2e*` 另外需要本机有 Chrome / Edge / Chromium——它会自己在三个平台的常见位置找，
+再查 `PATH`；装在别处就传 `--browser <路径>`（或设 `PIXEL_BROWSER=<路径>`）。
+**纯出图不需要其中任何一项。**
 
 ## 三条最容易踩的坑
 
@@ -47,9 +49,10 @@ node tool/artc.mjs --describe      # 机器可读：能力 / 算子 / 参数 / �
 
 - [`docs/AGENT_API.md`](docs/AGENT_API.md) —— 完整接口手册，**由 `src/core/spec.ts` 生成**
   （`npm run describe`）。手改它没用，改的是 `spec.ts`；改完元数据记得重跑生成。
-  > 注意：算子 / 参数 / 色卡 / 上限是自动投影的；**CLI 参数表在生成时与 `KNOWN_FLAGS` 对账**
-  > （不一致直接报错）。但"改了元数据必须重跑生成"目前**没有自动化断言守着**——
-  > 提交前请自觉跑一次 `npm run describe`。
+  > 两道机器防线（都在 `npm test` 里跑，所以 `npm run verify` 会替你拦住）：
+  > ① 算子 / 参数 / 色卡 / 上限是自动投影的，**CLI 参数表在生成时与 `KNOWN_FLAGS` 对账**（不一致直接报错）；
+  > ② `src/test/describe-freshness.test.ts` 把生成结果与仓库里的文件**逐字节比对**——
+  > 忘了重跑 `npm run describe`、或者手改了那个生成文件，都会直接变红。
 - 别依赖本文档里的示例数字（格数、体积、测试项数都可能变），以命令输出为准。
 
 ## 项目结构（够用就行）

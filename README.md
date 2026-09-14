@@ -129,16 +129,19 @@ npm run verify     # 一次跑完全部，全绿才算通过
 | 步骤 | 内容 | 需要浏览器 |
 |---|---|---|
 | `typecheck` | `tsc --noEmit` | 否 |
-| `test` | 87 项单元测试 | 否 |
+| `test` | 88 项单元测试 | 否 |
 | `build` | 单文件产物 + 核对两份 HTML 哈希一致 | 否 |
 | `selftest` | 32 项链路自检（不需要素材） | 否 |
-| `e2e` | 27 项端到端 | **是** |
+| `e2e` | 34 项端到端 | **是** |
 | `e2e:picker` / `e2e:slider` | 取色器 17 项 / 滑条 12 项 | **是** |
-| `e2e:regressions` | 23 项已修缺陷的回归防线 | **是** |
+| `e2e:regressions` | 24 项已修缺陷的回归防线 | **是** |
 | `e2e:pdf` | 10 项：PDF 在真实浏览器里的压缩格式 + 吸管图标几何 | **是** |
 
 > 数字会过期，以命令输出为准。改 UI 外观另有两个工具：
 > `npm run shoot`（截图）、`npm run ref:analyze -- <png>`（截图结构分析）。
+>
+> 需要浏览器的那几步会自己找 Chrome / Edge / Chromium（Windows / macOS / Linux 的常见位置，
+> 再查 `PATH`）；装在别处时用 `--browser <路径>` 或环境变量 `PIXEL_BROWSER=<路径>` 指定。
 
 ---
 

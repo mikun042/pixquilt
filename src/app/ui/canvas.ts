@@ -35,15 +35,23 @@ export interface CanvasCallbacks {
 
 export interface CanvasApi {
   setArt: (art: PixelArt | null) => void
-  /** 供 UI 直接改画布的受控入口（例如色板排序、替换颜色） */
+  /**
+   * 模型 → 画布的**同尺寸**同步原语（只换像素副本，保留选区与视图）。
+   *
+   * 为什么不用 `setArt` 代替：`setArt` 会清空选区，而"算子编辑后选区还在"是有用的行为。
+   * 见 docs/ARCHITECTURE.md §2.1 的三条同步路径。
+   */
   applyIndices: (indices: Uint8Array, palette?: string[], alphaMask?: Uint8Array | null) => void
   redraw: () => void
+  /**
+   * 适配窗口 / 按倍数缩放。
+   *
+   * 目前**只由画布自己的快捷键调用**（`0` / `+` / `-`），外部没有调用者；
+   * 留在接口里是因为它们与 `redraw` 同属"视图控制"这一组，将来若加回视图浮层或做自动化
+   * 视图断言就直接可用（曾经的视图工具栏因从未接线而被删除，见 ARCHITECTURE §8.10 ②）。
+   */
   fitView: () => void
   zoomBy: (factor: number, atCenter?: boolean) => void
-  clearSelection: () => void
-  selectionCount: () => number
-  /** 重置工作副本（导入新图或撤销之后调用） */
-  syncFromArt: () => void
   /**
    * 参考图层：由 UI 传入原图。
    * `show=false` 时**不叠原图**，但放大镜仍然取它做"原图对照"——
@@ -845,13 +853,6 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
     redraw: scheduleDraw,
     fitView,
     zoomBy,
-    clearSelection: () => {
-      selection = new Set()
-      callbacks.onSelectionChange(0)
-      scheduleDraw()
-    },
-    selectionCount: () => selection.size,
-    syncFromArt,
     /** 参考图层（半透明叠原图"照着描"）：`show=false` 时不叠，但放大镜仍用这张图 */
     setReference: (img, show) => {
       refImage = img

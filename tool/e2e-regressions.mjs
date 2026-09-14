@@ -11,7 +11,7 @@
  * 用法：node tool/e2e-regressions.mjs [--app <html 路径>]
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -335,6 +335,25 @@ await check('幽灵引用：文档提到的页内 API 方法必须真的存在�
   assert(r.changes === 1, `应报告 1 条算子改动，实际 ${r.changes}`)
   assert(r.pngOk, 'renderBlank 未返回 PNG dataURL')
   return `renderBlank 可用（${r.w}×${r.h} / ${r.changes} 条改动）`
+})
+
+/*
+ * 上一条只查 6 个**写死**的方法名，而契约面远大于此——`docs/AGENT_API.md` 里列了 46 个。
+ * 这条把它变成**全量**核对：从手册正文里抓出所有 `ps.<name>(` 提到的方法，逐个确认
+ * `window.pixelArtStudio` 上真的存在。文档多写一个名字、或实现改名后忘了改文档，都会变红。
+ *
+ * 为什么值得单独一条：本项目栽过同一类——`AGENT-QUICKSTART` 的 L3 示例写着 core 有 `render` 导出，
+ * 实际没有，照抄的脚本第一行就报错。那次是运行期实跑才发现的，静态 grep 看不出来。
+ */
+await check('契约面完整：docs/AGENT_API.md 里写到的每个页内方法都真的存在', async () => {
+  const doc = readFileSync(join(ROOT, 'docs', 'AGENT_API.md'), 'utf8')
+  const named = [...new Set([...doc.matchAll(/ps\.([A-Za-z]+)\s*\(/g)].map((m) => m[1]))]
+  assert(named.length >= 40, `从手册里只解析出 ${named.length} 个方法名，解析规则可能失效了`)
+  const absent = JSON.parse(
+    await cdp.eval(`JSON.stringify(${JSON.stringify(named)}.filter((m) => typeof window.pixelArtStudio[m] !== 'function'))`),
+  )
+  assert(absent.length === 0, `手册里写了但页内 API 没有这些方法：${absent.join(', ')}`)
+  return `手册里的 ${named.length} 个方法全部存在`
 })
 
 await check('getInfo().hasEdits 反映真实编辑状态（不再恒为 false）', async () => {

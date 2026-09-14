@@ -1008,6 +1008,7 @@ function writePrefs(s: {
 
 boot()
 
-// 供自动化接口与调试使用
-// 供自动化接口与调试使用（`history` 暴露出来是为了让 e2e 能断言"双上限真的生效"）
+// 供调试与端到端断言用的内部挂钩（**不是**对外契约——对外请用 window.pixelArtStudio）。
+// `history` 在这里暴露，是因为撤销栈的双上限只能从内部读到（`ps` 只给 artHash/getInfo）：
+// 详见 tool/e2e.mjs 里那条"撤销栈按上限记账"的断言。
 ;(window as unknown as { __app?: unknown }).__app = { app, store, canvasApi, history }
