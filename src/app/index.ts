@@ -210,6 +210,22 @@ const magCanvas = document.getElementById('magnifier-canvas') as HTMLCanvasEleme
 const canvasApi = createCanvas(canvasHost, canvasEl, {
   onCommit: commitWithHistory,
   onPickColor: (hex) => {
+    /*
+     * 合成底色吸管的**去向**。`onPickFromCanvas` 在那边把 pickIntoMatte 置位、并提示用户
+     * "颜色会填到合成底色"，这里必须真的消费它——否则颜色悄悄写进主色，而提示语说的是另回事，
+     * 界面没有任何错误信号（这正是本项目最忌讳的一类）。e2e 有一条真实鼠标断言守在这里。
+     */
+    if (pickIntoMatte) {
+      pickIntoMatte = false
+      const back = pickRestoreTool
+      pickRestoreTool = null
+      // 一次性动作：取完把工具还原，别让用户莫名停在吸管上（下一次点击又变成取色）
+      if (back) store.set('tool', back)
+      addRecent(hex)
+      patchParams({ matteColor: hex })
+      toast(`合成底色已取为 ${hex}`)
+      return
+    }
     store.setMany({ primary: hex, transparent: false })
     renderAll()
   },
@@ -345,8 +361,14 @@ let mattePickerJustOpened = false
  *
  * 画布的取色回调只会把颜色写进**主色**；而合成底色的取色器里也有一个吸管按钮，
  * 不区分的话用户在那边点吸管、再去画布点一格，颜色会悄悄进主色（又一处"静默失效"）。
+ * 置位在 `onPickFromCanvas`，消费在画布装配处的 `onPickColor`，两者必须成对。
  */
 let pickIntoMatte = false
+/**
+ * 进吸管之前正在用的工具。吸管是**一次性**动作（提示语就是"点一格"），
+ * 取完/取消后还原，否则用户会莫名停在吸管上——下一次点击又变成取色，而不是继续画。
+ */
+let pickRestoreTool: string | null = null
 
 /** 取色器当前编辑的那路颜色的值（创建实例与每次 update 都用它，避免两处各写一遍判断） */
 function currentPickerValue(): string {
@@ -395,7 +417,9 @@ function pickerCallbacks(getTarget: () => PickerTarget | 'matte'): ColorPickerCa
     },
     isTransparent: () => store.get('transparent'),
     onPickFromCanvas: () => {
-      pickIntoMatte = getTarget() === 'matte'
+      const matte = getTarget() === 'matte'
+      pickIntoMatte = matte
+      pickRestoreTool = store.get('tool')
       store.set('tool', 'picker')
       toast(pickIntoMatte ? '吸管已就绪：到画布点一格，颜色会填到「合成底色」（Esc 取消）' : '吸管已就绪：到画布上点一格即可取色（Esc 取消）')
       renderAll()
@@ -404,6 +428,7 @@ function pickerCallbacks(getTarget: () => PickerTarget | 'matte'): ColorPickerCa
       if (getTarget() === 'matte') {
         mattePickerOpen = false
         pickIntoMatte = false
+        pickRestoreTool = null
         renderAll()
       } else {
         store.set('showPicker', false)
@@ -1550,6 +1575,17 @@ window.addEventListener('keydown', (e) => {
     return
   }
   if (e.ctrlKey || e.metaKey || e.altKey) return
+  /*
+   * 吸管提示语里承诺了「Esc 取消」，这里必须兑现（否则又是一句空头承诺）：
+   * 退出取色、还原进吸管前的工具，并清掉"取到的颜色写进合成底色"的待办标记。
+   */
+  if (k === 'escape' && store.get('tool') === 'picker') {
+    store.set('tool', pickRestoreTool ?? 'pencil')
+    pickRestoreTool = null
+    pickIntoMatte = false
+    renderAll()
+    return
+  }
   const toolKey: Record<string, string> = { b: 'pencil', m: 'selection', g: 'bucket', i: 'picker', u: 'rect', o: 'ellipse' }
   if (toolKey[k]) {
     store.set('tool', toolKey[k])

@@ -702,6 +702,92 @@ async function main() {
       return `display=block / 非空像素 ${mag.painted} / 悬停 ${mag.hover}`
     })
 
+    /*
+     * 合成底色吸管的**去向**：这守的是"静默失效"的另一种形态——状态被设置了、提示语也说了，
+     * 但全仓没有读取者。
+     *
+     * `pickIntoMatte` 原先只在 4 处被赋值，唯一一次"读取"是在 toast 文案里；画布的
+     * `onPickColor` 从不看它。于是用户按提示点一格，颜色**悄悄写进了主色**，而合成底色纹丝不动——
+     * 界面没有任何错误信号，这比直接报错更难发现。
+     *
+     * 这条用真实鼠标走完整链路（取色盘吸管 → 画布点一格），断言的是"颜色去了哪一路"，而不是
+     * "点击有没有反应"——后者在错误实现下同样是绿的。
+     */
+    await cdp.eval(`(() => {
+      const ps = window.pixelArtStudio
+      ps.newCanvas({ width: 16, height: 16, color: '#3a7bd5' })
+      ps.setParams({ matteColor: '#101010' })
+      ps.setPrimary('#00ff00')
+      return true
+    })()`)
+    await sleep(250)
+    // 前面的"收起 / 点标签"断言会改变取色盘开合状态，这里先确保它是打开的
+    if (!(await cdp.eval(`!!document.querySelector('#panel-params .cp')`))) {
+      const sw = JSON.parse(await cdp.eval(`(() => {
+        const el = document.querySelector('[data-testid="matte-swatch"]')
+        el.scrollIntoView({ block: 'center' })
+        const r = el.getBoundingClientRect()
+        return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
+      })()`))
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: sw.x, y: sw.y, button: 'left', clickCount: 1 })
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: sw.x, y: sw.y, button: 'left', clickCount: 1 })
+      await sleep(250)
+    }
+    const straw = JSON.parse(await cdp.eval(`(() => {
+      const el = document.querySelector('#panel-params .cp .cp-icon-btn')
+      if (!el) return JSON.stringify({ error: '取色盘里找不到吸管按钮' })
+      el.scrollIntoView({ block: 'center' })
+      const r = el.getBoundingClientRect()
+      const x = r.left + r.width / 2, y = r.top + r.height / 2
+      const top = document.elementFromPoint(x, y)
+      return JSON.stringify({ x, y, hitSelf: top ? el.contains(top) || top === el : false })
+    })()`))
+    if (!straw.error) {
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: straw.x, y: straw.y, button: 'left', clickCount: 1 })
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: straw.x, y: straw.y, button: 'left', clickCount: 1 })
+      await sleep(200)
+    }
+    const strawCell = JSON.parse(await cdp.eval(`(() => {
+      const v = JSON.parse(document.getElementById('board').dataset.lastDraw)
+      const r = document.getElementById('board').getBoundingClientRect()
+      return JSON.stringify({ x: r.left + v.ox + (8 + 0.5) * v.cell, y: r.top + v.oy + (8 + 0.5) * v.cell })
+    })()`))
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: strawCell.x, y: strawCell.y, button: 'left', clickCount: 1 })
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: strawCell.x, y: strawCell.y, button: 'left', clickCount: 1 })
+    await sleep(250)
+    const strawPick = JSON.parse(await cdp.eval(`(() => {
+      const i = window.pixelArtStudio.getInfo()
+      return JSON.stringify({ matte: i.params.matteColor, primary: i.primary, tool: i.tool })
+    })()`))
+    check('合成底色吸管（真实鼠标）：取到的颜色写进合成底色，不改写主色', () => {
+      assert(!straw.error, straw.error)
+      assert(straw.hitSelf, `吸管按钮被盖住/点不到：落点 ${Math.round(straw.x)},${Math.round(straw.y)}`)
+      assert(
+        String(strawPick.primary).toLowerCase() === '#00ff00',
+        `吸管取色不应改写主色，实际 ${strawPick.primary}（颜色被路由到主色 = pickIntoMatte 没被消费）`,
+      )
+      assert(
+        String(strawPick.matte).toLowerCase() === '#3a7bd5',
+        `吸管取色应写进合成底色，实际 ${strawPick.matte}（提示语承诺了却没兑现）`,
+      )
+      return `合成底色 → ${strawPick.matte}；主色保持 ${strawPick.primary}；工具 ${strawPick.tool}`
+    })
+
+    /*
+     * 提示语里的「（Esc 取消）」也要能兑现：吸管的提示写了这句，而 Esc 原先只是清选区，
+     * 工具会一直停在 picker 上。这里用真实按键验证它真的退出取色。
+     */
+    await cdp.eval(`window.pixelArtStudio.setTool('picker')`)
+    await sleep(120)
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await sleep(200)
+    const escTool = await cdp.eval(`window.pixelArtStudio.getInfo().tool`)
+    check('吸管：提示语承诺的「Esc 取消」真的能退出取色（回到画笔）', () => {
+      assert(escTool === 'pencil', `Esc 应退出吸管工具，实际停在 ${escTool}`)
+      return 'Esc → pencil'
+    })
+
     check('运行期无控制台错误', () => {
       assert(consoleErrors.length === 0, `控制台报错 ${consoleErrors.length} 条：${consoleErrors.slice(0, 2).join(' | ')}`)
       return '0 条'
