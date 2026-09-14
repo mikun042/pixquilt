@@ -195,7 +195,12 @@ export const PARAM_SPECS: ParamSpec[] = [
   { key: 'customPalette', type: 'string', desc: '自定义色板（#rrggbb 数组，≤256）', default: [], when: 'paletteMode=custom' },
   { key: 'dither', type: 'enum', desc: '抖动方式（开启时自动关闭杂色清理）', enum: ['none', 'floyd', 'bayer'], default: 'none' },
   { key: 'ditherStrength', type: 'number', desc: '抖动强度', min: 0, max: 100, default: 100, when: 'dither!=none' },
-  { key: 'cleanup', type: 'boolean', desc: '杂色清理：把孤立小色块并入邻域主色', default: true },
+  {
+    key: 'cleanup',
+    type: 'boolean',
+    desc: '杂色清理：把孤立小色块并入邻域主色。注意它**只改颜色归属，不删除脱离主体的小碎片**（不减少连通块数）——去碎片请在上游处理或用 --no-cleanup 自行保留',
+    default: true,
+  },
   { key: 'cleanupMinSize', type: 'number', desc: '小于该格数的连通色块会被并入', min: CLEANUP_MIN_SIZE_MIN, max: CLEANUP_MIN_SIZE_MAX, default: 2, when: 'cleanup=true' },
   { key: 'brightness', type: 'number', desc: '亮度调整（转换前）', min: -100, max: 100, default: 0 },
   { key: 'contrast', type: 'number', desc: '对比度调整（转换前）', min: -100, max: 100, default: 0 },

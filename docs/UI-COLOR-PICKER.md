@@ -66,7 +66,7 @@ npm run ref:analyze -- "C:\Users\<用户名>\Pictures\Screenshots\屏幕截图 2
 | `src/app/store.ts` | `el()` / `clear()` 两个 DOM 小工具（**注意在 `src/app/` 下，不在 `ui/` 里**） | — |
 | `src/core/color.ts` | 颜色换算（`hexToRgb` / `rgbToHsv` / `hsvToRgb` / `colorTextOn`）——**不要在这里改 UI 相关的东西** | — |
 
-**只改 UI 时，绝大多数改动落在 `colorpicker.ts` 与 `style.css`。** 不要动 `src/core/*`（算法层，88 项单测守着）。
+**只改 UI 时，绝大多数改动落在 `colorpicker.ts` 与 `style.css`。** 不要动 `src/core/*`（算法层，106 项单测守着）。
 
 ### 1.2 参考图实测特征（已量化，可直接用）
 
@@ -299,7 +299,7 @@ npm run typecheck      # 必须 0 错（tsc noUnusedLocals 开着，未用变量
 npm run build          # 产出单文件 HTML，并核对 dist 与根目录副本哈希一致
 npm run e2e:picker     # 取色器专项：17 项（几何/方位/标签/滑条填充/数值框隔离/防选词/零尺寸免疫）
 npm run e2e:slider     # 数值滑条专项：12 项（六行都能拖、拖动基准是轨道、零尺寸免疫）
-npm run verify         # 全套（9 段）：typecheck + 88 单测 + build + 32 自检 + 34 端到端 + 17 取色器 + 12 滑条 + 24 回归 + 10 PDF
+npm run verify         # 全套（9 段）：typecheck + 106 单测 + build + 40 自检 + 34 端到端 + 17 取色器 + 12 滑条 + 24 回归 + 10 PDF
 ```
 
 **只跑 `e2e:picker` 是不够的**：`npm run verify` 里还有"UI 装配/顶栏分组/导入导出"等断言，
@@ -378,7 +378,7 @@ npm run verify         # 全套（9 段）：typecheck + 88 单测 + build + 32 
 | 是否只改取色器 | 用户明确要求的是"**调色界面**"。若要顺带改全站配色（顶栏/左栏/参数面板/状态栏）或左栏宽度，请先确认 |
 | 是否引入外部资源 | **禁止**：产物必须保持"单文件、双击即用、不联网"。不要加 CDN、外部字体、外链图片 |
 | 是否换图标方案 | 取色器与工具条的**吸管已是内联 SVG**（`src/app/ui/icons.ts`）；其余图标仍是 Unicode 字符（`∅`、`▦`、`✚`）。若继续换 SVG，注意单文件内联与体积 |
-| 是否动算法层 | **不要动** `src/core/*`。那是 88 项单测 + 32 项自检守着的算法层 |
+| 是否动算法层 | **不要动** `src/core/*`。那是 106 项单测 + 40 项自检守着的算法层 |
 | 依赖 | 不要新增 npm 依赖。现有 UI 是零框架 vanilla TS + `el()` 工具 |
 
 ## 8. 一句话交接

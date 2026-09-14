@@ -14,7 +14,7 @@ node tool/artc.mjs --in 素材目录 --out 输出 --palette beads16 --long-edge 
 node tool/artc.mjs --in 素材目录 --out 输出 --palette gameboy --size 32x32 --alpha --sheet 4
 
 # ② 自检与自省（先确认环境与能力，再写脚本）
-node tool/artc.mjs --selftest      # 32 项链路自检，无需任何素材
+node tool/artc.mjs --selftest      # 40 项链路自检，无需任何素材
 node tool/artc.mjs --describe     # 打印完整的算子/参数/能力 JSON
 
 # ③ 页内 API（浏览器自动化 / Playwright / CDP evaluate）
@@ -119,7 +119,7 @@ node tool/artc.mjs --ops '[{"op":"eraseColor","color":"#ffffff"},{"op":"trim"}]'
 | `customPalette` | string | — | `[]` | 自定义色板（#rrggbb 数组，≤256）（paletteMode=custom） |
 | `dither` | enum | `none` / `floyd` / `bayer` | `"none"` | 抖动方式（开启时自动关闭杂色清理） |
 | `ditherStrength` | number | 0 … 100 | `100` | 抖动强度（dither!=none） |
-| `cleanup` | boolean | — | `true` | 杂色清理：把孤立小色块并入邻域主色 |
+| `cleanup` | boolean | — | `true` | 杂色清理：把孤立小色块并入邻域主色。注意它**只改颜色归属，不删除脱离主体的小碎片**（不减少连通块数）——去碎片请在上游处理或用 --no-cleanup 自行保留 |
 | `cleanupMinSize` | number | 1 … 10 | `2` | 小于该格数的连通色块会被并入（cleanup=true） |
 | `brightness` | number | -100 … 100 | `0` | 亮度调整（转换前） |
 | `contrast` | number | -100 … 100 | `0` | 对比度调整（转换前） |

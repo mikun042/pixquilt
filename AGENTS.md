@@ -19,7 +19,7 @@
 `src/` 零第三方依赖。下面这些**开箱即用**：
 
 ```bash
-node tool/artc.mjs --selftest     # 32 项链路自检，不需要素材、不需要装依赖
+node tool/artc.mjs --selftest     # 40 项链路自检，不需要素材、不需要装依赖
 node tool/artc.mjs --describe     # 打印全部能力/算子/参数（JSON，冷启动先读这个）
 node tool/quickstart.mjs          # 全链路跑一遍并产出真实文件
 node tool/artc.mjs --in 素材目录 --out 输出 ...   # 直接批量出图
