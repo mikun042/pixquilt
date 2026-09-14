@@ -64,8 +64,3 @@ export function safeFileBase(name: string | undefined): string {
   if (base.length > 120) base = base.slice(0, 120)
   return base || 'pixel-art'
 }
-
-/** 把 `</script>` 之类会在 HTML 里提前收尾的序列转义（内联脚本时用） */
-export function escapeForInlineScript(code: string): string {
-  return code.replace(/<\/script>/gi, '<\\/script>')
-}

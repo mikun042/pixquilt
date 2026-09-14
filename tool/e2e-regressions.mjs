@@ -361,30 +361,40 @@ await check('P2-05 画笔后撤销：像素与色板、artHash 全部回到起�
 
 /* ---------------------------------------------- P2-06 窄屏抽屉 */
 
-await check('P2-06 窄屏：侧栏收成抽屉且有开关可展开/收起', async () => {
+await check('P2-06 窄屏：侧栏收成抽屉，栏外箭头可展开/收起', async () => {
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 700, height: 800, deviceScaleFactor: 1, mobile: false })
   await sleep(350)
   const r = JSON.parse(await cdp.eval(`(async () => {
     const btn = document.querySelector('[data-testid="drawer-tools"]')
-    if (!btn) return JSON.stringify({ error: '没有抽屉开关' })
-    const vis = btn.getBoundingClientRect().width > 0
+    const other = document.querySelector('[data-testid="drawer-panel"]')
+    if (!btn) return JSON.stringify({ error: '没有折叠开关' })
     const rail = document.getElementById('rail-left')
-    const before = getComputedStyle(rail).display
-    btn.click()
-    await new Promise((res) => setTimeout(res, 250))
-    const opened = getComputedStyle(rail).display
-    btn.click()
-    await new Promise((res) => setTimeout(res, 250))
-    return JSON.stringify({ vis, before, opened, closed: getComputedStyle(rail).display })
+    const right = document.getElementById('rail-right')
+    const scrim = document.getElementById('drawer-scrim')
+    const w = (e) => Math.round(e.getBoundingClientRect().width)
+    const wait = () => new Promise((res) => setTimeout(res, 250))
+    const snap = () => ({ rail: w(rail), right: w(right), btn: w(btn), arrow: btn.textContent.trim(),
+      scrim: !!(scrim && !scrim.hidden), disp: getComputedStyle(rail).display })
+    const out = { initial: snap() }
+    btn.click(); await wait(); out.opened = snap()
+    other.click(); await wait(); out.switched = snap()   // 窄屏一次只开一个
+    btn.click(); await wait(); out.reopened = snap()
+    btn.click(); await wait(); out.closed = snap()
+    return JSON.stringify(out)
   })()`))
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false })
   await sleep(250)
   assert(!r.error, r.error)
-  assert(r.vis, '窄屏下抽屉开关不可见')
-  assert(r.before === 'none', `侧栏初始应收起，实际 ${r.before}`)
-  assert(r.opened !== 'none', `点开关后应展开，实际 ${r.opened}`)
-  assert(r.closed === 'none', `再点应收起，实际 ${r.closed}`)
-  return `开关可点；收起 → ${r.opened} → ${r.closed}`
+  // 窄屏初始两侧都收起（整栏隐藏），但栏外的箭头必须还在——否则面板永远打不开
+  assert(r.initial.rail === 0, `窄屏初始应收起，实际 ${r.initial.rail}`)
+  assert(r.initial.btn > 0, '窄屏收起态下箭头必须仍可见（否则面板永远打不开）')
+  assert(r.initial.arrow === '▶', `收起态箭头应指向展开方向 ▶，实际 ${r.initial.arrow}`)
+  assert(r.opened.rail > 100, `点箭头后应展开抽屉，实际 ${r.opened.rail}`)
+  assert(r.opened.scrim, '抽屉展开时应显示遮罩')
+  assert(r.opened.arrow === '◀', `展开态箭头应指向收纳方向 ◀，实际 ${r.opened.arrow}`)
+  assert(r.switched.right > 100 && r.switched.rail === 0, '窄屏一次只开一个抽屉（开右栏应把左栏收掉）')
+  assert(r.closed.rail === 0 && !r.closed.scrim, `再点应收起并隐藏遮罩，实际 ${r.closed.rail} / scrim=${r.closed.scrim}`)
+  return `收起 ${r.initial.rail} → 展开 ${r.opened.rail}（遮罩 ${r.opened.scrim}）→ 切换 → 收起 ${r.closed.rail}；箭头 ▶→◀`
 })
 
 /* ---------------------------------------------- 审阅发现的幽灵引用 / 死代码 */
@@ -622,7 +632,7 @@ await check('空状态：直接给出「新建空白画布」入口，且真实�
   return `得到 ${info.width}×${info.height}，空状态已移除`
 })
 
-await check('桌面宽度：工具/参数按钮真的折叠侧栏（不再"按了没反应"）', async () => {
+await check('桌面宽度：栏外箭头真的折叠/展开（收起后箭头贴到画布边缘，仍可点回来）', async () => {
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false })
   await sleep(300)
   const r = JSON.parse(await cdp.eval(`(async () => {
@@ -630,32 +640,43 @@ await check('桌面宽度：工具/参数按钮真的折叠侧栏（不再"按�
     const panel = document.querySelector('[data-testid="drawer-panel"]')
     const rail = document.getElementById('rail-left')
     const right = document.querySelector('.right')
-    const w = (e) => Math.round(e.getBoundingClientRect().width)
-    const before = { rail: w(rail), right: w(right) }
-    tools.click()
-    await new Promise((res) => setTimeout(res, 200))
-    const afterTools = { rail: w(rail), right: w(right) }
-    tools.click()
-    await new Promise((res) => setTimeout(res, 200))
-    const restored = { rail: w(rail), right: w(right) }
-    panel.click()
-    await new Promise((res) => setTimeout(res, 200))
-    const afterPanel = { rail: w(rail), right: w(right) }
-    panel.click()
-    await new Promise((res) => setTimeout(res, 200))
-    return JSON.stringify({ before, afterTools, restored, afterPanel, final: { rail: w(rail), right: w(right) } })
+    const box = (e) => { const b = e.getBoundingClientRect(); return { w: Math.round(b.width), l: Math.round(b.left), r: Math.round(b.right) } }
+    const snap = () => ({ rail: box(rail).w, right: box(right).w,
+      toolsBtn: box(tools).w, toolsX: box(tools).l, railRight: box(rail).r,
+      panelBtn: box(panel).w, panelX: box(panel).l, rightLeft: box(right).l,
+      toolsArrow: tools.textContent.trim(), panelArrow: panel.textContent.trim() })
+    const wait = () => new Promise((res) => setTimeout(res, 150))
+    const out = { before: snap() }
+    tools.click(); await wait(); out.afterTools = snap()
+    tools.click(); await wait(); out.restored = snap()
+    panel.click(); await wait(); out.afterPanel = snap()
+    panel.click(); await wait(); out.final = snap()
+    return JSON.stringify(out)
   })()`))
-  assert(r.before.rail > 0 && r.before.right > 0, `桌面下两侧栏应可见：${JSON.stringify(r.before)}`)
-  assert(r.afterTools.rail === 0, `点「工具」应收起工具列，实际宽 ${r.afterTools.rail}`)
-  assert(r.afterTools.right > 0, '收起工具列不该连带收起参数列')
-  assert(r.restored.rail > 0, `再点应恢复工具列，实际宽 ${r.restored.rail}`)
-  assert(r.afterPanel.right === 0, `点「参数」应收起参数列，实际宽 ${r.afterPanel.right}`)
-  assert(r.afterPanel.rail > 0, '收起参数列不该连带收起工具列')
-  assert(r.final.right > 0, `再点应恢复参数列，实际宽 ${r.final.right}`)
-  return `工具列 ${r.before.rail}→0→${r.restored.rail}；参数列 ${r.before.right}→0→${r.final.right}`
+  assert(r.before.rail > 100 && r.before.right > 100, `桌面下两侧栏应展开：${JSON.stringify(r.before)}`)
+  // 展开时开关浮在**栏外**：左栏开关在栏的右边、右栏开关在栏的左边
+  assert(r.before.toolsX >= r.before.railRight, `左栏箭头应在栏外（画布边），实际 x=${r.before.toolsX} < 栏右边 ${r.before.railRight}`)
+  assert(r.before.panelX + r.before.panelBtn <= r.before.rightLeft, `右栏箭头应在栏外，实际 x=${r.before.panelX} 未在栏左边 ${r.before.rightLeft} 之外`)
+
+  assert(r.afterTools.rail === 0, `点左栏开关应收起（整栏隐藏），实际宽 ${r.afterTools.rail}`)
+  assert(r.afterTools.right > 100, '收起左栏不该连带收起右栏')
+  assert(r.afterTools.toolsBtn > 0, '收起后箭头必须仍可见（它是唯一能再展开的入口）')
+  assert(r.afterTools.toolsX <= 10, `收起后箭头应贴到画布左边缘，实际 x=${r.afterTools.toolsX}`)
+  assert(r.afterTools.toolsArrow === '▶' && r.before.toolsArrow === '◀', `左栏箭头方向错了：${r.before.toolsArrow} → ${r.afterTools.toolsArrow}（应为 ◀ → ▶）`)
+  assert(r.restored.rail > 100, `再点应恢复左栏，实际宽 ${r.restored.rail}`)
+  assert(r.restored.toolsArrow === '◀', `展开后左栏箭头应指回收纳方向，实际 ${r.restored.toolsArrow}`)
+
+  assert(r.afterPanel.right === 0, `点右栏开关应收起（整栏隐藏），实际宽 ${r.afterPanel.right}`)
+  assert(r.afterPanel.rail > 100, '收起右栏不该连带收起左栏')
+  assert(r.afterPanel.panelBtn > 0, '收起后右栏箭头必须仍可见')
+  assert(r.afterPanel.panelX > r.before.panelX, `收起后右栏箭头应贴到画布右边缘（x 变大），实际 ${r.before.panelX} → ${r.afterPanel.panelX}`)
+  assert(r.afterPanel.panelArrow === '◀' && r.before.panelArrow === '▶', `右栏箭头方向错了：${r.before.panelArrow} → ${r.afterPanel.panelArrow}（应为 ▶ → ◀）`)
+  assert(r.final.right > 100, `再点应恢复右栏，实际宽 ${r.final.right}`)
+  assert(r.final.panelArrow === '▶', `展开后右栏箭头应指回收纳方向，实际 ${r.final.panelArrow}`)
+  return `左栏 ${r.before.rail}→0→${r.restored.rail}（箭头 ◀→▶→◀）；右栏 ${r.before.right}→0→${r.final.right}（箭头 ▶→◀→▶）`
 })
 
-await check('桌面宽度：工具/参数按钮各自独立折叠，能同时收起（不再互相顶开）', async () => {
+await check('桌面宽度：两侧各自独立折叠，能同时收起（不再互相顶开）', async () => {
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false })
   await sleep(300)
   /*
@@ -663,6 +684,9 @@ await check('桌面宽度：工具/参数按钮各自独立折叠，能同时收
    * 根因是折叠状态存成了单个三值变量 'none' | 'tools' | 'panel'，
    * 四个组合里"两边都收起"不可达——赋值 'panel' 顺手把 'no-rail' 摘掉了。
    * 所以这条断言必须成对检查"另一个没被顶开"，只测单独折叠是抓不到的。
+   *
+   * 收起态的宽度是 0（整栏隐藏）——开关浮在栏外，不会被一起藏掉，
+   * 所以这里判定"已收起"就是宽度为 0。
    */
   const r = JSON.parse(await cdp.eval(`(() => {
     const tools = document.querySelector('[data-testid="drawer-tools"]')
@@ -672,7 +696,7 @@ await check('桌面宽度：工具/参数按钮各自独立折叠，能同时收
     const main = document.querySelector('.main')
     const host = document.getElementById('canvas-host')
     const w = (e) => Math.round(e.getBoundingClientRect().width)
-    const snap = () => ({ rail: w(rail), right: w(right), host: w(host), main: w(main) })
+    const snap = () => ({ rail: w(rail), right: w(right), host: w(host), main: w(main), toolsBtn: w(tools), panelBtn: w(panel) })
     const out = { initial: snap() }
     tools.click(); out.afterTools = snap()
     panel.click(); out.bothHidden = snap()          // ← 这里曾把工具列顶回来
@@ -688,24 +712,27 @@ await check('桌面宽度：工具/参数按钮各自独立折叠，能同时收
   })()`))
 
   const base = r.initial
-  assert(base.rail > 0 && base.right > 0, `桌面下两侧栏应可见：${JSON.stringify(base)}`)
+  const collapsed = (v) => v === 0
+  assert(base.rail > 100 && base.right > 100, `桌面下两侧栏应展开：${JSON.stringify(base)}`)
 
-  assert(r.afterTools.rail === 0, `点「工具」应收起工具列，实际 ${r.afterTools.rail}`)
-  assert(r.afterTools.right > 0, '收起工具列不该连带收起参数列')
+  assert(collapsed(r.afterTools.rail), `点左栏开关应收起（整栏隐藏），实际 ${r.afterTools.rail}`)
+  assert(r.afterTools.right > 100, '收起左栏不该连带收起右栏')
 
   // 核心回归点：关第二个不该把第一个顶回来
-  assert(r.bothHidden.rail === 0, `两边同时收起时工具列必须仍为 0（曾被顶回 ${r.bothHidden.rail}）`)
-  assert(r.bothHidden.right === 0, `两边同时收起时参数列必须为 0，实际 ${r.bothHidden.right}`)
+  assert(collapsed(r.bothHidden.rail), `两边同时收起时左栏必须仍为隐藏（曾被顶回 ${r.bothHidden.rail}）`)
+  assert(collapsed(r.bothHidden.right), `两边同时收起时右栏必须仍为隐藏，实际 ${r.bothHidden.right}`)
   assert(r.bothHidden.host >= r.bothHidden.main - 4, `两栏收起后画布应占满：canvas ${r.bothHidden.host} / main ${r.bothHidden.main}`)
+  // 都收起时箭头仍要在可点区域里（它们浮在栏外，是唯一能再展开的入口）
+  assert(r.bothHidden.toolsBtn > 0 && r.bothHidden.panelBtn > 0, '两侧都收起后箭头仍须可见可点')
 
-  assert(r.panelBack.right > 0 && r.panelBack.rail === 0, '单独恢复参数列时工具列应保持收起')
-  assert(r.restored.rail > 0 && r.restored.right > 0, '两次恢复后两侧都应回到可见')
+  assert(r.panelBack.right > 100 && collapsed(r.panelBack.rail), '单独恢复右栏时左栏应保持收起')
+  assert(r.restored.rail > 100 && r.restored.right > 100, '两次恢复后两侧都应回到展开')
 
-  assert(r.panelOnly.right === 0 && r.panelOnly.rail > 0, '先关参数：参数列为 0、工具列保持可见')
-  assert(r.bothHidden2.rail === 0, `反向顺序也要能同时收起工具列，实际 ${r.bothHidden2.rail}`)
-  assert(r.bothHidden2.right === 0, `反向顺序也要能同时收起参数列，实际 ${r.bothHidden2.right}`)
-  assert(r.toolsBack.rail > 0 && r.toolsBack.right === 0, '单独恢复工具列时参数列应保持收起')
-  assert(r.restored2.rail > 0 && r.restored2.right > 0, '反向恢复后两侧都应回到可见')
+  assert(collapsed(r.panelOnly.right) && r.panelOnly.rail > 100, '先关右栏：右栏应为窄边、左栏保持展开')
+  assert(collapsed(r.bothHidden2.rail), `反向顺序也要能同时收起左栏，实际 ${r.bothHidden2.rail}`)
+  assert(collapsed(r.bothHidden2.right), `反向顺序也要能同时收起右栏，实际 ${r.bothHidden2.right}`)
+  assert(r.toolsBack.rail > 100 && collapsed(r.toolsBack.right), '单独恢复左栏时右栏应保持收起')
+  assert(r.restored2.rail > 100 && r.restored2.right > 100, '反向恢复后两侧都应回到展开')
 
   return `正向 ${base.rail}/${base.right} → 双收 ${r.bothHidden.rail}/${r.bothHidden.right} → 还原；反向亦然`
 })

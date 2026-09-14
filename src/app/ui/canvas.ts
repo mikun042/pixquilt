@@ -9,6 +9,7 @@
  *  - 悬停坐标走回调，不触发 store（旧项目为此专门做了一个事件总线，这里一个入参就够了）。
  */
 import { ALPHA_THRESHOLD, type PixelArt } from '../../core/types.ts'
+import { PALETTE_MAX } from '../../core/limits.ts'
 import { clampCell, fitViewState, pointToCellClamped, zoomAtPoint, type ViewState } from '../../core/viewport.ts'
 import { brushCells, lineCells, rasterizeEllipse, rasterizeRect } from '../../core/ops.ts'
 import { store } from '../store.ts'
@@ -325,12 +326,12 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
     artDirty = true
   }
 
-  /** 色板扩色：与 core 的规则一致（≤256，超出不再新增） */
+  /** 色板扩色：上限走 core 的 `PALETTE_MAX`（超出不再新增） */
   function ensurePaletteColor(hex: string): number {
     const norm = hex.toLowerCase()
     const found = palette.findIndex((c) => c.toLowerCase() === norm)
     if (found >= 0) return found
-    if (palette.length >= 256) return -1
+    if (palette.length >= PALETTE_MAX) return -1
     palette = [...palette, norm]
     return palette.length - 1
   }

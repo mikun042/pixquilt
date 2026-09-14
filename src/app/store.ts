@@ -10,8 +10,6 @@
  *  - `set()` 只通知关心该 key 的订阅者；`setMany()` 用于一次交互改多个字段（只发一轮通知）；
  *  - `subscribe()` 返回取消函数，UI 模块在初始化时登记、销毁时取消。
  */
-import { ALPHA_THRESHOLD } from '../core/limits.ts'
-import { normalizeHex } from '../core/types.ts'
 
 export interface EditorState {
   /** 当前画布（null = 未导入）。这里用 unknown 是为了让 store 不依赖 core 的具体类型，
@@ -31,7 +29,6 @@ export interface EditorState {
   zoomPct: number
   hoverText: string
   clipboardHas: boolean
-  mode: 'photo' | 'beads' | 'asset'
 }
 
 export const initialState: EditorState = {
@@ -49,7 +46,6 @@ export const initialState: EditorState = {
   zoomPct: 100,
   hoverText: '',
   clipboardHas: false,
-  mode: 'photo',
 }
 
 type AnyKey = keyof EditorState
@@ -148,11 +144,3 @@ export function el<K extends keyof HTMLElementTagNameMap>(
 export function clear(node: Element): void {
   while (node.firstChild) node.removeChild(node.firstChild)
 }
-
-/** 颜色是否合法的唯一入口（store 侧只用到这一处校验） */
-export function isValidHex(value: string): boolean {
-  return normalizeHex(value) !== null
-}
-
-/** 透明阈值转发：UI 判断"某格是否透明"时用同一个口径 */
-export const UI_ALPHA_THRESHOLD = ALPHA_THRESHOLD

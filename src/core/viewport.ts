@@ -6,7 +6,6 @@
  *
  * 坐标约定：屏幕坐标以画布元素的左上角为原点；格子坐标 (0,0) 是画布左上角那一格。
  */
-import { MAX_CANVAS_SIDE } from './limits.ts'
 
 export interface ViewState {
   /** 每格多少 CSS 像素 */
@@ -54,15 +53,6 @@ export function zoomAtPoint(v: ViewState, mx: number, my: number, factor: number
   }
 }
 
-/** 屏幕坐标 → 格子坐标；点在画布外返回 null（框选需要"夹到边界"的版本，见下） */
-export function pointToCell(v: ViewState, mx: number, my: number, cols: number, rows: number): { x: number; y: number } | null {
-  if (v.cell <= 0) return null
-  const x = Math.floor((mx - v.ox) / v.cell)
-  const y = Math.floor((my - v.oy) / v.cell)
-  if (x < 0 || x >= cols || y < 0 || y >= rows) return null
-  return { x, y }
-}
-
 /**
  * 屏幕坐标 → 格子坐标，**越界时夹到边界**。
  * 框选与形状拖拽需要它：用户从画布外的面板空白处按下去、一路拖进画布是常见操作，
@@ -77,9 +67,4 @@ export function pointToCellClamped(v: ViewState, mx: number, my: number, cols: n
     x: Math.max(0, Math.min(cols - 1, rawX)),
     y: Math.max(0, Math.min(rows - 1, rawY)),
   }
-}
-
-/** 画布尺寸合法性（UI 与 API 共用的入口校验） */
-export function isValidCanvasSize(w: number, h: number): boolean {
-  return Number.isFinite(w) && Number.isFinite(h) && w >= 1 && h >= 1 && w <= MAX_CANVAS_SIDE && h <= MAX_CANVAS_SIDE
 }

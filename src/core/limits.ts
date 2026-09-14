@@ -17,7 +17,11 @@ export const ALPHA_THRESHOLD = 128
 
 /** 撤销栈帧数上限。单独按帧数封顶会让内存随画布面积线性膨胀，故同时有字节上限 */
 export const HISTORY_MAX_FRAMES = 50
-/** 撤销栈字节上限：2048² 的单帧约 4MB，64MB ≈ 16 帧，弱机也不会 OOM */
+/**
+ * 撤销栈字节上限。**这里必须按"整帧两份字节"算**：一帧快照 = indices + 可选 alphaMask，
+ * 2048² 时各约 4MB，带 alpha 的单帧是 8MB（不是 4MB），所以 64MB 实际约 **8 帧**。
+ * 弱机也不会 OOM。两条上限先到先算（淘汰逻辑在 app 层的撤销栈里）。
+ */
 export const HISTORY_MAX_BYTES = 64 * 1024 * 1024
 
 /** 导出画布单边上限（Chromium 硬上限附近），倍数据此自动降档 */
@@ -43,6 +47,10 @@ export const SVG_RASTER_MAX = 4096
 
 /** 编辑器偏好落盘防抖（localStorage 写入很便宜，但要避免每次拖色都写） */
 export const PREFS_DEBOUNCE_MS = 400
+/*
+ * 下面两个是**给"自动草稿"预留的**（路线图 A2，尚未实现：目前刷新页面会丢失未导出的编辑）。
+ * 先放在这里是因为草稿一旦实现，参数写得就是这两个数；留个说明免得下次审计把它们当死代码删掉。
+ */
 /** 自动草稿落盘防抖：编辑时每 800ms 存一次，兼顾"别丢"与"别卡" */
 export const DRAFT_DEBOUNCE_MS = 800
 /** 草稿格式版本：格式不兼容时直接丢弃重来，不做猜测式迁移 */

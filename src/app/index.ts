@@ -4,14 +4,14 @@
  * 这一层只做三件事：**装配 UI、把用户动作翻译成 core 调用、把 core 结果写回界面**。
  * 算法一律在 src/core，页内 API 在 src/app/automation.ts；这里不实现任何像素逻辑。
  *
- * 模式（见 docs/USAGE.md「三种模式」）：
- *   photo  图片→像素：自由尺寸与自动取色
- *   beads  拼豆图纸：固定号色板 + 锁色板 + 出图纸/清单
- *   asset  游戏资产：精确尺寸 + 锚点 + 图集/引擎元数据
+ * 三种用途（图片→像素 / 拼豆图纸 / 游戏资产）**不再是独立的"工作模式"**，而是右侧的预设：
+ * 它们本来就只是"一组合适的参数"，与「风格预设」职责重叠且内容不一致（旧模式漏设
+ * cleanup、photo 模式是空对象，切换还会互相残留参数）。现在统一由 `src/app/presets.ts`
+ * 管理：出厂预设只读、用户可更新/恢复出厂/另存为自定义预设。见 docs/USAGE.md。
  */
-import { DEFAULT_PARAMS, DEFAULT_PREFS, STYLE_PRESETS, TOOLS, sanitizePrefs, type ConvertParams, type EditorPrefs, type PixelArt } from '../core/types.ts'
+import { DEFAULT_PARAMS, DEFAULT_PREFS, TOOLS, coerceParams, sanitizePrefs, type ConvertParams, type EditorPrefs, type PixelArt } from '../core/types.ts'
 import { PRESETS, getPreset, parseHexPalette, serializeHexPalette } from '../core/palettes.ts'
-import { EXPORT_SCALES } from '../core/limits.ts'
+import { EXPORT_SCALES, PREFS_DEBOUNCE_MS } from '../core/limits.ts'
 import { pixelJSONString, projectJSONString, safeFileBase } from '../core/export.ts'
 import { artToPngBlob, artToPngDataURL, artToPngDataURLSync } from './canvas-png.ts'
 import { beadPdfBrowser } from './pdf.ts'
@@ -23,15 +23,10 @@ import { colorTextOn } from '../core/color.ts'
 import { clear, el, store } from './store.ts'
 import { decodeToRgba, imageFromClipboard, makeThumbnail, looksLikeImage } from './decode.ts'
 import { createCanvas } from './ui/canvas.ts'
-import { createColorPicker, type ColorPickerApi } from './ui/colorpicker.ts'
+import { createColorPicker, type ColorPickerApi, type ColorPickerCallbacks } from './ui/colorpicker.ts'
 import { iconEl } from './ui/icons.ts'
+import { addCustomPreset, effectivePresets, removeCustomPreset, resetPreset, sameParams, updatePreset } from './presets.ts'
 import { installAutomationApi } from './automation.ts'
-
-const MODE_PRESETS: Record<string, Partial<ConvertParams>> = {
-  photo: {},
-  beads: { paletteMode: 'preset', presetPaletteId: 'beads16', lockPalette: true, dither: 'none', longEdge: 58, transparent: 'none' },
-  asset: { paletteMode: 'preset', presetPaletteId: 'pico8', exactWidth: 32, exactHeight: 32, transparent: 'alpha', downsample: 'nearest' },
-}
 
 interface AppState {
   params: ConvertParams
@@ -170,7 +165,6 @@ async function importFile(file: File): Promise<void> {
     app.source = image
     app.sourceName = file.name
     app.refImage = await rgbaToImageElement(image)
-    app.params = { ...app.params, ...MODE_PRESETS[store.get('mode')] }
     regenerate()
     toast(`已导入 ${file.name}（${image.width}×${image.height}）`)
   } catch (err) {
@@ -314,70 +308,153 @@ function swapColors(): void {
   renderAll()
 }
 
-let pickerTarget: 'primary' | 'bg' = 'primary'
-function openPicker(target: 'primary' | 'bg'): void {
+/** 左侧取色器编辑的两路**绘制色**（合成底色走参数面板里就地展开的那个，见 renderMattePicker） */
+type PickerTarget = 'primary' | 'bg'
+
+let pickerTarget: PickerTarget = 'primary'
+function openPicker(target: PickerTarget): void {
   pickerTarget = target
   store.set('showPicker', true)
   renderAll()
 }
 
-/** 取色器实例（按 Blender 取色界面的结构实现，见 ui/colorpicker.ts） */
+/** 主色 / 背景色的取色器实例（挂在左侧色板列里，见 ui/colorpicker.ts） */
 let picker: ColorPickerApi | null = null
+/** 合成底色的取色器：**就地**展开在参数面板里它那个字段下面 */
+let mattePicker: ColorPickerApi | null = null
+let mattePickerHost: HTMLElement | null = null
+let mattePickerOpen = false
+/**
+ * 「刚展开」的一次性标记：展开后要把取色盘滚进视野。
+ *
+ * 为什么需要：合成底色这个字段本来就在参数面板**靠底部**的位置，取色盘插在它下面就直接落到
+ * 视口之外——用户点完看到的画面毫无变化，反馈就是"点击没反应"。只在刚展开时滚一次，
+ * 之后的每次重渲染不再滚（否则拖动调色时会跟用户自己的滚动打架）。
+ */
+let mattePickerJustOpened = false
+/**
+ * 吸管下一步取到的颜色往哪儿写。
+ *
+ * 画布的取色回调只会把颜色写进**主色**；而合成底色的取色器里也有一个吸管按钮，
+ * 不区分的话用户在那边点吸管、再去画布点一格，颜色会悄悄进主色（又一处"静默失效"）。
+ */
+let pickIntoMatte = false
 
-/** 颜色变化：拖动中只预览，提交才进撤销栈（一次拖动 = 一条撤销） */
-function handlePickerPreview(hex: string): void {
-  if (pickerTarget === 'primary') store.set('primary', hex)
-  else store.set('bg', hex)
+/** 取色器当前编辑的那路颜色的值（创建实例与每次 update 都用它，避免两处各写一遍判断） */
+function currentPickerValue(): string {
+  return pickerTarget === 'primary' ? store.get('primary') : store.get('bg')
+}
+
+/** 预览（拖动中每帧都会调）：只改状态，**不重转管线** */
+function applyPickerPreview(target: PickerTarget | 'matte', hex: string): void {
+  if (target === 'primary') store.set('primary', hex)
+  else if (target === 'bg') store.set('bg', hex)
+  else app.params = { ...app.params, matteColor: hex }
   renderAll()
 }
 
-function handlePickerCommit(hex: string): void {
-  if (pickerTarget === 'primary') {
+/** 提交（松手 / 输入 / 点色块）：一次拖动进一条撤销 */
+function applyPickerCommit(target: PickerTarget | 'matte', hex: string): void {
+  if (target === 'primary') {
     store.setMany({ primary: hex, transparent: false })
     addRecent(hex)
-  } else {
+  } else if (target === 'bg') {
     store.setMany({ bg: hex, transparent: false })
+  } else {
+    addRecent(hex)
+    // 预览期刻意没重转，这里补上那一次（patchParams 在有原图时会走 regenerate）
+    patchParams({ matteColor: hex })
+    return
   }
   renderAll()
   canvasApi.redraw()
 }
 
-function ensurePicker(host: HTMLElement): ColorPickerApi {
-  const currentValue = pickerTarget === 'primary' ? store.get('primary') : store.get('bg')
-  if (!picker) {
-    picker = createColorPicker(host, {
-      target: pickerTarget,
-      value: currentValue,
-      groups: pickerGroups(),
-    }, {
-      onPreview: handlePickerPreview,
-      onCommit: handlePickerCommit,
-      onTransparent: () => {
-        store.setMany({ transparent: true, tool: 'pencil' })
+/** 两个取色器实例共用的一套回调；`getTarget` 让回调自己知道在编辑哪一路颜色 */
+function pickerCallbacks(getTarget: () => PickerTarget | 'matte'): ColorPickerCallbacks {
+  return {
+    onPreview: (hex) => applyPickerPreview(getTarget(), hex),
+    onCommit: (hex) => applyPickerCommit(getTarget(), hex),
+    onTransparent: () => {
+      store.setMany({ transparent: true, tool: 'pencil' })
+      renderAll()
+    },
+    // Alpha 滑条右半边：实时恢复实色（拖动中的预览，松手由 onCommit 收尾）。
+    // 特意不换 tool——用户可能正拿着填充/形状工具，切回实色不该顺手把工具改成画笔。
+    onOpaque: () => {
+      store.set('transparent', false)
+      renderAll()
+    },
+    isTransparent: () => store.get('transparent'),
+    onPickFromCanvas: () => {
+      pickIntoMatte = getTarget() === 'matte'
+      store.set('tool', 'picker')
+      toast(pickIntoMatte ? '吸管已就绪：到画布点一格，颜色会填到「合成底色」（Esc 取消）' : '吸管已就绪：到画布上点一格即可取色（Esc 取消）')
+      renderAll()
+    },
+    onClose: () => {
+      if (getTarget() === 'matte') {
+        mattePickerOpen = false
+        pickIntoMatte = false
         renderAll()
-      },
-      // Alpha 滑条右半边：实时恢复实色（拖动中的预览，松手由 onCommit 收尾）。
-      // 特意不换 tool——用户可能正拿着填充/形状工具，切回实色不该顺手把工具改成画笔。
-      onOpaque: () => {
-        store.set('transparent', false)
-        renderAll()
-      },
-      isTransparent: () => store.get('transparent'),
-      onPickFromCanvas: () => {
-        store.set('tool', 'picker')
-        toast('吸管已就绪：到画布上点一格即可取色（Esc 取消）')
-        renderAll()
-      },
-      onClose: () => {
+      } else {
         store.set('showPicker', false)
         renderAll()
-      },
-    })
+      }
+    },
+  }
+}
+
+/**
+ * 合成底色的取色器：**就地**展开在参数面板里（挂在它那个字段正下方）。
+ *
+ * 为什么不像主色/背景色那样复用左侧那一个：入口在右侧面板，取色器却在左侧出现——
+ * 用户的实际反馈就是"点了没反应"，因为他的视线在右边，左边出现什么都不会被注意到。
+ * 一个"点了就在这里展开"的动作才符合直觉。
+ */
+function renderMattePicker(): void {
+  if (!mattePickerOpen || !mattePickerHost) {
+    mattePicker?.dispose()
+    mattePicker = null
+    return
+  }
+  try {
+    if (!mattePicker) {
+      mattePicker = createColorPicker(
+        mattePickerHost,
+        {
+          target: 'matte',
+          value: app.params.matteColor,
+          groups: pickerGroups(),
+          // 合成底色是 6 位 hex、没有 alpha：透明度行（画笔的"透明色"开关）放在这里会误导。
+          // 见 colorpicker.ts 的 showAlpha。
+          showAlpha: false,
+        },
+        pickerCallbacks(() => 'matte'),
+      )
+    }
+    mattePicker.update({ target: 'matte', value: app.params.matteColor, groups: pickerGroups(), showAlpha: false })
+  } catch (err) {
+    // 构建失败不能静默（否则又是"点了没反应"）：把原因留在 DOM 上并把错误显示出来
+    const target = document.getElementById('canvas-host')
+    if (target) target.dataset.pickerError = (err as Error)?.message ?? String(err)
+    console.error('[取色器] 合成底色取色器构建失败：', err)
+    clear(mattePickerHost)
+    mattePickerHost.append(el('div', { class: 'hint' }, [`取色器不可用：${(err as Error)?.message ?? err}`]))
+  }
+}
+
+function ensurePicker(host: HTMLElement): ColorPickerApi {
+  if (!picker) {
+    picker = createColorPicker(
+      host,
+      { target: pickerTarget, value: currentPickerValue(), groups: pickerGroups() },
+      pickerCallbacks(() => pickerTarget),
+    )
   }
   return picker
 }
 
-/** 取色器下方的色板分组：预置色卡（含拼豆号色）+ 最近使用 + 工作色板 */
 /** 取色器下方的色板分组：本图用色 + 最近使用 + 当前预置色卡 */
 function pickerGroups(): { name: string; colors: string[] }[] {
   const rows = readRecents()
@@ -439,7 +516,7 @@ function renderPickerPanel(): void {
     const instance = ensurePicker(pickerHost)
     instance.update({
       target: pickerTarget,
-      value: pickerTarget === 'primary' ? store.get('primary') : store.get('bg'),
+      value: currentPickerValue(),
       groups: pickerGroups(),
     })
   } catch (err) {
@@ -589,45 +666,203 @@ function renderCustomPaletteField(p: ConvertParams): HTMLElement {
   ])
 }
 
+/** 预设「管理」区是否展开。模块级持有：面板每次 render 都重建，状态不能放在渲染函数里 */
+let presetEditorOpen = false
+
+/**
+ * 套用预设 = **替换**，不是合并。
+ *
+ * 旧实现（模式与预设都）用 `patchParams(preset.params)` 合并进当前参数，于是上一个预设留下的
+ * `exactWidth/exactHeight`、`lockPalette` 会残留——换预设后尺寸/锁色板并不是你选的那个
+ * （实测：拼豆→游戏资产→图片，最后仍带着 exact 32×32 与锁色板）。以**出厂默认**为基底再叠预设，
+ * 结果就只取决于"点了哪个预设"。
+ */
+function applyPreset(params: Partial<ConvertParams>): void {
+  app.params = coerceParams({ ...DEFAULT_PARAMS, ...params })
+  if (app.source) regenerate()
+  else renderAll()
+}
+
+/** 当前参数的快照（自定义色板要复制，否则存下来的预设会跟着后续编辑一起变） */
+function presetSnapshot(): ConvertParams {
+  return { ...app.params, customPalette: [...app.params.customPalette] }
+}
+
+function saveCurrentAsPreset(): void {
+  const input = prompt('新预设名称（会出现在右侧预设里）', '我的预设')
+  if (input === null) return
+  const name = input.trim()
+  if (!name) {
+    toast('预设名称不能为空', 'warn')
+    return
+  }
+  const created = addCustomPreset(name, presetSnapshot())
+  if (!created) {
+    toast('自定义预设已达数量上限，请先删掉几个', 'warn')
+    return
+  }
+  toast(`已保存预设「${created.name}」`)
+  renderAll()
+}
+
+/**
+ * 预设区：一排 chip（点击套用）+ 一行动作（存为预设 / 管理预设）。
+ *
+ * 「管理」默认收起——预设是"一次点一个"的控件，把更新/恢复出厂/删除全铺开会把面板压得很长。
+ * 展开后每个预设一行：内置可「用当前参数更新」「恢复出厂」，自定义可「更新」「删除」。
+ */
+function renderPresetSection(): void {
+  const presets = effectivePresets()
+  // 当前参数正好等于某个预设时高亮它——不然用户看不出"我现在用的是哪套"
+  const activeId = presets.find((ps) => sameParams(ps.params, app.params))?.id ?? ''
+
+  paramsPanel.append(el('div', { class: 'panel-title' }, ['预设']))
+  const row = el('div', { class: 'row wrap preset-row' })
+  for (const ps of presets) {
+    row.append(
+      el('button', {
+        class: `btn small preset-chip${ps.builtin ? '' : ' custom'}${ps.modified ? ' modified' : ''}${activeId === ps.id ? ' active' : ''}`,
+        title: `${ps.desc}${ps.modified ? '\n（已按你的参数改过）' : ''}\n点击套用；要改它请用下面的「管理预设」`,
+        onclick: () => applyPreset(ps.params),
+      }, [ps.builtin ? ps.name : `★ ${ps.name}`]),
+    )
+  }
+  paramsPanel.append(row)
+
+  const bar = el('div', { class: 'row wrap preset-bar' })
+  bar.append(
+    el('button', { class: 'btn tiny', title: '把当前面板里的参数存成一个新预设（可命名、可删除）', onclick: saveCurrentAsPreset }, ['＋ 存为预设']),
+    el('button', { class: 'btn tiny', onclick: () => { presetEditorOpen = !presetEditorOpen; renderAll() } }, [presetEditorOpen ? '收起管理 ▴' : '管理预设 ▾']),
+  )
+  paramsPanel.append(bar)
+
+  if (!presetEditorOpen) return
+  const list = el('div', { class: 'preset-editor' })
+  for (const ps of presets) {
+    list.append(
+      el('div', { class: 'preset-line' }, [
+        el('span', { class: 'preset-line-name', title: ps.desc }, [`${ps.name}${ps.modified ? ' ·已改' : ''}`]),
+        el('button', {
+          class: 'btn tiny',
+          title: '把当前面板里的参数写回这个预设',
+          onclick: () => {
+            updatePreset(ps.id, presetSnapshot())
+            toast(`已用当前参数更新「${ps.name}」`)
+            renderAll()
+          },
+        }, ['用当前参数更新']),
+        ps.builtin
+          ? el('button', {
+              class: 'btn tiny',
+              disabled: !ps.modified,
+              title: '丢弃你的改动，恢复出厂参数',
+              onclick: () => {
+                resetPreset(ps.id)
+                toast(`「${ps.name}」已恢复出厂`)
+                renderAll()
+              },
+            }, ['恢复出厂'])
+          : el('button', {
+              class: 'btn tiny',
+              title: '删除这个自定义预设',
+              onclick: () => {
+                removeCustomPreset(ps.id)
+                toast(`已删除预设「${ps.name}」`)
+                renderAll()
+              },
+            }, ['删除']),
+      ]),
+    )
+  }
+  paramsPanel.append(list)
+}
+
+/**
+ * 从「精确尺寸」切回「长边格数」：**必须显式删掉这两个字段**。
+ * 留着它们时 `computeGridSize` 会用精确尺寸（exact 优先于 longEdge），
+ * 于是长边控件看起来调了却没效果——实测踩过，所以单独一个函数、不走 patchParams。
+ */
+function clearExactSize(): void {
+  const next = { ...app.params }
+  delete next.exactWidth
+  delete next.exactHeight
+  app.params = next
+  if (app.source) regenerate()
+  else renderAll()
+}
+
 function renderParams(): void {
-  clear(paramsPanel)
-  const mode = store.get('mode')
+  // 只移除面板自己的子节点，**保留取色器宿主**（宿主必须跨渲染存活，否则一拖动就重建、手感全失）
+  for (const child of [...paramsPanel.children]) {
+    if (child !== mattePickerHost) child.remove()
+  }
   const p = app.params
 
-  paramsPanel.append(el('div', { class: 'panel-title' }, ['风格预设']))
-  const presetRow = el('div', { class: 'row wrap' })
-  for (const sp of STYLE_PRESETS) {
-    presetRow.append(el('button', { class: 'btn small', title: sp.desc, onclick: () => patchParams(sp.params) }, [sp.name]))
-  }
-  paramsPanel.append(presetRow)
+  renderPresetSection()
 
-  paramsPanel.append(el('div', { class: 'panel-title' }, [`转换参数（${mode === 'beads' ? '拼豆' : mode === 'asset' ? '游戏资产' : '图片'}）`]))
+  paramsPanel.append(el('div', { class: 'panel-title' }, ['转换参数']))
 
-  const field = (label: string, control: HTMLElement, hint?: string) =>
-    el('div', { class: 'field' }, [el('label', {}, [label]), control, hint ? el('span', { class: 'hint' }, [hint]) : null])
+  /**
+   * 一行参数：标签 + 控件 + 提示。
+   * `forId` 可选：给了就把标签关联到那个控件——`<label for>` 对 `<button>` 同样有效，
+   * 于是"点标签也能触发"（用户点"合成底色"那四个字而没点色块是很常见的）。
+   */
+  const field = (label: string, control: HTMLElement, hint?: string, forId?: string) =>
+    el('div', { class: 'field' }, [
+      el('label', forId ? { for: forId } : {}, [label]),
+      control,
+      hint ? el('span', { class: 'hint' }, [hint]) : null,
+    ])
 
-  // 尺寸：拼豆/资产用精确尺寸；照片用长边
-  if (mode === 'photo') {
-    paramsPanel.append(field('像素数量（长边）', numberInput(p.longEdge, 8, 2048, (v) => patchParams({ longEdge: v })), `${p.longEdge} 格`))
+  // 尺寸：**一套控件管两种方式**。「精确尺寸」时写入 exactWidth/Height，「长边」时显式删除（见 clearExactSize）
+  const exactW = p.exactWidth ?? 0
+  const exactH = p.exactHeight ?? 0
+  const exact = exactW > 0 && exactH > 0
+  paramsPanel.append(
+    field(
+      '尺寸方式',
+      selectInput(
+        exact ? 'exact' : 'long',
+        [
+          ['long', '长边格数（按比例）'],
+          ['exact', '精确尺寸 W×H'],
+        ],
+        (v) => {
+          if (v === 'exact') {
+            const side = Math.max(1, Math.min(2048, Math.min(58, p.longEdge) || 32))
+            patchParams({ exactWidth: exact ? exactW : side, exactHeight: exact ? exactH : side })
+          } else {
+            clearExactSize()
+          }
+        },
+      ),
+      exact ? '帧尺寸恒等，引擎侧无需二次对齐' : '短边按原图宽高比取整',
+    ),
+  )
+  if (exact) {
+    paramsPanel.append(
+      field(
+        '画布尺寸（格）',
+        el('div', { class: 'row' }, [
+          numberInput(exactW, 1, 2048, (v) => patchParams({ exactWidth: v, exactHeight: exactH })),
+          el('span', {}, ['×']),
+          numberInput(exactH, 1, 2048, (v) => patchParams({ exactWidth: exactW, exactHeight: v })),
+        ]),
+        '常见：拼豆方板 58×58（29×29 孔）· 游戏资产 16/24/32/48/64/128',
+      ),
+    )
+    const quick = el('div', { class: 'row wrap' })
+    for (const n of [16, 24, 32, 48, 58, 64, 96, 128]) {
+      quick.append(el('button', { class: `btn tiny${exactW === n && exactH === n ? ' active' : ''}`, onclick: () => patchParams({ exactWidth: n, exactHeight: n }) }, [`${n}²`]))
+    }
+    paramsPanel.append(quick)
+  } else {
+    paramsPanel.append(field('长边格数', numberInput(p.longEdge, 8, 2048, (v) => patchParams({ longEdge: v })), `${p.longEdge} 格`))
     const quick = el('div', { class: 'row wrap' })
     for (const n of [16, 32, 48, 64, 96, 128, 256, 512]) {
       quick.append(el('button', { class: `btn tiny${p.longEdge === n ? ' active' : ''}`, onclick: () => patchParams({ longEdge: n }) }, [String(n)]))
     }
     paramsPanel.append(quick)
-  } else {
-    const w = p.exactWidth ?? 58
-    const h = p.exactHeight ?? 58
-    paramsPanel.append(
-      field(
-        '画布尺寸（格）',
-        el('div', { class: 'row' }, [
-          numberInput(w, 1, 2048, (v) => patchParams({ exactWidth: v, exactHeight: p.exactHeight ?? v })),
-          el('span', {}, ['×']),
-          numberInput(h, 1, 2048, (v) => patchParams({ exactWidth: p.exactWidth ?? v, exactHeight: v })),
-        ]),
-        mode === 'beads' ? '常见大方板 = 58×58 格（29×29 孔）' : '游戏资产请用 16/24/32/48/64/128',
-      ),
-    )
   }
 
   // 裁剪比例：core 与 CLI（--crop）一直支持，但参数面板此前没有入口——
@@ -680,11 +915,66 @@ function renderParams(): void {
     field('透明处理', selectInput(p.transparent, [['none', '不透明（合成到底色）'], ['key', '单色键控（导出透明）'], ['alpha', '真 alpha（保留原图透明）']], (v) => patchParams({ transparent: v as ConvertParams['transparent'] }))),
   )
   if (p.transparent !== 'alpha') {
-    paramsPanel.append(field('合成底色', el('input', { type: 'color', value: p.matteColor, oninput: (e: Event) => patchParams({ matteColor: (e.target as HTMLInputElement).value }) })))
+    /*
+     * 合成底色用**自家取色盘**，不再用原生 `<input type="color">`：
+     * 原生控件会弹出操作系统的调色板（Windows 那个带吸管的弹窗），外观与本工具的取色器完全两回事，
+     * 也没法用"本图用色 / 最近 / 预置色卡"。
+     *
+     * 取色盘**就地展开在这个字段下面**（`renderMattePicker`），而不是切到左侧那一个——
+     * 第一版就是复用左侧取色器，结果用户反馈"点击没反应"：他的视线在右侧面板，
+     * 左边冒出来的东西根本注意不到。色块在这里，调色盘就该在这里。
+     */
+    paramsPanel.append(
+      field(
+        '合成底色',
+        el('button', {
+          class: `btn tiny color-pick${mattePickerOpen ? ' active' : ''}`,
+          type: 'button',
+          id: 'matte-swatch-btn',
+          'data-testid': 'matte-swatch',
+          'aria-expanded': mattePickerOpen ? 'true' : 'false',
+          title: `合成底色 ${p.matteColor}——点击${mattePickerOpen ? '收起' : '展开'}取色盘（Blender 式色轮）`,
+          onclick: () => {
+            mattePickerOpen = !mattePickerOpen
+            mattePickerJustOpened = mattePickerOpen
+            if (!mattePickerOpen) pickIntoMatte = false
+            renderAll()
+          },
+        }, [
+          el('span', { class: 'chip', style: { background: p.matteColor } }),
+          el('span', { class: 'color-pick-hex' }, [p.matteColor.toUpperCase()]),
+        ]),
+        '不透明模式把原图透明区合成到这个颜色；单色键控模式下它就是要被扣掉的键控色',
+        'matte-swatch-btn',
+      ),
+    )
+    // 宿主必须跨渲染存活：拖动中若把它摘出文档，指针捕获会丢、手感直接断掉。
+    // 所以 renderParams 开头只删"面板自己的子节点"、留下宿主；这里再决定挂上还是摘掉。
+    if (mattePickerOpen) {
+      if (!mattePickerHost) mattePickerHost = el('div', { class: 'picker-wrap inline' })
+      paramsPanel.append(mattePickerHost)
+      renderMattePicker()
+      if (mattePickerJustOpened) {
+        mattePickerJustOpened = false
+        // 'nearest'：已经看得见就不动，避免每次重渲染都抢用户的滚动
+        mattePickerHost.scrollIntoView({ block: 'nearest' })
+      }
+    } else if (mattePickerHost) {
+      // 收起：`dispose()` 只摘全局监听，不会清 DOM，所以这里要显式摘掉并清空
+      mattePickerHost.remove()
+      clear(mattePickerHost)
+      renderMattePicker()
+    }
+  } else if (mattePickerOpen) {
+    // 切到「真 alpha」后这个字段会消失，把就地的取色器一起收掉，别留下孤儿宿主
+    mattePickerOpen = false
+    pickIntoMatte = false
+    mattePickerHost?.remove()
+    if (mattePickerHost) clear(mattePickerHost)
+    renderMattePicker()
   }
-  if (mode !== 'photo') {
-    paramsPanel.append(field('锁定色板', checkbox(!!p.lockPalette, (v) => patchParams({ lockPalette: v })), '只用给定色板，绝不新增颜色（图纸/批次必备）'))
-  }
+  // 锁定色板对三种用途都成立（拼豆/资产批次），因此常显，不再按"模式"藏起来
+  paramsPanel.append(field('锁定色板', checkbox(!!p.lockPalette, (v) => patchParams({ lockPalette: v })), '只用给定色板，绝不新增颜色（拼豆/资产批次必备）'))
 
   paramsPanel.append(el('div', { class: 'panel-title' }, ['显示']))
   paramsPanel.append(
@@ -888,13 +1178,12 @@ function exportProject(): void {
  * 结构在 boot 时建好，render 只调 updateHeaderState()。
  */
 function buildHeader(): void {
-  const modeHost = document.getElementById('header-mode') as HTMLElement | null
   const actionsHost = document.getElementById('header-actions') as HTMLElement | null
   const importBtn = document.getElementById('btn-import') as HTMLButtonElement | null
   const exportBtn = document.getElementById('btn-export') as HTMLButtonElement | null
   const menu = document.getElementById('export-menu') as HTMLElement | null
   const anchor = document.getElementById('export-anchor') as HTMLElement | null
-  if (!modeHost || !actionsHost || !importBtn || !exportBtn || !menu || !anchor) {
+  if (!actionsHost || !importBtn || !exportBtn || !menu || !anchor) {
     throw new Error('顶栏结构缺失（index.html 模板被改动过？）')
   }
 
@@ -911,25 +1200,12 @@ function buildHeader(): void {
   })
   document.body.append(fileInput)
 
-  /* ---- 左侧：模式切换（位置与之前一致，只是不再和文件操作混在一起） ---- */
-  const modeSelect = selectInput(
-    store.get('mode'),
-    [
-      ['photo', '图片→像素'],
-      ['beads', '拼豆图纸'],
-      ['asset', '游戏资产'],
-    ],
-    (v) => {
-      store.set('mode', v as 'photo' | 'beads' | 'asset')
-      patchParams(MODE_PRESETS[v] ?? {})
-      renderAll()
-    },
-  )
-  modeSelect.className = 'mode-select'
-  modeSelect.title = '选择用途：切换后会自动套一组合适的参数'
-  modeSelect.setAttribute('aria-label', '工作模式')
-  modeSelect.dataset.testid = 'mode'
-  modeHost.append(modeSelect)
+  /*
+   * 左侧原来还有一个「工作模式」选择器（图片→像素 / 拼豆图纸 / 游戏资产），现已移除：
+   * 它与右侧的「预设」是同一类东西（都只是"往参数里套一小组值"），却各写一套、内容还不一致
+   * （旧模式漏设 cleanup、图片模式是空对象、切换会互相残留参数）。现在三个用途由预设承担，
+   * 顶栏左侧只剩品牌。相应的 e2e 断言也一并更新（原来是"左侧必须有 3 个选项的模式选择器"）。
+   */
 
   /* ---- 右侧：编辑操作（与导入/导出同处右上角；窄屏自动收成图标） ---- */
   undoBtn = el(
@@ -996,94 +1272,113 @@ function buildHeader(): void {
     helpBtn.addEventListener('click', showHelp)
   }
 
-  /* ---- 窄屏抽屉开关：≤980px 时侧栏被收成抽屉，必须有开关才能打开（测试报告 P2-06） ---- */
+  /*
+   * ---- 侧栏折叠开关：**浮在栏外的画布边上**（画布左上角 / 右上角，紧贴对应侧栏）----
+   *
+   * 图标是**三角形箭头**，指向"点下去会往哪收"：左栏展开时是 ◀（往左收）、收起后是 ▶（往右展开）；
+   * 右栏对称（展开 ▶ / 收起 ◀）。
+   *
+   * 为什么放栏外而不是栏内：栏内的话面板一 `display:none` 开关就跟着没了，只能让面板收成
+   * 一条窄边来"顺便"留住开关（空窄边还会白占宽度）。浮在栏外则面板可以真正收干净，
+   * 开关永远在原地——栏收起后它自然贴到画布/屏幕边缘。
+   *
+   * CSS 按宽度决定"展开"长什么样（桌面=常驻列 / 窄屏=浮层抽屉），JS 只维护两个布尔量。
+   */
   const drawerToolsBtn = document.getElementById('btn-drawer-tools') as HTMLButtonElement | null
   const drawerPanelBtn = document.getElementById('btn-drawer-panel') as HTMLButtonElement | null
   const scrim = document.getElementById('drawer-scrim') as HTMLElement | null
 
   if (drawerToolsBtn && drawerPanelBtn) {
-    drawerToolsBtn.textContent = '☰ 工具'
-    drawerToolsBtn.title = '显示 / 隐藏工具与色板面板（窄屏下为浮层抽屉）'
-    drawerToolsBtn.setAttribute('aria-label', '显示或隐藏工具与色板面板')
     drawerToolsBtn.dataset.testid = 'drawer-tools'
-    drawerPanelBtn.textContent = '⚙ 参数'
-    drawerPanelBtn.title = '显示 / 隐藏参数面板（窄屏下为浮层抽屉）'
-    drawerPanelBtn.setAttribute('aria-label', '显示或隐藏参数面板')
     drawerPanelBtn.dataset.testid = 'drawer-panel'
 
-    /*
-     * 两个按钮在**桌面宽度下也曾是可见的**，但那时点击只改 dataset.drawer，
-     * 而桌面布局根本不读它——用户看到的是"按了没反应"。
-     * （`.narrow-only` 这个类名只在 HTML 与注释里出现过，CSS 里从来没有对应规则，
-     *   所以"只在窄屏显示"这个意图从未生效。）
-     *
-     * 现在区分两种宽度下各自的正确行为：
-     *  - 窄屏（≤980px）：侧栏是浮层抽屉，点按钮开合。
-     *  - 桌面：侧栏是常驻列，点按钮**折叠/展开该列**，把空间让给画布。
-     */
     const NARROW = 980
     const isNarrow = (): boolean => window.innerWidth <= NARROW
     /*
-     * 桌面折叠状态：**两侧各自独立**，跨 renderAll 保留（折叠是用户偏好，不该被一次重绘重置）。
+     * 每一侧一个布尔量，**两侧各自独立**，跨 renderAll 保留。
      *
      * 这里原先是单个 'none' | 'tools' | 'panel' 三值状态，导致四个组合里有一个**不可达**：
      * 收起了工具列再收参数列时，赋值 'panel' 顺手把 'no-rail' 摘掉了，
      * 于是"想关第二个、第一个又弹回来"——用户看到的就是这个现象。
-     * 两个布尔量才能表达"两边都收起"，CSS 里的 `body.no-rail.no-panel` 也才有意义。
+     * 两个布尔量才能表达"两边都收起"。
      */
-    let railHidden = false
-    let panelHidden = false
+    let railHidden = isNarrow()
+    let panelHidden = isNarrow()
+    let wasNarrow = isNarrow()
 
-    const applyDesktopCollapse = (): void => {
+    /** 三角形箭头 + 提示：展开时指向收纳方向，收起后指向展开方向 */
+    const updateRailToggle = (): void => {
+      const set = (btn: HTMLButtonElement, hidden: boolean, what: string, expandArrow: string, collapseArrow: string): void => {
+        btn.textContent = hidden ? expandArrow : collapseArrow
+        btn.title = `${hidden ? '展开' : '收起'}${what}`
+        btn.setAttribute('aria-label', btn.title)
+        btn.setAttribute('aria-pressed', hidden ? 'false' : 'true')
+      }
+      // 左栏：展开 ◀（往左收）/ 收起 ▶（往右展开）
+      set(drawerToolsBtn, railHidden, '工具与色板面板', '▶', '◀')
+      // 右栏：展开 ▶（往右收）/ 收起 ◀（往左展开）
+      set(drawerPanelBtn, panelHidden, '参数面板', '◀', '▶')
+    }
+
+    /**
+     * 把两个布尔量写进 body 的类，呈现方式交给 CSS：
+     *  - 桌面（>980）：展开 = 常驻列；收起 = 整栏隐藏（箭头浮在栏外，不受影响）。
+     *  - 窄屏（≤980）：展开 = 浮层抽屉 + 遮罩；收起 = 隐藏。
+     * 两种宽度下都是"同一个箭头、同一个开合动作"，用户只需要一套心智模型。
+     */
+    const applyRails = (): void => {
+      const narrow = isNarrow()
+      const anyOpen = !railHidden || !panelHidden
       document.body.classList.toggle('no-rail', railHidden)
       document.body.classList.toggle('no-panel', panelHidden)
-      drawerToolsBtn.setAttribute('aria-pressed', railHidden ? 'true' : 'false')
-      drawerPanelBtn.setAttribute('aria-pressed', panelHidden ? 'true' : 'false')
+      document.body.classList.toggle('drawer-tools', narrow && !railHidden)
+      document.body.classList.toggle('drawer-panel', narrow && !panelHidden)
+      document.body.classList.toggle('drawer-open', narrow && anyOpen)
+      document.body.dataset.drawer = railHidden && panelHidden ? 'none' : !railHidden ? 'tools' : 'panel'
+      if (scrim) scrim.hidden = !(narrow && anyOpen)
+      updateRailToggle()
+      // 开合会改变画布可视区域：重绘一次，别让画布停在屏幕外
       canvasApi.redraw()
     }
-
-    const setDrawer = (kind: 'none' | 'tools' | 'panel'): void => {
-      document.body.classList.toggle('drawer-open', kind !== 'none')
-      document.body.classList.toggle('drawer-tools', kind === 'tools')
-      document.body.classList.toggle('drawer-panel', kind === 'panel')
-      document.body.dataset.drawer = kind
-      if (scrim) scrim.hidden = kind === 'none'
-      drawerToolsBtn.setAttribute('aria-pressed', kind === 'tools' ? 'true' : 'false')
-      drawerPanelBtn.setAttribute('aria-pressed', kind === 'panel' ? 'true' : 'false')
-      // 抽屉是浮层，开合会改变画布可视区域：重绘一次，避免画布停在屏幕外
-      canvasApi.redraw()
-    }
-    const currentDrawer = (): 'none' | 'tools' | 'panel' =>
-      document.body.classList.contains('drawer-tools') ? 'tools' : document.body.classList.contains('drawer-panel') ? 'panel' : 'none'
 
     const toggleTools = (): void => {
-      if (isNarrow()) setDrawer(currentDrawer() === 'tools' ? 'none' : 'tools')
-      else {
-        railHidden = !railHidden
-        applyDesktopCollapse()
-      }
+      railHidden = !railHidden
+      // 窄屏一次只开一个：两个浮层同时开出来会互相遮挡
+      if (isNarrow() && !railHidden) panelHidden = true
+      applyRails()
     }
     const togglePanel = (): void => {
-      if (isNarrow()) setDrawer(currentDrawer() === 'panel' ? 'none' : 'panel')
-      else {
-        panelHidden = !panelHidden
-        applyDesktopCollapse()
-      }
+      panelHidden = !panelHidden
+      if (isNarrow() && !panelHidden) railHidden = true
+      applyRails()
+    }
+    const collapseAll = (): void => {
+      railHidden = true
+      panelHidden = true
+      applyRails()
     }
 
-    // 初始状态写进 dataset，便于自动化断言与调试
-    document.body.dataset.drawer = 'none'
     drawerToolsBtn.addEventListener('click', toggleTools)
     drawerPanelBtn.addEventListener('click', togglePanel)
-    scrim?.addEventListener('click', () => setDrawer('none'))
+    scrim?.addEventListener('click', collapseAll)
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && currentDrawer() !== 'none') setDrawer('none')
+      if (e.key === 'Escape' && isNarrow() && (!railHidden || !panelHidden)) collapseAll()
     })
-    // 切回桌面宽度时收起抽屉浮层（桌面用的折叠状态由 desktopHidden 各自保留，互不影响）
+    /*
+     * 跨过 980px 阈值时重置成该宽度下的合理初值：窄屏两侧都收起（浮层会盖住画布），
+     * 回桌面两侧都展开。只认"跨阈值"，不在每次 resize 都动——否则用户拖窗口时会把
+     * 自己刚收/刚开的状态一次次抹掉。
+     */
     window.addEventListener('resize', () => {
-      if (window.innerWidth > NARROW && currentDrawer() !== 'none') setDrawer('none')
-      applyDesktopCollapse()
+      const narrow = isNarrow()
+      if (narrow !== wasNarrow) {
+        wasNarrow = narrow
+        railHidden = narrow
+        panelHidden = narrow
+      }
+      applyRails()
     })
+    applyRails()
   }
   actionsHost.append(undoBtn, redoBtn, regenerateBtn, newBtn)
 
@@ -1370,7 +1665,7 @@ function boot(): void {
   let timer = 0
   store.subscribe(['tool', 'primary', 'bg', 'brushSize', 'showGrid', 'showMag', 'showPicker', 'transparent'], (s) => {
     clearTimeout(timer)
-    timer = window.setTimeout(() => writePrefs(s), 400)
+    timer = window.setTimeout(() => writePrefs(s), PREFS_DEBOUNCE_MS)
   })
 
   /**

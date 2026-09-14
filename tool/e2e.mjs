@@ -287,9 +287,11 @@ async function main() {
       leftButtons: document.querySelectorAll('.header-left button').length,
       importBtn: document.getElementById('btn-import')?.textContent || '',
       exportBtn: document.getElementById('btn-export')?.textContent || '',
-      modeOptions: document.querySelectorAll('#header-mode select option').length,
-      modeInRight: !!document.querySelector('.header-right #header-mode'),
-      modeInLeft: !!document.querySelector('.header-left #header-mode'),
+      hasModeSelect: !!document.querySelector('#header-mode, .mode-select'),
+      presetChips: document.querySelectorAll('#panel-params .preset-chip').length,
+      hasSavePreset: [...document.querySelectorAll('#panel-params button')].some((b) => b.textContent.includes('存为预设')),
+      panelHasSizeMode: [...document.querySelectorAll('#panel-params .field > label')].some((e) => e.textContent.includes('尺寸方式')),
+      panelHasLock: [...document.querySelectorAll('#panel-params .field > label')].some((e) => e.textContent.includes('锁定色板')),
       importInLeft: !!document.querySelector('.header-left #btn-import'),
       importInRight: !!document.querySelector('.header-right #btn-import'),
       exportInRight: !!document.querySelector('.header-right #btn-export'),
@@ -304,22 +306,28 @@ async function main() {
       assert(u.rightActions >= 7, `右上角动作按钮过少：${u.rightActions}（应为撤销/重做/重新转换/新建/导入/导出/快捷键）`)
       assert(u.importBtn.includes('导入'), `右上角缺「导入图片」按钮：${u.importBtn}`)
       assert(u.exportBtn.includes('导出'), `右上角缺「导出」按钮：${u.exportBtn}`)
-      assert(u.modeOptions === 3, `模式切换应有 3 个选项，实际 ${u.modeOptions}`)
-      return `${u.tools} 工具 / 右上角 ${u.rightActions} 个动作 + 导入 + 导出 / 模式 3 项`
+      // 工作模式选择器已移除：图片→像素 / 拼豆图纸 / 游戏资产 三个用途并入右侧预设
+      assert(!u.hasModeSelect, '工作模式选择器应已移除（用途并入预设，见 docs/USAGE.md）')
+      assert(u.presetChips >= 6, `预设 chip 至少应有 6 个出厂预设，实际 ${u.presetChips}`)
+      assert(u.hasSavePreset, '预设区应提供「＋ 存为预设」入口')
+      // 「尺寸方式」与「锁定色板」对三种用途都成立，必须常显（旧版按模式把锁定色板藏起来过）
+      assert(u.panelHasSizeMode, '参数面板应有「尺寸方式」控件')
+      assert(u.panelHasLock, '参数面板应始终显示「锁定色板」')
+      return `${u.tools} 工具 / 右上角 ${u.rightActions} 个动作 + 导入 + 导出 / 预设 ${u.presetChips} 个`
     })
 
-    check('顶栏布局：只有模式切换留在左侧，其余动作全在右上角', () => {
+    check('顶栏布局：左侧只有品牌，其余动作全在右上角', () => {
       const u = JSON.parse(ui)
-      assert(u.modeInLeft, '模式切换必须留在左侧')
-      assert(!u.modeInRight, '模式切换不应被移到右上角（用户要求保持原位）')
+      assert(u.leftText.includes('像素画工作台'), `左侧应保留品牌，实际「${u.leftText}」`)
+      assert(!u.hasModeSelect, '左侧不应再有工作模式选择器')
       assert(!u.importInLeft && u.importInRight, '「导入图片」应在右上角')
       assert(u.exportInRight, '「导出」应在右上角')
       assert(u.leftButtons === 0, `左侧不应再有按钮，实际 ${u.leftButtons} 个`)
-      // 左侧只应出现品牌与模式文字（不应残留"撤销/新建"等动作文案）
+      // 左侧只应出现品牌（不应残留"撤销/新建"等动作文案）
       for (const word of ['撤销', '重做', '重新转换', '新建', '导入', '导出']) {
         assert(!u.leftText.includes(word), `左侧仍残留「${word}」`)
       }
-      return '左侧仅品牌 + 模式切换'
+      return '左侧仅品牌'
     })
 
     const orderProbe = await cdp.eval(`(() => {
@@ -588,6 +596,165 @@ async function main() {
       assert(r.nonEmpty > 500, `画布内容为空：${r.nonEmpty} 个不透明像素（状态栏：${r.status}）`)
       return `${r.artW}×${r.artH} / ${r.paletteSize} 色 / ${r.nonEmpty} 像素`
     })
+
+    /*
+     * 「尺寸方式」切回长边时必须把 exactWidth/Height **删掉**。
+     * 这是旧版的实际缺陷：残留的精确尺寸会让"长边"控件看起来调了却没效果
+     * （computeGridSize 里 exact 优先于 longEdge），而界面上没有任何提示。
+     */
+    const sizeMode = await cdp.eval(`(async () => {
+      const ps = window.pixelArtStudio
+      ps.setParams({ exactWidth: 32, exactHeight: 32 })
+      await new Promise((r) => setTimeout(r, 60))
+      const before = ps.getParams()
+      const sel = document.querySelector('#panel-params select')   // 预设区没有 select，第一个就是「尺寸方式」
+      const label = (document.querySelector('#panel-params .field > label') || {}).textContent || ''
+      sel.value = 'long'
+      sel.dispatchEvent(new Event('change'))
+      await new Promise((r) => setTimeout(r, 80))
+      const after = ps.getParams()
+      return JSON.stringify({
+        label, beforeExact: before.exactWidth,
+        afterExact: after.exactWidth === undefined ? null : after.exactWidth,
+        afterLong: after.longEdge,
+      })
+    })()`)
+    check('尺寸方式：切回「长边」会清掉精确尺寸（否则长边控件静默失效）', () => {
+      const s = JSON.parse(sizeMode)
+      assert(s.label === '尺寸方式', `面板第一个控件应是「尺寸方式」，实际「${s.label}」`)
+      assert(s.beforeExact === 32, `前置条件不成立：exactWidth 应为 32，实际 ${s.beforeExact}`)
+      assert(s.afterExact === null, `切回长边后 exactWidth 必须被删除，实际 ${s.afterExact}`)
+      return `exact 32 → 已清除；长边 ${s.afterLong}`
+    })
+
+    /*
+     * 预设：可更新（写回内置）、可恢复出厂、可存为自定义预设。
+     * 同时守住"用户改动不写回 core"——页内 API 报的必须始终是出厂参数。
+     */
+    const presetEdit = await cdp.eval(`(async () => {
+      const ps = window.pixelArtStudio
+      ;[...document.querySelectorAll('#panel-params button')].find((b) => b.textContent.includes('管理预设')).click()
+      await new Promise((r) => setTimeout(r, 80))
+      const name = (document.querySelector('#panel-params .preset-line .preset-line-name') || {}).textContent || ''
+      ps.setParams({ longEdge: 123 })
+      await new Promise((r) => setTimeout(r, 60))
+      ;[...document.querySelectorAll('#panel-params .preset-line button')].find((b) => b.textContent.includes('用当前参数更新')).click()
+      await new Promise((r) => setTimeout(r, 80))
+      const modified = [...document.querySelectorAll('#panel-params .preset-chip.modified')].length
+      const factoryPhoto = JSON.parse(JSON.stringify(ps.stylePreset('photo')))
+      ;[...document.querySelectorAll('#panel-params .preset-line button')].find((b) => b.textContent.includes('恢复出厂') && !b.disabled).click()
+      await new Promise((r) => setTimeout(r, 80))
+      const modifiedAfter = [...document.querySelectorAll('#panel-params .preset-chip.modified')].length
+      window.prompt = () => '测试预设'
+      ;[...document.querySelectorAll('#panel-params button')].find((b) => b.textContent.includes('存为预设')).click()
+      await new Promise((r) => setTimeout(r, 80))
+      const customCount = document.querySelectorAll('#panel-params .preset-chip.custom').length
+      const hasTest = [...document.querySelectorAll('#panel-params .preset-chip')].some((c) => c.textContent.includes('测试预设'))
+      return JSON.stringify({ name, modified, modifiedAfter, factoryPhotoLong: factoryPhoto.longEdge, customCount, hasTest })
+    })()`)
+    check('预设：可更新 / 可恢复出厂 / 可存为自定义预设，且出厂值不被写脏', () => {
+      const s = JSON.parse(presetEdit)
+      assert(s.modified === 1, `「用当前参数更新」后应有 1 个预设标记为已改，实际 ${s.modified}`)
+      assert(s.modifiedAfter === 0, `「恢复出厂」后不应再有已改标记，实际 ${s.modifiedAfter}`)
+      assert(s.factoryPhotoLong === 128, `页内 API 报的出厂预设必须不变（photo.longEdge 应为 128），实际 ${s.factoryPhotoLong}`)
+      assert(s.hasTest && s.customCount >= 1, `「存为预设」应新增自定义预设，实际 custom=${s.customCount}`)
+      return `${s.name}：更新→已改→恢复出厂；新增自定义预设 ${s.customCount} 个`
+    })
+
+    /*
+     * 合成底色必须用**自家取色盘**，不能用原生 `<input type="color">`
+     * （原生控件会弹操作系统的调色板，外观与交互都跟主色/背景色不是一套）；
+     * 而且取色盘要**就地展开在参数面板里**——第一版复用左侧那个取色器，
+     * 用户反馈"点击没反应"：视线在右侧面板，左边冒出来的东西根本注意不到。
+     *
+     * 这条用**真实鼠标事件**（合成 `.click()` 不经过命中测试，本项目踩过），
+     * 并断言取色器落在 `#panel-params` 内、顶边在视口里 —— 也就是"点下去看得见结果"。
+     *
+     * ⚠️ 必须先摆成桌面视口：无头默认是 800×600，而 ≤980px 时右侧栏被 CSS 隐藏，
+     * 参数面板拿到的矩形是 0×0、命中测试会落到页头（docs/DEVELOPMENT.md §3.2 第 1 条）。
+     */
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false })
+    await new Promise((r) => setTimeout(r, 200))
+    const matteBox = JSON.parse(await cdp.eval(`(() => {
+      const el = document.querySelector('[data-testid="matte-swatch"]')
+      if (!el) return JSON.stringify({ error: '参数面板里找不到合成底色色块' })
+      el.scrollIntoView({ block: 'center' })
+      const r = el.getBoundingClientRect()
+      const x = r.left + r.width / 2, y = r.top + r.height / 2
+      const top = document.elementFromPoint(x, y)
+      return JSON.stringify({ x, y,
+        rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+        topTag: top ? top.tagName : '(null)', topClass: top ? String(top.className) : '',
+        hitSelf: top ? el.contains(top) || top === el : false })
+    })()`))
+    assert(!matteBox.error, matteBox.error)
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: matteBox.x, y: matteBox.y, button: 'left', clickCount: 1 })
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: matteBox.x, y: matteBox.y, button: 'left', clickCount: 1 })
+    await new Promise((r) => setTimeout(r, 300))
+    const mattePicker = JSON.parse(await cdp.eval(`(() => {
+      const cp = document.querySelector('#panel-params .cp')
+      const alpha = cp ? cp.querySelector('.cp-alpha') : null
+      const r = cp ? cp.getBoundingClientRect() : null
+      return JSON.stringify({
+        native: document.querySelectorAll('#panel-params input[type=color]').length,
+        inParamsPanel: !!cp,
+        topVisible: r ? r.width > 0 && r.top >= 0 && r.top <= window.innerHeight : false,
+        alphaVisible: alpha ? getComputedStyle(alpha).display !== 'none' : false,
+        transparentSwatch: cp ? !!cp.querySelector('.cp-swatch.transparent') : false,
+        hex: cp ? (cp.querySelector('.cp-hexrow input') || {}).value : '',
+      })
+    })()`))
+    check('合成底色：点色块就地展开自家取色盘（非系统调色板），且不显示透明度行', () => {
+      assert(matteBox.hitSelf, `合成底色色块被盖住/点不到：落点 ${Math.round(matteBox.x)},${Math.round(matteBox.y)}，色块矩形 ${matteBox.rect}，命中 <${matteBox.topTag} class="${matteBox.topClass}">`)
+      const s = mattePicker
+      assert(s.native === 0, `参数面板里不应再有原生 input[type=color]，实际 ${s.native} 个`)
+      assert(s.inParamsPanel, '取色盘必须展开在参数面板里（就地）——出现在左侧列会让人以为"点了没反应"')
+      assert(s.topVisible, '取色盘展开后应能直接在视口里看到（顶边在视口内）')
+      assert(!s.alphaVisible, '编辑合成底色时不应显示「透明度」行')
+      assert(!s.transparentSwatch, '编辑合成底色时不应显示「透明」色块')
+      return `原生 0 个 / 就地展开在参数面板 / 透明度行已隐藏 / Hex ${s.hex}`
+    })
+    // 再点一次收起（同时验证是个开关）。展开时面板滚过，必须**重新取一次坐标**再点，
+    // 否则会点在旧位置上（这次就因此误判成"收不起来"）。
+    const matteBox2 = JSON.parse(await cdp.eval(`(() => {
+      const el = document.querySelector('[data-testid="matte-swatch"]')
+      el.scrollIntoView({ block: 'center' })
+      const r = el.getBoundingClientRect()
+      return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
+    })()`))
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: matteBox2.x, y: matteBox2.y, button: 'left', clickCount: 1 })
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: matteBox2.x, y: matteBox2.y, button: 'left', clickCount: 1 })
+    await new Promise((r) => setTimeout(r, 250))
+    const matteClosed = await cdp.eval(`!document.querySelector('#panel-params .cp')`)
+    check('合成底色：再点一次收起取色盘', () => {
+      assert(matteClosed, '再点一次应把取色盘收起来（它是个开关）')
+      return '已收起'
+    })
+
+    // 用户很可能点的是「合成底色」那几个字而不是色块：`<label for>` 对 `<button>` 同样生效，
+    // 所以标签也必须能点开——这条断了就又是一次"点了没反应"。
+    const labelBox = JSON.parse(await cdp.eval(`(() => {
+      const el = document.querySelector('#panel-params label[for="matte-swatch-btn"]')
+      if (!el) return JSON.stringify({ error: '「合成底色」的标签没有关联到色块按钮（label[for] 丢了）' })
+      el.scrollIntoView({ block: 'center' })
+      const r = el.getBoundingClientRect()
+      const x = r.left + r.width / 2, y = r.top + r.height / 2
+      const top = document.elementFromPoint(x, y)
+      return JSON.stringify({ x, y, hitSelf: top ? el.contains(top) || top === el : false })
+    })()`))
+    if (!labelBox.error) {
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: labelBox.x, y: labelBox.y, button: 'left', clickCount: 1 })
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: labelBox.x, y: labelBox.y, button: 'left', clickCount: 1 })
+      await new Promise((r) => setTimeout(r, 250))
+    }
+    const labelOpened = labelBox.error ? false : await cdp.eval(`!!document.querySelector('#panel-params .cp')`)
+    check('合成底色：点标签（不是色块）也能展开取色盘', () => {
+      assert(!labelBox.error, labelBox.error)
+      assert(labelBox.hitSelf, `标签被盖住了：落点 ${Math.round(labelBox.x)},${Math.round(labelBox.y)}`)
+      assert(labelOpened, '点「合成底色」标签应同样展开取色盘（label[for] 关联断了吗？）')
+      return '标签可点'
+    })
+    await cdp.send('Emulation.clearDeviceMetricsOverride')
 
     check('运行期无控制台错误', () => {
       assert(consoleErrors.length === 0, `控制台报错 ${consoleErrors.length} 条：${consoleErrors.slice(0, 2).join(' | ')}`)

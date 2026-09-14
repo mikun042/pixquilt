@@ -13,7 +13,6 @@
 import { ALPHA_THRESHOLD, MAX_CANVAS_SIDE, PALETTE_MAX } from './limits.ts'
 import { normalizeHex, type Anchor, type PixelArt } from './types.ts'
 import { buildPaletteLabs, hexToRgb, nearestColorIndex, rgbToOklab } from './color.ts'
-import { dedupePalette } from './palettes.ts'
 
 export type EditOp =
   /** 油漆桶：把 (x,y) 所在连通区域整体换色；erase 则整块挖成透明 */
@@ -744,13 +743,4 @@ export function blankArt(width: number, height: number, color: string, transpare
     palette: [hex.toLowerCase()],
     alphaMask: transparent ? new Uint8Array(w * h) : null,
   }
-}
-
-/** 用色板把画布扩到至少包含给定颜色（手动绘制时用） */
-export function withPaletteColor(art: PixelArt, hex: string): PixelArt {
-  const norm = normalizeHex(hex)
-  if (!norm) return art
-  if (art.palette.some((c) => c.toLowerCase() === norm)) return art
-  if (art.palette.length >= PALETTE_MAX) return art
-  return { ...art, palette: dedupePalette([...art.palette, norm.toLowerCase()]) }
 }

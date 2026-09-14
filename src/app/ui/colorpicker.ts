@@ -11,7 +11,7 @@
  *   │  绿 ███         0.800                │     数值框在滑条**右侧之外**（拖动碰不到它）
  *   │  蓝              0.800               │
  *   │  透明度 ████████ 0.000               │  ← 两态滑条（左半 = 1.000 全透明，右半 = 0.000 实色）
- *   │  Hex   [#E7E7E7]            [⌖]      │  ← Hex 行常驻，右侧吸管按钮
+ *   │  Hex   [#E7E7E7]            [吸管]   │  ← Hex 行常驻，右侧吸管按钮（内联 SVG 滴管）
  *   └──────────────────────────────────────┘
  *
  * 实测结论（决定了下面几处"非常规"写法）：
@@ -68,10 +68,19 @@ export interface ColorPickerCallbacks {
 }
 
 export interface ColorPickerState {
-  target: 'primary' | 'bg'
+  /** 正在编辑哪一路颜色（仅信息用途；实际写回由调用方的回调决定） */
+  target: 'primary' | 'bg' | 'matte'
   value: string
   /** 色板（工作色板 + 预置卡；分组显示） */
   groups: { name: string; colors: string[] }[]
+  /**
+   * 是否显示「透明度」行与透明色块。默认 true。
+   *
+   * 编辑**主色 / 背景色**时为 true——本工具的"透明色"是画笔挖洞用的开关。
+   * 编辑**合成底色**（`matteColor`）时为 false：它是 6 位 hex、根本没有 alpha，
+   * 摆一个"透明度 1.000 = 全透明"的行只会让人以为能给底色设透明度（点了还会去改画笔的透明开关）。
+   */
+  showAlpha?: boolean
 }
 
 export interface ColorPickerApi {
@@ -145,6 +154,8 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
    */
   let currentHex = normalizeHex(state.value) ?? '#000000'
   let hsv = rgbToHsv(...rgbTuple(currentHex))
+  /** 见 ColorPickerState.showAlpha：合成底色这类没有 alpha 的颜色要把透明度行藏掉 */
+  let showAlpha = state.showAlpha !== false
   /**
    * 当前拖动对象：`'value'`（明度竖条）/ `'alpha'`（透明度行）/ 任意数值行 key（R/G/B/H/S/V）。
    * 之所以用字符串而不是联合类型：数值行的 key 来自 ROW_SPECS，新增通道时这里不必跟着改。
@@ -385,6 +396,7 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
       const node = rowEls.get(spec.key)
       if (node) node.style.display = spec.model === model ? '' : 'none'
     }
+    alphaRow.style.display = showAlpha ? '' : 'none'
   }
 
   function paintSwatches(): void {
@@ -409,21 +421,24 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
       )
     }
     if (!any) swatchHost.append(el('span', { class: 'hint' }, ['导入或绘制后出现常用色']))
-    // 透明色块：Blender 没有，但本工具需要（画笔/填充挖洞），放在最后
-    swatchHost.append(
-      el('div', { class: 'cp-swatch-row' }, [
-        el('span', { class: 'cp-swatch-name' }, ['透明']),
-        el('button', {
-          class: `cp-swatch transparent${cb.isTransparent() ? ' active' : ''}`,
-          type: 'button',
-          title: '选中后画笔 / 填充 / 形状 / X 删除都变成挖洞',
-          onclick: () => {
-            cb.onTransparent()
-            repaint()
-          },
-        }, ['∅']),
-      ]),
-    )
+    // 透明色块：Blender 没有，但本工具需要（画笔/填充挖洞），放在最后。
+    // 只有编辑"带透明语义"的颜色时才出现（见 ColorPickerState.showAlpha）。
+    if (showAlpha) {
+      swatchHost.append(
+        el('div', { class: 'cp-swatch-row' }, [
+          el('span', { class: 'cp-swatch-name' }, ['透明']),
+          el('button', {
+            class: `cp-swatch transparent${cb.isTransparent() ? ' active' : ''}`,
+            type: 'button',
+            title: '选中后画笔 / 填充 / 形状 / X 删除都变成挖洞',
+            onclick: () => {
+              cb.onTransparent()
+              repaint()
+            },
+          }, ['∅']),
+        ]),
+      )
+    }
   }
 
   /** 数值行（按当前模型解析输入） */
@@ -678,6 +693,7 @@ export function createColorPicker(host: HTMLElement, initial: ColorPickerState, 
       const targetChanged = patch.target !== undefined && patch.target !== state.target
       const prevValue = state.value
       state = { ...state, ...patch }
+      if (patch.showAlpha !== undefined) showAlpha = patch.showAlpha !== false
       if (patch.value && (targetChanged || patch.value !== prevValue) && dragging === null) {
         const norm = normalizeHex(patch.value)
         if (norm) {

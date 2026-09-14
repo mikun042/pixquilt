@@ -15,6 +15,12 @@
   --warn: #f0b232;
   --error: #f26d6d;
   --radius: 6px;
+  /*
+   * 三栏宽度。折叠态要保留"另一侧"的原宽，所以用变量而不是把像素重复写死
+   * （1200px 断点只改这两个值，收敛在一处）。
+   */
+  --rail-w: 232px;
+  --panel-w: 300px;
   --font: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
   --mono: ui-monospace, "Cascadia Mono", Consolas, "Noto Sans Mono", monospace;
 }
@@ -65,8 +71,6 @@ html, body {
   justify-content: flex-end;
   margin-left: auto;
 }
-
-.header-mode { display: flex; align-items: center; }
 
 .logo { font-weight: 600; letter-spacing: 0.5px; white-space: nowrap; }
 
@@ -162,13 +166,31 @@ html, body {
 
 .main {
   display: grid;
-  grid-template-columns: 232px 1fr 300px;
+  grid-template-columns: var(--rail-w) 1fr var(--panel-w);
   flex: 1;
   min-height: 0;
 }
 
-.rail { border-right: 1px solid var(--line); overflow-y: auto; padding: 10px; background: var(--bg-2); }
-.right { border-left: 1px solid var(--line); overflow-y: auto; padding: 10px; background: var(--bg-2); }
+/*
+ * 两侧栏都是"可滚动内容"的纵向 flex。折叠开关**不在栏内**（浮在栏外的画布边上，
+ * 见下面的 `.rail-toggle`），所以面板收起时可以直接 `display:none`，开关不会跟着消失。
+ *
+ * ⚠️ `min-height: 0` + `overflow: hidden` 不能省：grid/flex 子项的自动最小高度是
+ * **内容高度**，不压住的话面板会撑到跟内容一样高、整个页面跟着变长——表现就是
+ * "面板里的滚动条拖不动/滚不动，滚动条跑到页面上去了"（改用 `.rail-body` 做滚动容器时踩过）。
+ */
+.rail,
+.right {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-2);
+}
+.rail { border-right: 1px solid var(--line); }
+.right { border-left: 1px solid var(--line); }
+.rail-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; }
 .center { display: flex; flex-direction: column; min-width: 0; }
 
 .canvas-host {
@@ -264,14 +286,38 @@ html, body {
 .btn.small { padding: 4px 8px; font-size: 12px; }
 .btn.tiny { padding: 3px 7px; font-size: 11px; font-family: var(--mono); }
 
-.mode-select {
-  font: inherit;
-  color: var(--text);
-  background: var(--bg-3);
-  border: 1px solid var(--accent-2);
-  border-radius: var(--radius);
-  padding: 5px 8px;
-  cursor: pointer;
+/*
+ * 预设 chip：点一个套一套参数。
+ * 用 3 列网格而不是 `.row` 的换行流水布局——预设名长短不一，自由换行会参差不齐；
+ * 网格让每一列对齐（与左侧工具按钮的网格同一观感）。选择器带 `#panel-params` 是为了
+ * 盖过文件后面 `.row` 的 `display: flex`（同权重时后写的赢，位置一动就会静默失效）。
+ *  · 自定义预设（.custom）虚线与 ★ 前缀区分；
+ *  · 被用户改过的出厂预设（.modified）带一个圆点角标；
+ *  · 当前参数正好等于某个预设时给它 .active（参数深比较见 presets.ts 的 sameParams）。
+ */
+#panel-params .preset-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 2px; }
+.preset-chip { overflow-wrap: anywhere; }
+.preset-chip.custom { border-style: dashed; }
+.preset-chip.modified::after {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: 1px;
+}
+.preset-bar { gap: 4px; margin-top: 4px; }
+.preset-editor { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+.preset-line { display: flex; align-items: center; gap: 4px; font-size: 11px; }
+.preset-line-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim);
 }
 
 select, input[type="number"], input[type="text"], .num {
@@ -284,15 +330,6 @@ select, input[type="number"], input[type="text"], .num {
   padding: 3px 6px;
 }
 .num { width: 68px; }
-input[type="color"] {
-  width: 34px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: none;
-  cursor: pointer;
-}
 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
@@ -346,6 +383,17 @@ input[type="color"] {
 .color-slot .chip { width: 22px; height: 22px; border-radius: 3px; border: 1px solid #00000055; }
 .color-slot .chip-label { font-size: 11px; color: var(--dim); }
 
+/*
+ * 「合成底色」的色块按钮：点它在字段下方**就地展开**取色盘（见 index.ts 的 renderMattePicker）。
+ * 它复用了 `.color-slot .chip` 的色块外观，因此这里只安排内部排布——
+ * 万一以后 .chip 那条选择器改了，这里不用跟着动。
+ */
+.color-pick { display: inline-flex; align-items: center; gap: 6px; }
+.color-pick .chip { width: 20px; height: 20px; border-radius: 3px; border: 1px solid #00000055; }
+.color-pick .color-pick-hex { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+/* 展开状态：色块加一圈强调边，让"调色盘正开着"这件事在字段本身就能看出来 */
+.color-pick.active { border-color: var(--accent); }
+
 /* ------------------------------------------------------------------ 色板 */
 
 .swatch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(26px, 1fr)); gap: 3px; }
@@ -374,6 +422,11 @@ input[type="color"] {
 }
 
 .picker-wrap { margin-top: 8px; }
+/*
+ * 就地展开的取色器宿主（合成底色用，挂在参数面板里它那个字段下面）。
+ * 只额外要一点上边距把"字段 → 调色盘"分开；宽度跟着面板走（`.cp` 自己是定宽的）。
+ */
+.picker-wrap.inline { margin: 6px 0 10px 8px; }
 
 /* ------------------------------------------------------------------ 取色器（Blender 结构） */
 
@@ -490,7 +543,21 @@ input[type="color"] {
   display: block;
   flex: none;
 }
-.tool-btn .icon-svg { width: 16px; height: 16px; }
+/*
+ * 工具按钮里的图标必须**跟文字同一行、在文字左边**——要和旁边"矩形 / 椭圆 / 选区"
+ * 那些用字符图标的按钮排成一样的形状。
+ *
+ * `.icon-svg` 默认 `display:block`（取色器 Hex 行那颗按钮需要它独占一格，不与输入框抢基线），
+ * 但在工具按钮里 block 会把"取色"两个字挤到下一行，那一格就变成两行、与同排的"矩形"对不齐。
+ * 这里改回 inline-block；`vertical-align: middle` 让 14px 的图标与 12px 的文字光学居中
+ * （用默认的 baseline 对齐会让图标明显偏高）。
+ */
+.tool-btn .icon-svg {
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  vertical-align: middle;
+}
 
 /*
  * Alpha 行的滑条轨道：未填充槽用棋盘格——本工具的 alpha 是"透明色"开关，
@@ -663,20 +730,20 @@ input[type="color"] {
 /* ------------------------------------------------------------------ 响应式 */
 
 @media (max-width: 1200px) {
-  .main { grid-template-columns: 200px 1fr 260px; }
-  /* 保证右上角的动作按钮不与左侧模式切换抢空间：编辑类按钮先收成图标 */
+  :root { --rail-w: 200px; --panel-w: 260px; }
+  /* 保证右上角的动作按钮不与左侧品牌抢空间：编辑类按钮先收成图标 */
   .act .act-label { display: none; }
   .act { padding: 5px 8px; }
 }
 @media (max-width: 980px) {
   .main { grid-template-columns: 1fr; }
   /*
-   * 窄屏：侧栏收成抽屉。
-   * 必须**有开关**——早先只写了 display:none 却没有展开机制，于是窄窗口下
-   * 工具与参数面板完全不可达（测试报告 P2-06）。开关是顶栏两个 `.narrow-only` 按钮，
-   * 展开态由 `body.drawer-open` 驱动。
+   * 窄屏：侧栏收成浮层抽屉（浮在画布之上）。
+   * 开合由栏外的 `.rail-toggle` 驱动，所以收起时可以直接 `display:none`——
+   * 开关浮在画布边上，不会跟着面板一起消失。
    */
-  .rail, .right {
+  .rail,
+  .right {
     position: absolute;
     top: 0;
     bottom: 0;
@@ -687,44 +754,67 @@ input[type="color"] {
   }
   .rail { left: 0; }
   .right { right: 0; }
-  body.drawer-open .rail, body.drawer-open .right { display: block; }
+  body.drawer-open .rail,
+  body.drawer-open .right { display: flex; }
+  body.no-rail .rail,
+  body.no-panel .right { display: none; }
   /* 抽屉打开时用遮罩挡住画布，点遮罩关闭——避免"看起来还能点画布" */
   body.drawer-open .drawer-scrim { display: block; }
 }
 
 /*
- * 桌面宽度下折叠侧栏（顶栏「☰ 工具 / ⚙ 参数」触发）。
+ * 桌面宽度下折叠侧栏：开关浮在栏外（画布区贴栏的那条边），所以收起可以**整栏隐藏**。
  *
- * 用改 grid 模板而不是 `display:none`：面板是网格列，直接隐藏会让后面的列左移串位
- * （`.center` 会跑到 232px 那一列上）。折叠是用户偏好，由 index.ts 的 desktopHidden
- * 跨重绘保留，`.narrow-only` 的显隐与它无关。
+ * ⚠️ 隐藏一栏时**必须同时把模板改成两列**：`display:none` 会把那个 grid 项从布局流里
+ * 摘掉，剩下两项会被自动重排到前两列——三列模板下表现为"画布宽度变成 0、另一栏却占满了"。
+ * 所以这里不能只改 `display`，模板要跟着变（下面三条就是三种组合）。
  */
 @media (min-width: 981px) {
-  body.no-rail .main { grid-template-columns: 1fr 300px; }
-  body.no-panel .main { grid-template-columns: 232px 1fr; }
-  body.no-rail .rail, body.no-panel .right { display: none; }
+  body.no-rail .main { grid-template-columns: 1fr var(--panel-w); }
+  body.no-panel .main { grid-template-columns: var(--rail-w) 1fr; }
   /*
    * 两边同时收起。这条必须比上面两条更"重"才有确定的胜负：
    * 早期写成同权重的 `body.no-rail.no-panel .main`，靠源码顺序取胜——
-   * 顺序一变就静默失配（两栏都隐藏了、网格却还留着 300px 的空列）。
+   * 顺序一变就静默失配（两栏都隐藏了、网格却还留着空列）。
    * 加 `.main` 提高一级特异性，就不再看顺序。
    */
   body.no-rail.no-panel .main.main { grid-template-columns: 1fr; }
+  body.no-rail .rail,
+  body.no-panel .right { display: none; }
 }
 
 /*
- * 顶栏两个面板开关（`.narrow-only` 是沿用下来的类名）。
+ * 折叠 / 展开开关：浮在**侧栏外面**——画布区紧贴侧栏的那条边、顶端
+ * （左栏开关在画布左上角，右栏开关在画布右上角）。
  *
- * 这两个按钮曾经在**桌面宽度下也显示**，但点击只改 `dataset.drawer`，而桌面布局不读它，
- * 于是表现是"按了没反应"。根因是 `.narrow-only` 从来**没有对应的 CSS 规则**
- * （只在 HTML 与注释里出现过），"只在窄屏显示"这个意图从未生效。
+ * 图标是**三角形箭头**，指向"点下去会往哪收"：展开时指向收纳方向（左栏 ◀ / 右栏 ▶），
+ * 收起后指向展开方向（左栏 ▶ / 右栏 ◀）。方向由 index.ts 写进来（见 updateRailToggle）。
  *
- * 选择"让它在两种宽度下都真的有用"，而不是"桌面隐藏"：
- *  - 窄屏：侧栏是浮层抽屉，点按钮开合（原有行为）。
- *  - 桌面：侧栏是常驻列，点按钮折叠/展开该列，把空间让给画布。
- * 两种宽度下都是"显示/隐藏面板"，同一个心智模型，不存在"点了没反应"的情况。
+ * 为什么放栏外而不是栏内：栏内的话，面板一 `display:none` 开关就跟着没了，
+ * 只能让面板收成一条窄边来"顺便"留住开关（那一版还会让空窄边白占宽度）。
+ * 浮在栏外就没有这个约束：面板可以真正收干净，开关永远在原地。
  */
-.narrow-only { display: inline-flex; }
+.rail-toggle {
+  position: absolute;
+  top: 6px;
+  z-index: 30;
+  width: 20px;
+  height: 18px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--dim);
+  background: rgba(20, 22, 28, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  cursor: pointer;
+}
+#btn-drawer-tools { left: 6px; }
+#btn-drawer-panel { right: 6px; }
+.rail-toggle:hover { color: var(--text); background: var(--bg-3); border-color: var(--accent-2); }
 
 /* 窄屏抽屉遮罩（桌面宽度下不产生可见效果） */
 .drawer-scrim {
@@ -739,7 +829,6 @@ input[type="color"] {
   .header { padding: 6px 8px; gap: 6px; }
   .header-left { gap: 6px; }
   .logo { font-size: 12px; }
-  .mode-select { padding: 4px 6px; }
   .header-actions { gap: 4px; }
   .dropdown { min-width: 240px; right: -4px; }
 }

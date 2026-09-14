@@ -15,7 +15,7 @@
   <header class="header">
     <!--
       顶栏分两组：
-        左侧 = 品牌 + 模式切换（工作模式的锚点，位置固定不动）
+        左侧 = 品牌（工作模式选择器已移除，三种用途并入右侧「预设」）
         右侧 = 其余全部操作：撤销 / 重做 / 重新转换 / 新建 / 导入 / 导出，最右侧是「? 快捷键」
       依据是桌面软件的肌肉记忆：动作按钮集中在右上角，左侧只放"当前处于什么状态"；
       帮助类入口放在最边缘（离其它按钮远一点，避免误触）。
@@ -23,11 +23,8 @@
     -->
     <div class="header-left">
       <div class="logo">▦ 像素画工作台</div>
-      <div class="header-mode" id="header-mode"></div>
     </div>
     <div class="header-right">
-      <button class="btn narrow-only" id="btn-drawer-tools" type="button"></button>
-      <button class="btn narrow-only" id="btn-drawer-panel" type="button"></button>
       <div class="header-actions" id="header-actions"></div>
       <button class="btn" id="btn-import" type="button"></button>
       <div class="menu-anchor" id="export-anchor">
@@ -40,8 +37,10 @@
 
   <div class="main">
     <aside class="rail" id="rail-left">
-      <div id="rail-tools"></div>
-      <div class="panel" id="panel-palette"></div>
+      <div class="rail-body">
+        <div id="rail-tools"></div>
+        <div class="panel" id="panel-palette"></div>
+      </div>
     </aside>
 
     <section class="center">
@@ -61,12 +60,23 @@
           <button class="btn tiny" id="view-out" aria-label="缩小">−</button>
           <button class="btn tiny" id="view-in" aria-label="放大">＋</button>
         </div>
+        <!--
+          侧栏的折叠/展开开关**浮在栏外**——画布区紧贴侧栏的那条边、顶端
+          （左栏开关在画布左上角，右栏开关在画布右上角）。
+          栏内长开关的话，面板一 display:none 开关就跟着没了，只能让面板收成窄边；
+          浮在栏外则面板可以真正收干净，开关永远在原地。图标是三角形箭头，
+          展开时指向收纳方向、收起后指向展开方向。
+        -->
+        <button class="btn rail-toggle" id="btn-drawer-tools" type="button"></button>
+        <button class="btn rail-toggle" id="btn-drawer-panel" type="button"></button>
       </div>
       <footer class="statusbar" id="statusbar"></footer>
     </section>
 
     <aside class="right" id="rail-right">
-      <div class="panel" id="panel-params"></div>
+      <div class="rail-body">
+        <div class="panel" id="panel-params"></div>
+      </div>
     </aside>
   </div>
   <!-- 窄屏抽屉遮罩：点它关闭抽屉（桌面宽度下不显示） -->

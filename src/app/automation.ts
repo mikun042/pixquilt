@@ -11,7 +11,7 @@
  * 因此"页内调好参数后交给 CLI 批量跑"是安全的。
  */
 import { DEFAULT_PARAMS, STYLE_PRESETS, TOOLS, coerceParams, sanitizeParams, type ConvertParams, type PixelArt } from '../core/types.ts'
-import { PALETTE_MAX, PRESETS, getPreset, isPresetId, serializeHexPalette } from '../core/palettes.ts'
+import { PRESETS, getPreset, serializeHexPalette } from '../core/palettes.ts'
 import { applyOps, blankArt, type EditOp } from '../core/ops.ts'
 import { runPipeline } from '../core/pipeline.ts'
 import { artHash, decodePixBin, encodePixBin, layoutSheet, parseProjectFile, pixelJSONString, projectJSONString } from '../core/export.ts'
@@ -448,6 +448,3 @@ async function toFile(src: File | Blob | string): Promise<File> {
   const name = src.split('/').pop()?.split('?')[0] || 'input.png'
   return new File([blob], name, { type: blob.type || 'image/png' })
 }
-
-/** 常量转发：让 UI/文档能从同一处读到上限（避免各写一遍） */
-export const LIMITS = { paletteMax: PALETTE_MAX, presetIds: PRESETS.map((p) => p.id), isPresetId }

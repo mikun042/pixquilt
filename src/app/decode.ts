@@ -6,7 +6,7 @@
  *  - Node 侧只承诺 PNG（其余交给浏览器通道或先转格式）。
  * 两边都产出同一种形状（width/height/data），因此 core 不需要知道自己在哪跑。
  */
-import { ALPHA_THRESHOLD } from '../core/limits.ts'
+import { ALPHA_THRESHOLD, SVG_RASTER_MAX, SVG_RASTER_MIN } from '../core/limits.ts'
 import type { SourceImage } from '../core/pipeline.ts'
 
 /** 支持的扩展名 / MIME（与 使用说明 一致，避免"文档说支持但实际报错"） */
@@ -41,7 +41,7 @@ function svgIntrinsicSize(text: string): { w: number; h: number } | null {
 /**
  * 解码为 RGBA。策略：
  *  1. 优先 `createImageBitmap(blob)` —— 快，且支持 EXIF 方向；
- *  2. SVG 走 `<img>` + canvas 栅格化（长边夹到 512–4096，避免超大画布拖死页面）；
+ *  2. SVG 走 `<img>` + canvas 栅格化（长边夹到 `SVG_RASTER_MIN`–`SVG_RASTER_MAX`，避免超大画布拖死页面）；
  *  3. `createImageBitmap` 失败时回退 `<img>` 路径（部分旧格式只支持后者）。
  * 注意：**必须走 canvas 才能拿到 RGBA 缓冲**；ImageBitmap 也需要 drawImage 一遍。
  */
@@ -50,9 +50,10 @@ export async function decodeToRgba(file: Blob & { name?: string }): Promise<Sour
 
   if (isSvg) {
     const text = await file.text()
-    const size = svgIntrinsicSize(text) ?? { w: 512, h: 512 }
+    // 没有声明尺寸的 SVG 按栅格化下限当正方形处理
+    const size = svgIntrinsicSize(text) ?? { w: SVG_RASTER_MIN, h: SVG_RASTER_MIN }
     const long = Math.max(size.w, size.h)
-    const scale = long > 4096 ? 4096 / long : long < 512 ? 512 / long : 1
+    const scale = long > SVG_RASTER_MAX ? SVG_RASTER_MAX / long : long < SVG_RASTER_MIN ? SVG_RASTER_MIN / long : 1
     const w = Math.max(1, Math.round(size.w * scale))
     const h = Math.max(1, Math.round(size.h * scale))
     const url = URL.createObjectURL(new Blob([text], { type: 'image/svg+xml' }))

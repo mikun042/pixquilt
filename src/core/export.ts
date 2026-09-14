@@ -8,7 +8,6 @@ import { ALPHA_THRESHOLD, PALETTE_MAX, SCHEMA_VERSION, SUPPORTED_VERSIONS } from
 import { base64ToBytes, bytesToBase64, safeFileBase } from './binary.ts'
 import { coerceParams, normalizeHex, type ConvertParams, type PixelArt, type ProjectFile } from './types.ts'
 import { artToImageData, clampScale, type RasterOptions } from './raster.ts'
-import { serializeHexPalette } from './palettes.ts'
 import { countTransparent, countUsage } from './stats.ts'
 
 export { clampScale, safeFileBase }
@@ -248,22 +247,4 @@ export function artHash(art: PixelArt): string {
   for (let i = 0; i < art.indices.length; i++) mix(art.indices[i])
   if (art.alphaMask) for (let i = 0; i < art.alphaMask.length; i++) mix(art.alphaMask[i])
   return h1.toString(16).padStart(8, '0')
-}
-
-/** 供 UI 复用的色板文本（带号色时输出两列） */
-export function paletteHexText(palette: string[], codes?: string[]): string {
-  return serializeHexPalette(palette, codes)
-}
-
-/** 便捷：把用量表转成"按用量降序"的数组（清单与 UI 都用这个顺序） */
-export function usageSorted(usage: Record<string, number>): { color: string; count: number }[] {
-  return Object.entries(usage)
-    .map(([color, count]) => ({ color, count }))
-    .sort((a, b) => b.count - a.count || a.color.localeCompare(b.color))
-}
-
-/** 让"某颜色不在色板里"这类检查有一处实现 */
-export function isPaletteColor(palette: string[], hex: string): boolean {
-  const n = normalizeHex(hex)
-  return !!n && palette.some((c) => c.toLowerCase() === n)
 }

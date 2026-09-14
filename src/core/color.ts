@@ -158,19 +158,3 @@ export function gradientPalette(fromHex: string, toHex: string, steps: number): 
   }
   return out
 }
-
-/** 取色器轨道段数：段越多越平滑，但每帧重建的成本越高 */
-export const PICKER_RAMP_SEGMENTS = 12
-
-/**
- * 轨道渐变的 CSS 色标串。这里用 JS 预采样 OKLab 再交给 CSS 线性插值，
- * 避免每帧让浏览器光栅化 `in oklab`（弱机上肉眼可见的掉帧）。
- */
-export function oklabGradientCss(from: Rgb, to: Rgb, direction: 'to right' | 'to bottom', segments = PICKER_RAMP_SEGMENTS): string {
-  const stops: string[] = []
-  for (let i = 0; i <= segments; i++) {
-    const c = oklabMix(from, to, i / segments)
-    stops.push(`${rgbToHex(c.r, c.g, c.b)} ${((i / segments) * 100).toFixed(1)}%`)
-  }
-  return `linear-gradient(${direction}, ${stops.join(', ')})`
-}
