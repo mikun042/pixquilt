@@ -847,7 +847,8 @@ async function main() {
      * 合成底色吸管的**去向**：这守的是"静默失效"的另一种形态——状态被设置了、提示语也说了，
      * 但全仓没有读取者。
      *
-     * `pickIntoMatte` 原先只在 4 处被赋值，唯一一次"读取"是在 toast 文案里；画布的
+     * `pickIntoMatte`（修复后改名为 `matte-field.ts` 里的 `pendingPick`）原先只在 4 处被赋值，
+     * 唯一一次"读取"是在 toast 文案里；画布的
      * `onPickColor` 从不看它。于是用户按提示点一格，颜色**悄悄写进了主色**，而合成底色纹丝不动——
      * 界面没有任何错误信号，这比直接报错更难发现。
      *
@@ -905,7 +906,7 @@ async function main() {
       assert(straw.hitSelf, `吸管按钮被盖住/点不到：落点 ${Math.round(straw.x)},${Math.round(straw.y)}`)
       assert(
         String(strawPick.primary).toLowerCase() === '#00ff00',
-        `吸管取色不应改写主色，实际 ${strawPick.primary}（颜色被路由到主色 = pickIntoMatte 没被消费）`,
+        `吸管取色不应改写主色，实际 ${strawPick.primary}（颜色被路由到主色 = 待办标志没被消费，旧名 pickIntoMatte）`,
       )
       assert(
         String(strawPick.matte).toLowerCase() === '#3a7bd5',

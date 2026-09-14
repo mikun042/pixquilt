@@ -15,5 +15,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "tool/**/*.mjs"]
+  "include": ["src/**/*.ts", "tool/**/*.mjs", "tool/**/*.d.mts"]
 }

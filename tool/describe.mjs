@@ -5,10 +5,10 @@
  * 为什么生成而不是手写：旧项目的算子表只活在 Markdown 里，代码改了文档没改，agent 就按错的信息干活。
  * 这里把「文档 = 元数据的投影」：算子、参数、色卡、上限全部从 `src/core/spec.ts` 投影而来。
  *
- * **诚实说明**：只有"投影"这半是自动的。"改了元数据必须重跑本脚本"目前**没有自动化断言守着**
- * （`npm run verify` 链里不含 describe，`npm test` 也没有比对新旧产物的断言）——见
- * docs/DEVELOPMENT.md §5 的诚实说明。唯一的例外是下面的 CLI 参数表：它每次运行都会与
- * `tool/artc.mjs` 的 `KNOWN_FLAGS` 对账，少收录或多收录都会直接抛错。
+ * 两道防线（都在 `npm test` 里自动跑）：
+ *  1. 本脚本每次运行都与 `tool/artc.mjs` 的 `KNOWN_FLAGS` 对账——参数表少收录或多收录都会直接抛错；
+ *  2. `src/test/describe-freshness.test.ts` 把 `build()` 的输出与仓库里的 `docs/AGENT_API.md`
+ *     逐字节比对，所以"改了 `spec.ts` 忘了重跑 describe"会**直接变红**（此前只写在文档里，没有守着）。
  */
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -41,7 +41,7 @@ function paramTable() {
   return ['| 参数 | 类型 | 范围 | 默认 | 说明 |', '|---|---|---|---|---|', ...rows].join('\n') + '\n'
 }
 
-function build() {
+export function build() {
   const lines = []
   lines.push('# 像素画工作台 · Agent 接口手册')
   lines.push('')

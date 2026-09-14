@@ -1,0 +1,12 @@
+# 行尾交给 git 统一：仓库内一律 LF，检出到工作区也是 LF。
+#
+# 为什么需要它：本项目的文档与生成物是**逐字节比对**的（`src/test/describe-freshness.test.ts`
+# 比 `docs/AGENT_API.md` 与生成器输出，`tool/build.mjs` 比 `dist/index.html` 与根目录交付物的哈希）。
+# 而 Windows 上 `core.autocrlf=true` 会在检出时把 LF 换成 CRLF，于是：
+#   · 每次 `git add` 都刷一串 "LF will be replaced by CRLF" 警告；
+#   · 换一台机器 clone 后，同一份"生成物"的字节与生成器输出不一致，比对类断言会莫名变红；
+#   · 谁不小心用别的行尾保存一次，整文件都会进 diff，真实改动被淹没。
+# 固定成 LF 之后，上面三件事都不会发生（本文件只声明策略，不回改已入库内容）。
+#
+# `text=auto` 让 git 自行识别二进制（图片等不会被转换），只对文本做行尾规范化。
+* text=auto eol=lf

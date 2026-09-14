@@ -370,7 +370,8 @@ select, input[type="number"], input[type="text"], .num {
 .color-slot .chip-label { font-size: 11px; color: var(--dim); }
 
 /*
- * 「合成底色」的色块按钮：点它在字段下方**就地展开**取色盘（见 index.ts 的 renderMattePicker）。
+ * 「合成底色」的色块按钮：点它在字段下方**就地展开**取色盘（实现在 `src/app/matte-field.ts` 的
+ * `createMatteField()` 里——该字段原先是 index.ts 的 `renderMattePicker()`，2026-09-14 抽成工厂）。
  * 它复用了 `.color-slot .chip` 的色块外观，因此这里只安排内部排布——
  * 万一以后 .chip 那条选择器改了，这里不用跟着动。
  */
