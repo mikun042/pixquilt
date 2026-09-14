@@ -30,6 +30,7 @@ import { countTransparent, countUsage } from '../src/core/stats.ts'
 import { describeAll, OP_SPECS } from '../src/core/spec.ts'
 import { decodePngNode } from '../src/io/node-png.ts'
 import { artToPngBytesNode } from '../src/io/node-export.ts'
+import { artToImageData } from '../src/core/raster.ts'
 import { canDecodeInNode, isImagePath, loadImageNode, UnsupportedImageError } from '../src/io/node-image.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -343,6 +344,22 @@ export function sanitizeName(s) {
 
 /* ------------------------------------------------------------------ 单张处理 */
 
+/**
+ * 导出图的真实统计：宽高与透明像素数**从导出缓冲上数**，而不是读模型的 alphaMask。
+ *
+ * 为什么必须这样：`transparent: 'key'` 的底色键控只在**导出这一步**生效
+ * （core/raster.ts 的 keyed 判定），管线里根本不建 alphaMask。
+ * 早先汇总里的 transparent 读的是 alphaMask，于是 key 模式下恒为 0，
+ * 而屏幕上的产物明明有 60% 透明格——agent 按这个字段判断会得出"键控没生效"的错误结论
+ * （实测被这条坑过一轮，见 docs/ARCHITECTURE.md §8.10 第 ⑦ 类）。
+ */
+function pngStats(art, scale, pngOpts) {
+  const img = artToImageData(art, scale, pngOpts)
+  let transparentPixels = 0
+  for (let i = 3; i < img.data.length; i += 4) if (img.data[i] === 0) transparentPixels++
+  return { pngWidth: img.width, pngHeight: img.height, pngTransparent: transparentPixels }
+}
+
 function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wantSheet, wantPixbin, wantPdf, nameTemplate, index }) {
   const image = loadImageNode(src)
   const { art: rendered, overflow, paletteSource, cleanup } = runPipeline({ width: image.width, height: image.height, data: image.data }, params)
@@ -360,11 +377,14 @@ function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wa
     base,
     width: art.width,
     height: art.height,
+    // 模型侧：格数与 alphaMask 透明格（与导出倍数无关）
     paletteSize: art.palette.length,
     paletteSource,
     overflow,
     cleanup,
     transparent: countTransparent(art.indices, art.alphaMask),
+    // 产物侧：导出 PNG 的真实宽高与透明像素数（含 --scale 放大与 key 键控的影响）
+    ...pngStats(art, scale, pngOpts),
     usage: countUsage(art.indices, art.palette, art.alphaMask),
     changes: applied.changes,
     hash: artHash(art),
@@ -603,6 +623,41 @@ async function selftest() {
     const kept = decodePngNode(artToPngBytesNode(art, 1, { transparentBg: false }))
     eq(kept.data[3], 255, '不键控时应保持不透明')
     return '键控生效'
+  })
+
+  // 下面这条是回归防线：汇总里的 transparent 读的是模型 alphaMask，而 key 模式
+  // 只在导出时生效、管线里不建 mask，两者会不一致。pngStats 必须反映**产物**。
+  check('汇总：key 模式的 pngTransparent 必须反映产物（而不是恒为 0 的模型 mask）', () => {
+    const art = { width: 4, height: 4, indices: new Uint8Array(16), palette: ['#ffffff'], alphaMask: null }
+    const modelSide = countTransparent(art.indices, art.alphaMask)
+    eq(modelSide, 0, '前提：key 模式下模型侧透明格就是 0（这正是当年误判的来源）')
+    const st = pngStats(art, 1, { transparentBg: true, bgHex: '#ffffff' })
+    eq(st.pngTransparent, 16, 'key 后产物应全透明（16 像素）')
+    const off = pngStats(art, 1, { transparentBg: false, bgHex: '#ffffff' })
+    eq(off.pngTransparent, 0, '不键控时产物应无透明像素')
+    return `模型侧 ${modelSide} vs 产物侧 ${st.pngTransparent}（已如实汇报）`
+  })
+
+  check('汇总：pngWidth/pngHeight 必须计入 --scale（而不是只报格数）', () => {
+    const art = blankArt(5, 3, '#3366cc', false)
+    eq(pngStats(art, 1, {}).pngWidth, 5, 'scale=1 时宽 = 格数')
+    const x4 = pngStats(art, 4, {})
+    eq(x4.pngWidth, 20, 'scale=4 时宽应为 20')
+    eq(x4.pngHeight, 12, 'scale=4 时高应为 12')
+    return '5×3 → 20×12'
+  })
+
+  check('汇总：--alpha 模式下 pngTransparent 与模型侧 transparent 一致', () => {
+    // blankArt(..., transparent=true) 造的是**整幅透明**的底，必须先把要保留的格补成不透明，
+    // 否则测的是"全透明画布"，模型侧会是 16 而不是 1。
+    const art = blankArt(4, 4, '#000000', true)
+    art.alphaMask.fill(255)
+    art.alphaMask[0] = 0
+    const modelSide = countTransparent(art.indices, art.alphaMask)
+    const st = pngStats(art, 2, {})
+    eq(modelSide, 1, '模型侧应有 1 个透明格')
+    eq(st.pngTransparent, 4, 'scale=2 时产物应为 2×2=4 个透明像素')
+    return `模型 1 格 → 产物 4 像素`
   })
 
   check('导出：pixbin 往返', () => {
@@ -984,6 +1039,7 @@ async function main() {
       height: art.height,
       paletteSize: art.palette.length,
       transparent: countTransparent(art.indices, art.alphaMask),
+      ...pngStats(art, scale, { transparentBg: params.transparent === 'key', bgHex: params.matteColor }),
       hash: artHash(art),
       changes: r.changes.length,
     }
@@ -1055,13 +1111,18 @@ async function main() {
           paletteSize: r.paletteSize,
           paletteSource: r.paletteSource,
           transparent: r.transparent,
+          pngWidth: r.pngWidth,
+          pngHeight: r.pngHeight,
+          pngTransparent: r.pngTransparent,
           hash: r.hash,
           changes: r.changes.length,
           bead: r.beadSummary ?? undefined,
           cleanup: r.cleanup ?? undefined,
           _sheet: r.sheet,
         })
-        if (!args.quiet) progress(`✔ ${basename(src)} → ${r.base}.png（${r.width}×${r.height}，${r.paletteSize} 色${r.transparent ? `，透明 ${r.transparent}` : ''}${r.beadSummary ? `，拼豆 ${r.beadSummary.totalBeads} 颗` : ''}）`)
+        // 进度行报**产物**的透明像素：key 模式下模型侧恒为 0，按它显示会少报
+        // （实测一次键控出 60% 透明格，屏幕上却什么都没说）。
+        if (!args.quiet) progress(`✔ ${basename(src)} → ${r.base}.png（${r.width}×${r.height}${r.pngWidth !== r.width ? ` → 导出 ${r.pngWidth}×${r.pngHeight}` : ''}，${r.paletteSize} 色${r.pngTransparent ? `，透明 ${r.pngTransparent} 像素` : ''}${r.beadSummary ? `，拼豆 ${r.beadSummary.totalBeads} 颗` : ''}）`)
         // 杂色清理吃掉了整幅消失的颜色时必须说出来。像素画资产里的"小连通块"常常正是
         // 故意画的 1px 细节（高光/眼神/描边断点），被静默并入邻色后只能靠对图才发现。
         if (r.cleanup && r.cleanup.removedColors.length) {
@@ -1123,6 +1184,9 @@ function printHelp() {
   --name <模板>           命名模板，占位符 {name} {index} {w} {h} {scale}，支持 {index:02}
   --scale <n>             PNG 整数倍放大（默认 1，超限自动降档）
   --json                  以 JSON 打印汇总（含每张的 hash/尺寸/用量）
+                          尺寸与透明有两套字段：width/height/transparent 是模型侧（格数、
+                          alphaMask），pngWidth/pngHeight/pngTransparent 是产物侧（含 --scale
+                          放大与 --transparent 键控）；判断产物请用 png* 那三个
   --dry-run               只打印解析后的参数，不处理任何图片
   --quiet                 少打印过程信息
   --progress              与 --json 同用时把进度行写到 stderr（保证 stdout 仍是纯 JSON）

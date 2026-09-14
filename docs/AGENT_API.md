@@ -39,7 +39,7 @@ node tool/artc.mjs --ops '[{"op":"eraseColor","color":"#ffffff"},{"op":"trim"}]'
 | `--out` | 输出目录（默认 out/） |
 | `--name` | 命名模板：`{name}` `{index}` `{index:02}` `{w}` `{h}` `{scale}` |
 | `--scale` | PNG 整数倍放大（默认 1，超限自动降档） |
-| `--json` | 以 JSON 打印汇总（含每张的 hash / 尺寸 / 用量）；stdout 只有这一份 JSON，可直接 parse |
+| `--json` | 以 JSON 打印汇总（含每张的 hash / 尺寸 / 用量）；stdout 只有这一份 JSON，可直接 parse。**注意两套尺寸/透明字段**：`width`/`height`/`transparent` 是模型侧（格数、alphaMask），`pngWidth`/`pngHeight`/`pngTransparent` 是产物侧（含 `--scale` 放大与 `--transparent` 键控）；判断产物请用后者 |
 | `--dry-run` | 只打印解析后的参数，不处理图片 |
 | `--quiet` | 少打印过程信息 |
 | `--progress` | 与 `--json` 同用时把进度行写到 stderr（保证 stdout 仍是纯 JSON） |
