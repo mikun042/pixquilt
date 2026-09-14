@@ -523,6 +523,55 @@ async function main() {
       return `1×1，屏幕 rgba(${trimPixel})`
     })
 
+    /*
+     * 「整体替换 = 新基线」：新建画布 / 载入项目之后，撤销**不该**把上一张画布搬回来。
+     *
+     * `regenerate`（重新转换）早就这么做，注释写着"重新转换 = 新的基线：撤销栈必须清空"；
+     * `newCanvas` 的注释也写着"新画布 = 新基线"，但此前只重置了 hasEdits、**撤销栈漏了**，
+     * `loadProject` / `importPixBin` / `ps.reset` / UI 的「新建空白画布」同样漏。
+     * 后果：撤销会把上一张画布（尺寸可能不同）搬回来，看起来像莫名其妙换图。
+     * 这里同时反向确认"普通编辑仍可撤销"——别把撤销栈整体关掉。
+     */
+    const baseline = JSON.parse(await cdp.eval(`(() => {
+      const ps = window.pixelArtStudio
+      const snap = () => ({ hash: ps.artHash(), w: ps.getInfo().width, h: ps.getInfo().height, past: window.__app.history.stats().past })
+      const out = {}
+      // A) 新建画布
+      ps.newCanvas({ width: 8, height: 8, color: '#ff0000' })
+      ps.edit([{ op: 'setAll', color: '#0000ff' }])
+      ps.newCanvas({ width: 12, height: 12, color: '#ffffff' })
+      out.newCanvas = snap()
+      ps.undo()
+      out.newCanvasAfterUndo = snap()
+      // B) 载入项目
+      ps.newCanvas({ width: 20, height: 6, color: '#00ff00' })
+      const proj = ps.exportProject()
+      ps.newCanvas({ width: 9, height: 9, color: '#123456' })
+      ps.loadProject(proj)
+      out.loaded = snap()
+      ps.undo()
+      out.loadedAfterUndo = snap()
+      // C) 普通编辑仍可撤销
+      ps.newCanvas({ width: 10, height: 10, color: '#ffffff' })
+      const c0 = snap()
+      ps.edit([{ op: 'setAll', color: '#ff00ff' }])
+      ps.undo()
+      out.plainUndo = { before: c0.hash, after: snap().hash }
+      return JSON.stringify(out)
+    })()`))
+    check('整体替换 = 新基线：新建/载入项目后撤销不会搬回上一张画布，普通编辑仍可撤销', () => {
+      const b = baseline
+      assert(b.newCanvas.past === 0, `newCanvas 后撤销栈应清空，实际还有 ${b.newCanvas.past} 帧`)
+      assert(
+        b.newCanvasAfterUndo.hash === b.newCanvas.hash && b.newCanvasAfterUndo.w === 12,
+        `newCanvas 后 undo 不该改变画布，实际变成 ${b.newCanvasAfterUndo.w} 宽（旧画布被搬回来了？）`,
+      )
+      assert(b.loaded.past === 0, `loadProject 后撤销栈应清空，实际还有 ${b.loaded.past} 帧`)
+      assert(b.loadedAfterUndo.hash === b.loaded.hash, 'loadProject 后 undo 不该回到载入前的画布')
+      assert(b.plainUndo.after === b.plainUndo.before, '普通编辑必须仍可撤销（别把撤销栈整体关掉）')
+      return `newCanvas ${b.newCanvas.w}×${b.newCanvas.h}、载入 ${b.loaded.w}×${b.loaded.h}，撤销栈均为 0 且 undo 不回退；普通编辑撤销正常`
+    })
+
     const validate = await cdp.eval(`JSON.stringify(window.pixelArtStudio.validateParams({ longEdge: 99999, dither: 'nope' }))`)
     check('参数预演：validateParams 报告被修正的字段', () => {
       const v = JSON.parse(validate)

@@ -118,9 +118,33 @@ function redo(): void {
   resetCanvasTo(next)
 }
 
+/**
+ * 撤销/重做专用：把某一份历史帧放回画布。**不能**重置撤销栈（否则栈自己就没了）。
+ * 这两条也是"模型 → 画布"同步路径的一个例子（经 `setArt`）。
+ */
 function resetCanvasTo(art: PixelArt): void {
   canvasApi.setArt(art)
   store.set('hasEdits', history.canUndo)
+  renderAll()
+}
+
+/**
+ * **整体替换**画布：新画布 = 新基线，因此撤销栈一并清空。
+ *
+ * 为什么必须清空：撤销栈里存的是**上一张画布**的帧。若不重置，"撤销"会把上一张画布搬回来
+ * ——尺寸、内容都可能完全不同，用户看到的是一次莫名其妙的换图（`regenerate` 早就这么做，
+ * 注释写着"重新转换 = 新的基线"；`newCanvas` 的注释也写着"新画布 = 新基线"，
+ * 但此前只重置了 `hasEdits`，撤销栈漏了——见 docs/ARCHITECTURE.md §8.10 ⑥ 那一族）。
+ *
+ * 调用方：导入/重转（`regenerate`）、新建空白（`makeBlank`）、清空（`newBlankOrClear`）、
+ * 以及页内 API 的 `newCanvas` / `loadProject` / `importPixBin` / `reset`。
+ * 唯独 `undo`/`redo` 走 `resetCanvasTo`。
+ */
+function replaceArt(art: PixelArt | null): void {
+  app.art = art
+  canvasApi.setArt(art)
+  resetHistory()
+  store.set('hasEdits', false)
   renderAll()
 }
 
@@ -180,14 +204,9 @@ function regenerate(): void {
   if (!app.source) return
   const t0 = performance.now()
   const { art } = runPipeline(app.source, app.params)
-  app.art = art
   const ms = Math.round(performance.now() - t0)
-  // 重新转换 = 新的基线：撤销栈必须清空（否则"撤销"会退回上一张图，语义混乱）
-  resetHistory()
-  canvasApi.setArt(art)
-  store.set('hasEdits', false)
+  replaceArt(art)
   if (ms > 400) toast(`转换完成（${art.width}×${art.height}，${ms}ms）`)
-  renderAll()
 }
 
 async function importFile(file: File): Promise<void> {
@@ -741,25 +760,18 @@ function newBlankOrClear(): void {
     return
   }
   if (!confirm('清空当前画布？未导出的内容会丢失。')) return
-  app.art = null
   app.source = null
   app.sourceName = ''
   app.refImage = null
   canvasApi.setReference(null, false)
-  resetHistory()
-  canvasApi.setArt(null)
-  store.setMany({ hasEdits: false, selectedCount: 0, clipboardHas: false })
-  renderAll()
+  replaceArt(null)
+  store.setMany({ selectedCount: 0, clipboardHas: false })
 }
 
 function makeBlank(): void {
   const w = app.params.exactWidth ?? Math.min(58, app.params.longEdge)
   const h = app.params.exactHeight ?? Math.min(58, app.params.longEdge)
-  const art = blankArt(w, h, app.params.matteColor, app.params.transparent === 'alpha')
-  app.art = art
-  canvasApi.setArt(art)
-  store.set('hasEdits', false)
-  renderAll()
+  replaceArt(blankArt(w, h, app.params.matteColor, app.params.transparent === 'alpha'))
   toast(`已新建空白画布 ${w}×${h}`)
 }
 
@@ -921,11 +933,7 @@ function boot(): void {
       renderAll()
     },
     getArt: () => app.art,
-    setArt: (next) => {
-      app.art = next
-      canvasApi.setArt(next)
-      renderAll()
-    },
+    replaceArt,
     getSource: () => app.source,
     setSource: (img, name) => {
       app.source = img
@@ -955,7 +963,6 @@ function boot(): void {
     makeThumbnail,
     // 供 getInfo().hasEdits 读取真值（此前 API 写死 false，编辑后仍报 false，属主动误导）
     hasEdits: () => store.get('hasEdits'),
-    resetEdits: () => store.set('hasEdits', false),
     /**
      * 从 params 推导空白画布规格：UI 的 makeBlank 与 API 的 newCanvas 共用同一份规则。
      * 此前两者各有一套（尺寸推导相同，但底色一个用 matteColor、一个默认 #000000），行为已分叉。

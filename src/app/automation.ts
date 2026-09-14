@@ -24,7 +24,12 @@ export interface AutomationDeps {
   getParams: () => ConvertParams
   setParams: (params: ConvertParams) => void
   getArt: () => PixelArt | null
-  setArt: (art: PixelArt | null) => void
+  /**
+   * **整体替换**画布（重转 / 新建 / 载入项目 / 回读 pixbin / 清空）：这是一条"新基线"操作，
+   * 实现方必须**同时清空撤销栈**——否则撤销会把上一张画布搬回来（尺寸都可能不同）。
+   * 传 `null` 表示清空工作区。
+   */
+  replaceArt: (art: PixelArt | null) => void
   getSource: () => { width: number; height: number; data: Uint8ClampedArray } | null
   setSource: (img: { width: number; height: number; data: Uint8ClampedArray } | null, name: string) => void
   regenerate: () => void
@@ -55,8 +60,6 @@ export interface AutomationDeps {
    * 是**主动误导**——脚本会据此以为画布是纯转换结果。改由 UI 的 store 提供真值。
    */
   hasEdits: () => boolean
-  /** 清空「有手动编辑」标记：newCanvas 产出的是新基线，不应延续上一张画布的标记 */
-  resetEdits: () => void
   /**
    * 「从 params 推导空白画布」（尺寸 + 底色），UI 的 makeBlank 与 API 的 newCanvas 共用。
    *
@@ -153,15 +156,19 @@ export function installAutomationApi(deps: AutomationDeps): void {
       return { name: file.name, width: image.width, height: image.height }
     },
     convert: (): { width: number; height: number; paletteSize: number } => {
-      const src = requireSource()
-      const { art } = runPipeline(src, deps.getParams())
-      deps.setArt(art)
+      requireSource()
+      /*
+       * 只调 `regenerate()`，不再"先自己跑一遍管线 setArt、再让 regenerate 跑第二遍"。
+       * 原先那份是纯重复：同一份原图与参数 → 确定性输出，两次结果完全相同，白白多算一遍大图。
+       * 重转 = 新基线这件事由 `regenerate → replaceArt` 统一负责（含清空撤销栈）。
+       */
       deps.regenerate()
+      const art = requireArt()
       return { width: art.width, height: art.height, paletteSize: art.palette.length }
     },
     /** 清空工作区（不弹确认）：批量逐张处理的安全起点 */
     reset: (): void => {
-      deps.setArt(null)
+      deps.replaceArt(null)
       deps.setSource(null, '')
     },
 
@@ -228,13 +235,13 @@ export function installAutomationApi(deps: AutomationDeps): void {
     },
     importPixBin: (base64: string, palette?: string[]): EditSummary => {
       const art = decodePixBin(base64ToBytes(base64), palette ?? requireArt().palette)
-      deps.setArt(art)
+      deps.replaceArt(art)
       return summaryOf(art, [], true)
     },
     loadProject: (json: string): { width: number; height: number; paletteSize: number } => {
       const parsed = parseProjectFile(json)
       deps.setParams(parsed.params)
-      deps.setArt(parsed.art)
+      deps.replaceArt(parsed.art)
       return { width: parsed.art.width, height: parsed.art.height, paletteSize: parsed.art.palette.length }
     },
 
@@ -265,9 +272,8 @@ export function installAutomationApi(deps: AutomationDeps): void {
         opts.transparent === undefined ? spec.transparent : !!opts.transparent,
       )
       deps.setSource(null, '')
-      deps.setArt(art)
-      // 新画布 = 新基线：编辑标记归零，否则 getInfo().hasEdits 会延续上一张画布的状态
-      deps.resetEdits()
+      // 新画布 = 新基线：编辑标记与撤销栈都归零（replaceArt 负责），否则撤销会把上一张画布搬回来
+      deps.replaceArt(art)
       return summaryOf(art, [], true)
     },
 
