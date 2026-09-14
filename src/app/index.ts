@@ -933,10 +933,17 @@ function renderParams(): void {
   paramsPanel.append(el('div', { class: 'panel-title' }, ['显示']))
   paramsPanel.append(
     el('div', { class: 'field' }, [
-      checkbox(store.get('showGrid'), (v) => { store.set('showGrid', v) }),
+      /*
+       * 勾完必须**通知画布重绘**。`store.set('showGrid', …)` 只通知关心这个 key 的订阅者，
+       * 而画布不是在订阅里读它、而是在 `draw()` 里读——于是原先表现为"勾了没反应"：
+       * 网格一直留在画面上，直到下一次无关的 renderAll 才突然跟着变（实测点一下
+       * `board.dataset.draws` 一个都不涨）。见 docs/ARCHITECTURE.md §8.10。
+       */
+      checkbox(store.get('showGrid'), (v) => { store.set('showGrid', v); canvasApi.redraw() }),
       el('span', {}, [' 网格线']),
       el('br'),
-      checkbox(store.get('showMag'), (v) => { store.set('showMag', v) }),
+      // 同理：`showMag` 同时管"笔刷足迹预览"（draw() 里读）与放大镜，不重绘的话预览也不更新
+      checkbox(store.get('showMag'), (v) => { store.set('showMag', v); canvasApi.redraw() }),
       el('span', {}, [' 笔刷预览 / 放大镜']),
     ]),
   )

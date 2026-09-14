@@ -801,6 +801,66 @@ async function main() {
       return 'Esc → pencil'
     })
 
+    /*
+     * 「显示」区的勾选框：状态改了，但**没人通知画布重绘**。
+     *
+     * 这是"假功能"的又一变体（§8.10 的三种都不完全一样）：消费者存在——`draw()` 里确实读
+     * `store.get('showGrid')` 决定画不画网格——缺的是**通知**。`store.set('showGrid', …)`
+     * 只通知了「写偏好」那个订阅者，画布要等下一次无关的 `renderAll` 才跟着变。
+     * 实测（probe）：点勾选框前后 `board.dataset.draws` 都是 1，网格线仍留在画面上。
+     *
+     * 断言用**真实鼠标**点勾选框，并用"画布墨量"（不透明像素的红通道之和）判断画布是否真的
+     * 重绘过——只看 `store` 里的布尔值会漏掉这个 bug，因为标志位本来就是对的。
+     * 画布用**黑色**：网格线是 `rgba(255,255,255,0.10)`，画在白色画布上肉眼与像素都分辨不出
+     * （第一版探针就因此在白底上得出了"网格没画"的错误结论）。
+     */
+    await cdp.eval(`window.pixelArtStudio.newCanvas({ width: 16, height: 16, color: '#000000' })`)
+    // 前面的断言会弹 toast（右下角浮层，活 4s），它正好压在参数面板底部这几个勾选框上，
+    // 真实鼠标会点在 toast 上。这里直接清掉——等价于"等它自己消失"，只是确定且不用干等 4 秒。
+    await cdp.eval(`document.querySelectorAll('#toasts > *').forEach((n) => n.remove())`)
+    await sleep(300)
+    const inkSum = async () =>
+      Number(await cdp.eval(`(() => {
+        const b = document.getElementById('board')
+        const c = document.createElement('canvas')
+        c.width = b.width; c.height = b.height
+        const g = c.getContext('2d')
+        g.drawImage(b, 0, 0)
+        const d = g.getImageData(0, 0, c.width, c.height).data
+        let s = 0
+        for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 0) s += d[i]
+        return s
+      })()`))
+    const gridBox = JSON.parse(await cdp.eval(`(() => {
+      const i = [...document.querySelectorAll('#panel-params input[type=checkbox]')].find((x) => (x.nextElementSibling?.textContent || '').includes('网格线'))
+      if (!i) return JSON.stringify({ error: '找不到「网格线」勾选框' })
+      i.scrollIntoView({ block: 'center' })
+      const r = i.getBoundingClientRect()
+      const x = r.left + r.width / 2, y = r.top + r.height / 2
+      const top = document.elementFromPoint(x, y)
+      return JSON.stringify({ x, y, rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+        topTag: top ? top.tagName : '(null)', topClass: top ? String(top.className) : '',
+        hitSelf: top ? i === top || i.contains(top) : false })
+    })()`))
+    const clickGrid = async () => {
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: gridBox.x, y: gridBox.y, button: 'left', clickCount: 1 })
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: gridBox.x, y: gridBox.y, button: 'left', clickCount: 1 })
+      await sleep(300)
+    }
+    const gridInkOn = gridBox.error ? -1 : await inkSum()
+    if (!gridBox.error) await clickGrid()
+    const gridInkOff = gridBox.error ? -1 : await inkSum()
+    const gridFlag = await cdp.eval(`window.__app.store.get('showGrid')`)
+    check('显示勾选框：点「网格线」后画布立刻重绘（网格当场消失），而不是等下一次无关重绘', () => {
+      assert(!gridBox.error, gridBox.error)
+      assert(gridBox.hitSelf, `「网格线」勾选框被盖住/点不到：落点 ${Math.round(gridBox.x)},${Math.round(gridBox.y)} 矩形 ${gridBox.rect}，命中 <${gridBox.topTag} class="${gridBox.topClass}">`)
+      assert(gridFlag === false, `点一下应把 showGrid 关掉，实际 ${gridFlag}`)
+      assert(gridInkOff !== gridInkOn, `画布没有任何变化（墨量和 ${gridInkOn}）——勾选框只改了状态、没人通知画布重绘`)
+      return `网格墨量 ${gridInkOn} → ${gridInkOff}（画布确实重绘了）`
+    })
+    // 复位：把网格开回来，别把"关着网格"的状态留给后面的断言
+    if (!gridBox.error) await clickGrid()
+
     check('运行期无控制台错误', () => {
       assert(consoleErrors.length === 0, `控制台报错 ${consoleErrors.length} 条：${consoleErrors.slice(0, 2).join(' | ')}`)
       return '0 条'
