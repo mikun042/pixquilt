@@ -861,6 +861,43 @@ async function main() {
     // 复位：把网格开回来，别把"关着网格"的状态留给后面的断言
     if (!gridBox.error) await clickGrid()
 
+    /*
+     * 「? 也能打开快捷键速查」是顶栏那个按钮 **tooltip 里写的承诺**，而全仓没有任何
+     * `?` / `Slash` 的键盘处理——按了没反应。这正是 §8.10 那类"界面上承诺了能力却没有实现"，
+     * 只是这次承诺写在 title 属性里（更容易漏：静态审阅只 grep 代码，不会去读 tooltip）。
+     *
+     * 速查表自己还写着"快捷键以本表为唯一出处"，而表里没有 `?` 这一行——两处界面互相矛盾，
+     * 所以修法是**实现它并补进表里**，而不是删掉 tooltip 那句话。
+     *
+     * 按之前先点一下画布：全局快捷键的守卫是"焦点在 INPUT/TEXTAREA/SELECT 上就让路"
+     * （别在输入框里抢按键），而上一条断言刚点过一个 checkbox，焦点还在它身上。
+     * 真实用户按 `?` 时焦点通常在画布/页面上，这里照那个顺序来。
+     */
+    const focusPt = JSON.parse(await cdp.eval(`(() => {
+      const b = document.getElementById('board').getBoundingClientRect()
+      return JSON.stringify({ x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2),
+        active: document.activeElement ? document.activeElement.tagName : '(none)' })
+    })()`))
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: focusPt.x, y: focusPt.y, button: 'left', clickCount: 1 })
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: focusPt.x, y: focusPt.y, button: 'left', clickCount: 1 })
+    await sleep(200)
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: '?', code: 'Slash', modifiers: 8, windowsVirtualKeyCode: 191 })
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: '?', code: 'Slash', modifiers: 8, windowsVirtualKeyCode: 191 })
+    await sleep(250)
+    const helpOpen = await cdp.eval(`!!document.querySelector('.modal-mask')`)
+    const helpRow = await cdp.eval(`(() => {
+      const m = document.querySelector('.modal-mask')
+      return m ? [...m.querySelectorAll('td')].map((td) => td.textContent).join('|') : ''
+    })()`)
+    check('快捷键：按 `?` 能打开速查表（tooltip 承诺过），且表里列出这一条', () => {
+      assert(helpOpen, `按 \`?\` 应打开快捷键速查表——顶栏按钮的 tooltip 写了「按 ? 也能打开」（按之前焦点在 ${focusPt.active}）`)
+      assert(helpRow.includes('?'), '速查表里应有 `?` 这一行（表自称是快捷键的唯一出处）')
+      return '? → 速查表已打开'
+    })
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+    await sleep(200)
+
     check('运行期无控制台错误', () => {
       assert(consoleErrors.length === 0, `控制台报错 ${consoleErrors.length} 条：${consoleErrors.slice(0, 2).join(' | ')}`)
       return '0 条'

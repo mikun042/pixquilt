@@ -750,6 +750,7 @@ function showHelp(): void {
     ['空格+拖动 / 中键拖动', '平移画布'],
     ['Ctrl+Z / Ctrl+Y', '撤销 / 重做'],
     ['Ctrl+S', '导出 PNG（1 倍）'],
+    ['?', '打开这张速查表'],
     ['点主色/背景色块', '打开取色器（Blender 结构：色轮 + 明度条 + RGB/HSV 两段 + 红/绿/蓝、Alpha 滑条 + Hex 行）'],
     ['右上角「导出 ▾」', 'PNG 各倍数 / 拼豆图纸 / 像素与项目 JSON'],
   ]
@@ -822,6 +823,13 @@ window.addEventListener('keydown', (e) => {
       e.preventDefault()
       swapColors()
     }
+  } else if (k === '?') {
+    /*
+     * 顶栏那个「? 快捷键」按钮的 tooltip 一直写着"按 ? 也能打开"，而全仓没有 `?` 的键盘处理——
+     * 按了没反应。速查表自己又声明"快捷键以本表为唯一出处"、表里却没有 `?` 这一行，
+     * 两处界面互相矛盾。这里兑现 tooltip 那句，并把 `?` 补进表里（见 showHelp 的 rows）。
+     */
+    showHelp()
   }
 })
 
