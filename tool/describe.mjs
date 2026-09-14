@@ -11,7 +11,7 @@
  * `tool/artc.mjs` 的 `KNOWN_FLAGS` 对账，少收录或多收录都会直接抛错。
  */
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { CAPABILITIES, OP_SPECS, PARAM_SPECS } from '../src/core/spec.ts'
@@ -323,4 +323,14 @@ function main() {
   process.stdout.write(text)
 }
 
-main()
+
+/*
+ * 只在**直接被当命令行跑**时执行：被 import 时（例如别的脚本想读它的导出）不该顺带跑一遍 main，
+ * 更不该 process.exit 把导入方一起带走（tool/artc.mjs 末尾记录过这条教训）。
+ */
+const invokedDirectly =
+  process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+
+if (invokedDirectly) {
+  main()
+}

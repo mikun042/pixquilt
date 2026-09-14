@@ -19,7 +19,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { decodePngNode } from '../src/io/node-png.ts'
@@ -194,7 +194,16 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(`截取失败：${err?.message ?? err}`)
-  process.exit(1)
-})
+/*
+ * 只在**直接被当命令行跑**时执行：被 import 时不该顺带跑一遍 main，
+ * 更不该 process.exit 把导入方一起带走（tool/artc.mjs 末尾记录过这条教训）。
+ */
+const invokedDirectly =
+  process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error(`截取失败：${err?.message ?? err}`)
+    process.exit(1)
+  })
+}

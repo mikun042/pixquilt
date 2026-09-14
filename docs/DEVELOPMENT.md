@@ -60,12 +60,20 @@ npm run verify
 | 回归防线 | `npm run e2e:regressions` | 23 项（已修缺陷逐条锁住，真实鼠标/键盘输入） | **是** |
 | PDF 与图标 | `npm run e2e:pdf` | 10 项（浏览器侧压缩格式、排版自适应、xref 偏移、吸管图标几何） | **是** |
 
-改 UI 外观时的辅助工具：
+改 UI 外观与排查交互时的辅助工具：
 
 ```bash
-npm run shoot                       # 截图 → .tmp-shots/
+npm run shoot                       # 整页截图 + 裁出取色器区域 → .tmp-shots/
 npm run ref:analyze -- <png 路径>   # 参考图/截图结构分析（主色直方图、字符画、条带）
+npm run shot:el -- <css选择器> [文件名] [放大倍数] [--click 文案] [--height 1200]
+                                    # 单个元素放大截图（--click 可先点一下再截）
+npm run probe -- "<js表达式>" [--pre "<js>"] [--click 选择器] [--wheel 选择器] [--move 选择器]
+                                    # 在真实页面里跑 JS 并打印结果；可发**真实**鼠标事件
 ```
+
+> `probe` 是排查"交互到底有没有发生"的主力：合成 `.click()` / `.dispatchEvent()` 绕过命中测试，
+> 而它走 `Input.dispatchMouseEvent`，能验"点得动吗 + 看得见结果吗"（§3.2 第 3、5 条）。
+> 两个工具都只读页面、不修改任何东西。
 
 ### 3.1 断言必须"能因真实缺陷而红"
 

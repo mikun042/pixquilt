@@ -195,6 +195,13 @@ async function main() {
     })
 
     const url = pathToFileURL(app).href
+    /*
+     * **整条 suite 都用桌面视口**。无头默认是 800×600，而 ≤980px 时 CSS 会把两侧栏隐藏、
+     * 参数面板拿到 0×0 的矩形——那时任何侧栏的几何/命中断言都会失真（docs/DEVELOPMENT.md §3.2 第 1 条）。
+     * 原先只有"合成底色"那一条自己临时设过视口，等于把坑留给下一条新断言；
+     * 这里统一设一次，后面谁加断言都不用再想这件事。
+     */
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false })
     await cdp.send('Page.navigate', { url })
     // 等脚本装配：轮询直到 window.pixelArtStudio 出现（比固定 sleep 稳）
     let ready = false
@@ -720,10 +727,8 @@ async function main() {
      * 这条用**真实鼠标事件**（合成 `.click()` 不经过命中测试，本项目踩过），
      * 并断言取色器落在 `#panel-params` 内、顶边在视口里 —— 也就是"点下去看得见结果"。
      *
-     * ⚠️ 必须先摆成桌面视口：无头默认是 800×600，而 ≤980px 时右侧栏被 CSS 隐藏，
-     * 参数面板拿到的矩形是 0×0、命中测试会落到页头（docs/DEVELOPMENT.md §3.2 第 1 条）。
+     * （视口已在 suite 开始时统一设成 1400×900，见上面那句 setDeviceMetricsOverride。）
      */
-    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false })
     await new Promise((r) => setTimeout(r, 200))
     const matteBox = JSON.parse(await cdp.eval(`(() => {
       const el = document.querySelector('[data-testid="matte-swatch"]')
@@ -804,7 +809,6 @@ async function main() {
       assert(labelOpened, '点「合成底色」标签应同样展开取色盘（label[for] 关联断了吗？）')
       return '标签可点'
     })
-    await cdp.send('Emulation.clearDeviceMetricsOverride')
 
     /*
      * 放大镜（"原图对照"）：导入后悬停画布应当出现。

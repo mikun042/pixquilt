@@ -12,7 +12,7 @@
 import { build } from 'esbuild'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -74,7 +74,17 @@ async function main() {
   console.log('  双击该 HTML 即可使用；也可用 node tool/artc.mjs 在命令行批量出图。')
 }
 
-main().catch((err) => {
-  console.error(`构建失败：${err?.message ?? err}`)
-  process.exit(1)
-})
+/*
+ * 只在**直接被当命令行跑**时执行：被 import 时不该顺带跑一遍 main，
+ * 更不该 process.exit 把导入方一起带走（tool/artc.mjs 末尾记录过这条教训）。
+ */
+const invokedDirectly =
+  process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error(`构建失败：${err?.message ?? err}`)
+    process.exit(1)
+  })
+}
+
