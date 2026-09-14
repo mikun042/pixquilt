@@ -51,7 +51,7 @@ npm run verify
 | 步骤 | 命令 | 内容 | 需要浏览器 |
 |---|---|---|---|
 | 类型检查 | `npm run typecheck` | `tsc --noEmit`，开着 `noUnusedLocals`——**未使用的变量会直接报错** | 否 |
-| 单元测试 | `npm test` | 88 项（管线 / 12 类算子 / sanitize / 导出格式 / PDF 结构 / 常量表 / 撤销栈双上限 / 油漆桶连通规则 / **生成文档新鲜度**） | 否 |
+| 单元测试 | `npm test` | 102 项（管线 / 13 类算子 / sanitize / 导出格式 / PDF 结构 / 常量表 / 撤销栈双上限 / 油漆桶连通规则 / **生成文档新鲜度**） | 否 |
 
 （`npm test` 只跑 `src/test/`，**不启浏览器**；`src/app` 里能单测的逻辑都尽量抽成了纯模块，例如 `history.ts`。）
 | 构建 | `npm run build` | 内联 CSS+JS 出单文件，核对两个产物哈希一致 | 否 |

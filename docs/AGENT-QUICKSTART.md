@@ -13,7 +13,7 @@ node tool/quickstart.mjs        # 一条命令跑通全链路，产出落在 .qu
 它会依次做六件事并把每步结论打印出来（我在本机实测通过）：
 
 ```
-1. 自省           apiLevel 2 · 画布上限 2048 格 / 色板 256 色 · 算子 12 类 · 参数 19 项
+1. 自省           apiLevel 2 · 画布上限 2048 格 / 色板 256 色 · 算子 13 类 · 参数 21 项
                   预置色卡：pico8 / gameboy / nes / cga / beads16(带号色) / beads24(带号色)
                   自检：32/32 通过
 2. 造素材         自己生成 hero.png / slime.png（96×96，带透明背景）——不依赖仓库里有没有图
@@ -129,7 +129,7 @@ node tool/artc.mjs --blank 32x32 --blank-transparent --out 输出 \
 
 ---
 
-## 三、12 类算子（声明式编辑）
+## 三、13 类算子（声明式编辑）
 
 一条 `--ops` 或 `ps.edit(ops)` 就是**一个撤销单位**。算子表（同源信息用 `--describe` 拿）：
 

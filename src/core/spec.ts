@@ -31,7 +31,7 @@ export interface OpSpec {
   notes?: string[]
 }
 
-/** 12 类算子：8 个基础 + 4 个便捷（便捷算子等价于"按色选区 + 上色/挖洞/描边/镜像"，保留是因为拼豆、去白底、对称作画这些场景高频） */
+/** 13 类算子：8 个基础 + 5 个便捷/适配（便捷算子等价于"按色选区 + 上色/挖洞/描边/镜像"，保留是因为拼豆、去白底、对称作画这些场景高频；fit 是资产定尺寸用） */
 export const OP_SPECS: OpSpec[] = [
   {
     op: 'fill',
@@ -107,7 +107,24 @@ export const OP_SPECS: OpSpec[] = [
     op: 'trim',
     desc: '裁掉四周透明边，画布缩到不透明内容的外接框',
     fields: [],
-    notes: ['全透明或已无透明边时返回 changed:false 且不报错（批处理里这是合法状态）'],
+    notes: [
+      '全透明或已无透明边时返回 changed:false 且不报错（批处理里这是合法状态）',
+      '**只裁边、不缩放**：要"裁到内容再适配成固定尺寸"请接着用 fit',
+    ],
+  },
+  {
+    op: 'fit',
+    desc: '把内容缩放并居中放进 WxH 画布（游戏资产定尺寸）',
+    fields: [
+      { name: 'width', type: 'number', required: true, desc: '目标宽度（格）' },
+      { name: 'height', type: 'number', required: true, desc: '目标高度（格）' },
+      { name: 'mode', type: 'enum', required: false, default: 'contain', desc: 'contain 等比放下留透明边 | cover 等比铺满裁溢出 | stretch 直接拉伸（会变形）' },
+    ],
+    notes: [
+      '以**不透明内容**为基准缩放，不是整张画布——否则周围的透明留白会被一起算进去、主体偏小',
+      '缩放用最近邻，保证像素画边缘锐利（绝不插值）',
+      '与 trim 的分工：`--size` 在管线阶段（比算子早），所以"先裁后适配"必须写成 `[{op:"trim"},{op:"fit",width:64,height:64}]`；只用 trim 得不到目标尺寸',
+    ],
   },
   {
     op: 'eraseColor',

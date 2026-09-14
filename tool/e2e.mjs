@@ -94,6 +94,7 @@ async function main() {
       ellipse: { op: 'ellipse', x0: 1, y0: 1, x1: 5, y1: 5, color: '#ff0000' },
       transform: { op: 'transform', kind: 'flipX' },
       trim: { op: 'trim' },
+      fit: { op: 'fit', width: 8, height: 8 },
       eraseColor: { op: 'eraseColor', color: '#ff0000' },
       replaceAny: { op: 'replaceAny', color: '#ff0000', to: '#00ff00' },
       outline: { op: 'outline', color: '#000000' },

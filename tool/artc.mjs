@@ -683,6 +683,21 @@ async function selftest() {
   })
 
   // 键控新选项的 CLI 侧接线：--key-mode / --key-tolerance 必须真的进 params 并被 keyOptions 透传
+  check('算子：fit 把内容适配成精确尺寸，且 trim+fit 组合能定尺寸', () => {
+    // 32×32 画布，中央 8×4 内容（周围全是透明边）
+    const art = blankArt(32, 32, '#ffffff', true)
+    for (let y = 14; y < 18; y++) for (let x = 12; x < 20; x++) art.alphaMask[y * 32 + x] = 255
+    const onlyTrim = applyOps(art, [{ op: 'trim' }]).art
+    eq(onlyTrim.width, 8, '前提：trim 只裁边，得到内容原始尺寸 8×4')
+    eq(onlyTrim.height, 4, 'trim 后高应为 4')
+    const fitted = applyOps(art, [{ op: 'trim' }, { op: 'fit', width: 16, height: 16, mode: 'contain' }]).art
+    eq(fitted.width, 16, 'trim+fit 后宽应为目标 16')
+    eq(fitted.height, 16, 'trim+fit 后高应为目标 16')
+    const kept = countTransparent(fitted.indices, fitted.alphaMask)
+    eq(kept, 16 * 16 - 16 * 8, 'contain 应等比成 16×8，上下各留 4 行透明')
+    return `8×4 → trim → fit → 16×16（透明 ${kept} 格）`
+  })
+
   check('CLI：--key-mode / --key-tolerance 进入参数并被导出采用', () => {
     const a = buildParams({ 'key-mode': 'border' })
     eq(a.params.transparent, 'key', '给了 --key-mode 就应自动进入键控模式（否则选项静默失效）')

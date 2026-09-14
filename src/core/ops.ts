@@ -42,6 +42,18 @@ export type EditOp =
   | { op: 'transform'; kind: 'flipX' | 'flipY' | 'rotate90' | 'rotate180' | 'rotate270' }
   /** 裁掉四周透明边，画布缩到不透明内容的外接框（精灵图紧凑化） */
   | { op: 'trim' }
+  /**
+   * 把当前内容缩放并居中放进 WxH 画布（游戏资产定尺寸用）。
+   *
+   * 为什么需要它：`trim` 只裁边、不缩放，而 `--size` 发生在管线阶段（比算子更早），
+   * 所以"裁到内容再适配成 64×64"在算子链里做不到——`--size 64x64 --ops trim` 会得到
+   * 内容原始尺寸（实测 64×64 输入裁出 4×4），而不是 64×64。
+   *
+   * `mode`：`contain`（默认）等比缩到能放下，留透明边；`cover` 等比放大铺满，裁掉溢出；
+   * `stretch` 直接拉伸（会变形，仅在明确要变形时用）。
+   * 缩放用最近邻：像素画放大绝不能用插值（否则边缘发糊）。
+   */
+  | { op: 'fit'; width: number; height: number; mode?: 'contain' | 'cover' | 'stretch' }
   /** 便捷算子：把某色全部挖成透明（去白底）；等价于按色选区 + setCells(erase) */
   | { op: 'eraseColor'; color: string }
   /** 便捷算子：把某色整体换成另一色（拼豆"没有这个色，换一个看看"） */
@@ -329,8 +341,64 @@ export function applyOps(art: PixelArt, ops: EditOp[], options: ApplyOpsOptions 
         break
       }
 
-      case 'eraseColor': {
-        const idxs = paletteIndexOf(c.palette, op.color)
+      case 'fit': {
+        const tw = Math.max(1, Math.min(MAX_CANVAS_SIDE, Math.floor(op.width)))
+        const th = Math.max(1, Math.min(MAX_CANVAS_SIDE, Math.floor(op.height)))
+        const mode = op.mode ?? 'contain'
+        // 以**不透明内容**为基准：fit 的语义是"把这个精灵放进 WxH"，
+        // 如果按整张画布缩放，周围一圈透明留白会一起被算进去，主体就偏小了。
+        const bounds = opaqueBounds(fromCanvas(c))
+        if (!bounds) {
+          changes.push({ op: 'fit', cells: 0, changed: false, note: '全透明画布，无可缩放内容' })
+          break
+        }
+        const cw = bounds.x1 - bounds.x0 + 1
+        const ch = bounds.y1 - bounds.y0 + 1
+        // 缩放系数：contain 取小的那个（保证放得下），cover 取大的那个（保证铺满），stretch 各轴独立
+        const kx = mode === 'stretch' ? tw / cw : mode === 'cover' ? Math.max(tw / cw, th / ch) : Math.min(tw / cw, th / ch)
+        const ky = mode === 'stretch' ? th / ch : kx
+        const sw = Math.max(1, Math.round(cw * kx))
+        const sh = Math.max(1, Math.round(ch * ky))
+        // 居中：content 在目标画布里的落点（cover 时可能是负数 = 溢出被裁）
+        const ox = Math.floor((tw - sw) / 2)
+        const oy = Math.floor((th - sh) / 2)
+
+        const ni = new Uint8Array(tw * th)
+        // fit 会改变画布尺寸，且 contain 会在四周留出**空**格。
+        // 空格的索引是 0，若不显式标透明，它会被当成 palette[0] 显示出来。
+        // 所以只要目标画布比内容大（或原图本来就有 mask），就必须准备 mask。
+        const padded = sw < tw || sh < th
+        const na = c.alpha || padded ? new Uint8Array(tw * th) : null
+        if (na) na.fill(0) // 先全透明，再逐格把内容写成原不透明度
+        for (let y = 0; y < sh; y++) {
+          for (let x = 0; x < sw; x++) {
+            const dx = ox + x
+            const dy = oy + y
+            if (dx < 0 || dy < 0 || dx >= tw || dy >= th) continue // cover 的溢出部分丢弃
+            // 目标格 → 源格：最近邻（floor 保证像素画放大不产生插值色）
+            const sx = bounds.x0 + Math.min(cw - 1, Math.floor((x * cw) / sw))
+            const sy = bounds.y0 + Math.min(ch - 1, Math.floor((y * ch) / sh))
+            const src = sy * c.w + sx
+            const dst = dy * tw + dx
+            ni[dst] = c.indices[src]
+            if (na) na[dst] = c.alpha ? c.alpha[src] : 255
+          }
+        }
+        c.w = tw
+        c.h = th
+        c.indices = ni
+        // 全 255 的 mask 交给 fromCanvas 归一化掉（与其它算子一致，不制造无意义的 mask）
+        c.alpha = na
+        changes.push({
+          op: 'fit',
+          cells: sw * sh,
+          changed: differs(before, c),
+          note: `${cw}×${ch} → ${sw}×${sh}（${mode}）放进 ${tw}×${th}`,
+        })
+        break
+      }
+
+      case 'eraseColor': {        const idxs = paletteIndexOf(c.palette, op.color)
         if (idxs.length === 0) throw new Error(`色板中没有 ${op.color}（eraseColor 只能作用于画布已有颜色）`)
         const mask = ensureAlpha(c)
         let cells = 0

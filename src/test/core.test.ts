@@ -504,7 +504,7 @@ describe('编辑算子', () => {
         // 其它错误（如色板里没有该色）是合理的参数问题，不算漂移
       }
     }
-    assert.equal(OP_SPECS.length, 12, '算子数量变化时必须同步文档与测试')
+    assert.equal(OP_SPECS.length, 13, '算子数量变化时必须同步文档与测试')
   })
 
   it('anchorOffset 给出内容相对画布中心的偏移', () => {
@@ -533,6 +533,8 @@ function sampleOp(op: string): EditOp {
       return { op: 'transform', kind: 'flipX' }
     case 'trim':
       return { op: 'trim' }
+    case 'fit':
+      return { op: 'fit', width: 4, height: 4 }
     case 'eraseColor':
       return { op: 'eraseColor', color: '#ffffff' }
     case 'replaceAny':
@@ -648,6 +650,91 @@ describe('导出与序列化', () => {
     const sheet = layoutSheet(Array.from({ length: 9 }, (_, i) => ({ name: `f${i}`, width: 8, height: 8 })), 0, 0)
     assert.equal(sheet.columns, 3)
     assert.equal(sheet.rows, 3)
+  })
+})
+
+describe('fit 算子（裁到内容再适配固定尺寸）', () => {
+  /** 造一张 32×32 画布，中央放一个 8×4 的红色长条（含大量透明边） */
+  function artWithContent() {
+    const w = 32
+    const h = 32
+    const indices = new Uint8Array(w * h)
+    const alphaMask = new Uint8Array(w * h) // 默认全透明
+    const palette = ['#ffffff', '#ff0000']
+    for (let y = 14; y < 18; y++)
+      for (let x = 12; x < 20; x++) {
+        const p = y * w + x
+        indices[p] = 1
+        alphaMask[p] = 255
+      }
+    return { width: w, height: h, indices, palette, alphaMask }
+  }
+
+  it('把内容适配成精确的 WxH（这正是 --size + trim 做不到的事）', () => {
+    const r = applyOps(artWithContent(), [{ op: 'fit', width: 16, height: 16 }])
+    assert.equal(r.art.width, 16, '宽应为目标 16')
+    assert.equal(r.art.height, 16, '高应为目标 16')
+    assert.ok(r.changes[0].changed, '尺寸变了必须记 changed')
+  })
+
+  it('trim + fit 组合：先裁到内容再适配（原先 trim 单独用会得到内容原始尺寸）', () => {
+    const trimmedOnly = applyOps(artWithContent(), [{ op: 'trim' }])
+    assert.equal(trimmedOnly.art.width, 8, '前提：trim 只裁边，得到内容尺寸 8×4')
+    assert.equal(trimmedOnly.art.height, 4)
+    const both = applyOps(artWithContent(), [{ op: 'trim' }, { op: 'fit', width: 16, height: 16 }])
+    assert.equal(both.art.width, 16, 'trim 后再 fit 才拿到目标尺寸')
+    assert.equal(both.art.height, 16)
+  })
+
+  it('contain 等比缩放：内容 8×4 放进 16×16 应为 16×8，上下留透明边', () => {
+    const r = applyOps(artWithContent(), [{ op: 'fit', width: 16, height: 16, mode: 'contain' }])
+    assert.equal(r.art.width, 16)
+    assert.equal(r.art.height, 16)
+    // 内容 8×4 → 等比 ×2 → 16×8，居中后上下各留 4 行透明
+    assert.equal(r.changes[0].note, '8×4 → 16×8（contain）放进 16×16')
+    for (let x = 0; x < 16; x++) {
+      assert.equal(r.art.alphaMask![0 * 16 + x], 0, '第 0 行应留透明边')
+      assert.equal(r.art.alphaMask![7 * 16 + x], 255, '第 7 行应落在内容上（4..11 行是内容）')
+    }
+  })
+
+  it('contain 不做非等比拉伸（长宽比必须守住）', () => {
+    const r = applyOps(artWithContent(), [{ op: 'fit', width: 16, height: 16, mode: 'contain' }])
+    // 内容宽高比 8:4 = 2:1，缩放后仍应是 2:1
+    let x0 = 16, x1 = -1, y0 = 16, y1 = -1
+    for (let y = 0; y < 16; y++)
+      for (let x = 0; x < 16; x++)
+        if (r.art.alphaMask![y * 16 + x] >= 128) {
+          if (x < x0) x0 = x
+          if (x > x1) x1 = x
+          if (y < y0) y0 = y
+          if (y > y1) y1 = y
+        }
+    const cw = x1 - x0 + 1
+    const chh = y1 - y0 + 1
+    assert.equal(cw / chh, 2, `长宽比应为 2:1，实际 ${cw}×${chh}`)
+  })
+
+  it('stretch 允许变形（各轴独立缩放）', () => {
+    const r = applyOps(artWithContent(), [{ op: 'fit', width: 16, height: 16, mode: 'stretch' }])
+    assert.equal(r.changes[0].note, '8×4 → 16×16（stretch）放进 16×16')
+  })
+
+  it('全透明画布上 fit 不报错且如实报告未改动', () => {
+    const empty = blankArt(8, 8, '#ffffff', true)
+    const r = applyOps(empty, [{ op: 'fit', width: 16, height: 16 }])
+    assert.equal(r.changes[0].changed, false, '全透明内容无可缩放，应记未改动')
+    assert.match(r.changes[0].note ?? '', /全透明/)
+  })
+
+  it('fit 后画布无越界索引（新格的索引必须在色板范围内）', () => {
+    const r = applyOps(artWithContent(), [{ op: 'fit', width: 20, height: 12 }])
+    for (let i = 0; i < r.art.width * r.art.height; i++) {
+      assert.ok(r.art.indices[i] < r.art.palette.length, '索引必须在色板范围内')
+    }
+    // 留白格索引为 0，必须配透明 mask；否则会显示成 palette[0] 的白底
+    const tp = countTransparent(r.art.indices, r.art.alphaMask)
+    assert.ok(tp > 0, 'contain 模式下画布必有透明留白（需要 mask 才能显示为透明）')
   })
 })
 
