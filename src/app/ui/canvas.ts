@@ -11,7 +11,8 @@
 import { ALPHA_THRESHOLD, type PixelArt } from '../../core/types.ts'
 import { PALETTE_MAX } from '../../core/limits.ts'
 import { clampCell, fitViewState, pointToCellClamped, zoomAtPoint, type ViewState } from '../../core/viewport.ts'
-import { brushCells, lineCells, rasterizeEllipse, rasterizeRect } from '../../core/ops.ts'
+import { brushCells, ensurePaletteColor as coreEnsurePaletteColor, floodFillRegion, lineCells, rasterizeEllipse, rasterizeRect } from '../../core/ops.ts'
+import { hexToRgb } from '../../core/color.ts'
 import { store } from '../store.ts'
 
 export interface CanvasCallbacks {
@@ -25,6 +26,11 @@ export interface CanvasCallbacks {
   onSelectionChange: (count: number) => void
   /** 缩放百分比（供状态栏） */
   onZoom: (pct: number) => void
+  /**
+   * 一句面向用户的提示（可选）。目前只用在"色板已满、这一笔用了最接近的颜色"——
+   * 画布层没有 toast，靠注入拿到；缺省时静默（不影响功能，只是少了提示）。
+   */
+  onNotice?: (message: string) => void
 }
 
 export interface CanvasApi {
@@ -85,6 +91,8 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
   let rafId = 0
   let fallbackTimer = 0
   let disposed = false
+  /** 「色板已满」只提示一次，避免用户每落一笔都被打断 */
+  let warnedFullPalette = false
 
   /* ------------------------------------------------------------ 脏区渲染 */
 
@@ -147,7 +155,7 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
     const actx = artCanvas.getContext('2d')
     if (!actx) return
     const img = actx.createImageData(art.width, art.height)
-    const rgbCache = palette.map(hexToRgbCached)
+    const rgbCache = palette.map(hexToRgb)
     for (let p = 0; p < art.width * art.height; p++) {
       const o = p * 4
       const transparent = alpha ? alpha[p] < ALPHA_THRESHOLD : false
@@ -333,46 +341,29 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
     artDirty = true
   }
 
-  /** 色板扩色：上限走 core 的 `PALETTE_MAX`（超出不再新增） */
+  /**
+   * 色板扩色：**复用 core 的规则**（`ensurePaletteColor` 负责校验与"色板满"的策略），
+   * 这里只补画布特有的那一步——把新颜色追加进本地工作色板。
+   *
+   * 色板满（256）时退化为 OKLab 最近色，并**提示一次**：旧实现是静默 `return -1`（那一笔不落），
+   * 用户会觉得"画不上去"却不知道原因——静默失效是本项目最忌讳的一类。
+   */
   function ensurePaletteColor(hex: string): number {
-    const norm = hex.toLowerCase()
-    const found = palette.findIndex((c) => c.toLowerCase() === norm)
-    if (found >= 0) return found
-    if (palette.length >= PALETTE_MAX) return -1
-    palette = [...palette, norm]
-    return palette.length - 1
+    const r = coreEnsurePaletteColor(palette, hex, true)
+    if (r.index < 0) return -1
+    if (r.index === palette.length) palette = [...palette, hex.toLowerCase()]
+    if (r.approx && !warnedFullPalette) {
+      warnedFullPalette = true
+      callbacks.onNotice?.(`色板已满（${PALETTE_MAX} 色），这一笔用了最接近的颜色`)
+    }
+    return r.index
   }
 
-  function floodFill(start: number, erase: boolean): number[] {
+  /** 油漆桶：连通区域的判定走 core（`floodFillRegion`），画布层只做"线性索引 → 格子坐标"的适配 */
+  function floodFill(start: number): number[] {
     if (!art) return []
     const w = art.width
-    const h = art.height
-    const same = (a: number, b: number) => {
-      const at = alpha ? alpha[a] === 0 : false
-      const bt = alpha ? alpha[b] === 0 : false
-      return at === bt && (at || indices[a] === indices[b])
-    }
-    const visited = new Uint8Array(w * h)
-    const queue = new Int32Array(w * h)
-    let head = 0
-    let tail = 0
-    queue[tail++] = start
-    visited[start] = 1
-    const out: number[] = []
-    while (head < tail) {
-      const c = queue[head++]
-      out.push(c)
-      const x = c % w
-      const y = (c / w) | 0
-      const nb = [x > 0 ? c - 1 : -1, x < w - 1 ? c + 1 : -1, y > 0 ? c - w : -1, y < h - 1 ? c + w : -1]
-      for (const n of nb) {
-        if (n < 0 || visited[n] || !same(n, c)) continue
-        visited[n] = 1
-        queue[tail++] = n
-      }
-    }
-    void erase
-    return out
+    return floodFillRegion(indices, w, art.height, start % w, Math.floor(start / w), alpha)
   }
 
   function commit(): void {
@@ -427,7 +418,7 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
     const color = e.button === 2 ? store.get('bg') : store.get('primary')
 
     if (tool === 'bucket') {
-      const cells = floodFill(cell.y * art.width + cell.x, erase)
+      const cells = floodFill(cell.y * art.width + cell.x)
       if (erase) {
         paintCells(cells, true)
       } else {
@@ -903,15 +894,4 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
   ro.observe(container)
 
   return api
-}
-
-/** 颜色缓存：同一颜色在一次绘制里只解析一次（量化后色板很小，但这是零成本的保险） */
-const rgbCacheMap = new Map<string, { r: number; g: number; b: number }>()
-function hexToRgbCached(hex: string): { r: number; g: number; b: number } {
-  const hit = rgbCacheMap.get(hex)
-  if (hit) return hit
-  const n = parseInt(hex.slice(1), 16)
-  const value = { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 }
-  rgbCacheMap.set(hex, value)
-  return value
 }

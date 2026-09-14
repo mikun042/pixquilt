@@ -216,6 +216,8 @@ const canvasApi = createCanvas(canvasHost, canvasEl, {
   onHover: (cell) => store.set('hoverText', cell ? `${cell.x}, ${cell.y}` : ''),
   onSelectionChange: (count) => store.set('selectedCount', count),
   onZoom: (pct) => store.set('zoomPct', pct),
+  // 画布层没有 toast，需要提示时（目前只有"色板已满用了近似色"）从这里注入
+  onNotice: (message) => toast(message, 'warn'),
 })
 canvasApi.attachMagnifier(magBox, magCanvas)
 

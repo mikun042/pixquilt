@@ -523,6 +523,34 @@ async function main() {
       return `${b.rows} 色 / ${b.beads} 颗`
     })
 
+    /*
+     * 油漆桶**真实鼠标**路径：这条守的是"画布层的连通判定"。
+     * 它原先自己写了一份 BFS，与 core 的 `floodFillRegion` 规则已经分叉（透明格是否连通），
+     * 现在统一走 core——算子路径（`edit([{op:'fill'}])`）另有断言，但那条不经过画布适配，
+     * 覆盖不到"线性索引 → 格子坐标"这一步。
+     */
+    await cdp.eval(`(() => {
+      const ps = window.pixelArtStudio
+      ps.newCanvas({ width: 16, height: 16, color: '#ffffff' })
+      ps.setTool('bucket')
+      ps.setPrimary('#ff0000')
+      return true
+    })()`)
+    await new Promise((r) => setTimeout(r, 200))
+    const bucketCell = JSON.parse(await cdp.eval(`(() => {
+      const v = JSON.parse(document.getElementById('board').dataset.lastDraw)
+      const r = document.getElementById('board').getBoundingClientRect()
+      return JSON.stringify({ x: r.left + v.ox + (8 + 0.5) * v.cell, y: r.top + v.oy + (8 + 0.5) * v.cell })
+    })()`))
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: bucketCell.x, y: bucketCell.y, button: 'left', clickCount: 1 })
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: bucketCell.x, y: bucketCell.y, button: 'left', clickCount: 1 })
+    await new Promise((r) => setTimeout(r, 250))
+    const bucket = JSON.parse(await cdp.eval(`JSON.stringify(window.pixelArtStudio.getUsage())`))
+    check('油漆桶（真实鼠标）：整片同色区域被一次填满（画布层复用 core 的连通判定）', () => {
+      assert(bucket['#ff0000'] === 256, `16×16 全同色画布应被整片填成红色，实际 ${JSON.stringify(bucket)}`)
+      return `#ff0000 覆盖 ${bucket['#ff0000']} 格`
+    })
+
     const undoRedo = await cdp.eval(`(() => {
       const ps = window.pixelArtStudio
       const before = ps.artHash()

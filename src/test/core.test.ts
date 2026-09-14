@@ -350,6 +350,50 @@ describe('编辑算子', () => {
     assert.equal(r.art.palette[r.art.indices[0]], '#ff0000')
   })
 
+  it('fill：透明格之间一律连通（洞下残留索引不同也只算一片）', () => {
+    /*
+     * 这条守的是"注释与实现不一致"那一类缺陷：注释写着"透明格之间也算同一连通区域"，
+     * 而实现还额外要求**残留的颜色索引相同**——把两种不同颜色的像素先后挖掉之后，
+     * 那片空白会被切成两块，与"把这块整片抠掉"的直觉不符（canvas 层的自制实现一直是按注释做的）。
+     * 改回旧判据（比较 index）时这条会红。
+     */
+    const base = {
+      width: 5,
+      height: 1,
+      indices: new Uint8Array([0, 0, 1, 1, 2]),
+      palette: ['#ff0000', '#0000ff', '#00ff00'],
+      // 中间两格透明，但残留索引不同（0 与 1）
+      alphaMask: new Uint8Array([255, 0, 0, 255, 255]),
+    }
+    const r = applyOps(base, [{ op: 'fill', x: 1, y: 0, color: '#00ff00' }])
+    const at = (x: number) => r.art.palette[r.art.indices[x]]
+    assert.equal(at(1), '#00ff00', '起点应被填充')
+    assert.equal(at(2), '#00ff00', '相邻透明格即使残留索引不同也必须算同一片（旧判据会漏掉它）')
+    assert.equal(at(0), '#ff0000', '不透明格不该被串进来')
+    assert.equal(at(3), '#0000ff', '不透明格不该被串进来')
+    assert.equal(at(4), '#00ff00', '第四格本来就等于填充色，不应影响判定')
+    // 填过的格必须变回不透明（否则"填色"结果在导出时仍是空的）。
+    // 这里不能用 `alphaMask?.[1]` —— 两格填完之后整幅都变成不透明，mask 会被归一成 null
+    // （等价但更省内存），拿它取下标只会得到 undefined（这条断言我第一版就写错了）。
+    assert.equal(countTransparent(r.art.indices, r.art.alphaMask), 0, '被填充的透明格应变回不透明')
+  })
+
+  it('fill：不透明区域仍要求同色（否则整幅会串成一片）', () => {
+    const base = {
+      width: 4,
+      height: 1,
+      indices: new Uint8Array([0, 0, 1, 0]),
+      palette: ['#ff0000', '#0000ff', '#00ff00'],
+      alphaMask: null,
+    }
+    const r = applyOps(base, [{ op: 'fill', x: 0, y: 0, color: '#00ff00' }])
+    const at = (x: number) => r.art.palette[r.art.indices[x]]
+    assert.equal(at(0), '#00ff00')
+    assert.equal(at(1), '#00ff00', '同色相邻应一起填')
+    assert.equal(at(2), '#0000ff', '不同色的不透明格必须断开')
+    assert.equal(at(3), '#ff0000', '被不同色隔开的同色格不该被连上')
+  })
+
   it('未知算子报错（静默忽略会让 agent 误判）', () => {
     // 故意传一个不在 EditOp 联合类型里的算子：模拟 agent 拼错算子名
     const bogus = [{ op: 'nope' }] as unknown as EditOp[]
