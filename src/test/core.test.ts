@@ -27,7 +27,9 @@ import { beadListCsv, beadReport, beadSvg } from '../core/bead.ts'
 import { beadPdf } from '../core/bead-pdf.ts'
 import { buildPdf, buildPdfAsync } from '../core/pdf.ts'
 import { OP_SPECS } from '../core/spec.ts'
+import { artToImageData } from '../core/raster.ts'
 import { hexToRgb, rgbToHex, rgbToOklab, oklabToRgb, gradientPalette } from '../core/color.ts'
+import type { PixelArt } from '../core/types.ts'
 
 /**
  * 生成一张"已经降采样到目标格数"的平滑渐变像素缓冲。
@@ -646,6 +648,101 @@ describe('导出与序列化', () => {
     const sheet = layoutSheet(Array.from({ length: 9 }, (_, i) => ({ name: `f${i}`, width: 8, height: 8 })), 0, 0)
     assert.equal(sheet.columns, 3)
     assert.equal(sheet.rows, 3)
+  })
+})
+
+describe('键控（透明底导出）', () => {
+  /**
+   * 造一张"白底 + 主体内部有一块**同色**白高光"的画布——这是 global 键控会翻车的经典场景：
+   * 主体内部的眼白/高光与背景同色，全图同色键控会把它们一起挖穿成洞。
+   */
+  function bodyWithWhiteHighlight(): PixelArt {
+    const w = 8
+    const h = 8
+    const indices = new Uint8Array(w * h)
+    // 调色板：[0] 白（既是背景也是内部高光） [1] 深绿主体
+    const palette = ['#ffffff', '#007800']
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const inBody = x >= 2 && x <= 5 && y >= 2 && y <= 5
+        indices[y * w + x] = inBody ? 1 : 0
+      }
+    // 内部 2×2 的"白高光"：与背景完全同色
+    for (const [x, y] of [[3, 3], [4, 3], [3, 4], [4, 4]]) indices[y * w + x] = 0
+    return { width: w, height: h, indices, palette, alphaMask: null }
+  }
+
+  const countTransparentPx = (img: { data: Uint8ClampedArray }) => {
+    let n = 0
+    for (let i = 3; i < img.data.length; i += 4) if (img.data[i] === 0) n++
+    return n
+  }
+
+  it('global 模式会把主体内部同色高光一起挖穿（这是它的已知语义）', () => {
+    const art = bodyWithWhiteHighlight()
+    const img = artToImageData(art, 1, { transparentBg: true, bgHex: '#ffffff', keyMode: 'global' })
+    // 整张 8×8 共 64 格；背景 48 格 + 内部高光 4 格 = 52 格被键掉
+    assert.equal(countTransparentPx(img), 52, 'global 应把内部 4 格高光也键掉')
+    assert.equal(img.data[(3 * 8 + 3) * 4 + 3], 0, '(3,3) 是高光，global 下被挖穿')
+  })
+
+  it('border 模式只键与四边连通的底色，主体内部高光必须存活', () => {
+    const art = bodyWithWhiteHighlight()
+    const img = artToImageData(art, 1, { transparentBg: true, bgHex: '#ffffff', keyMode: 'border' })
+    assert.equal(countTransparentPx(img), 48, 'border 只应键掉 48 格背景，内部高光保留')
+    assert.equal(img.data[(3 * 8 + 3) * 4 + 3], 255, '(3,3) 是主体内部高光，必须不透明')
+    assert.equal(img.data[(4 * 8 + 4) * 4 + 3], 255, '(4,4) 是主体内部高光，必须不透明')
+    assert.equal(img.data[0 * 8 * 4 + 3], 0, '(0,0) 是背景，应被键掉')
+  })
+
+  it('border 不会误吃"与边界不连通的同色区"（主体把背景围起来时）', () => {
+    // 4×4 全是白，中间 2×2 是深绿 → 白底全部与边界连通，应全被键掉
+    const w = 4
+    const indices = new Uint8Array(w * w)
+    const palette = ['#ffffff', '#007800']
+    for (let y = 1; y <= 2; y++) for (let x = 1; x <= 2; x++) indices[y * w + x] = 1
+    const art: PixelArt = { width: w, height: w, indices, palette, alphaMask: null }
+    const img = artToImageData(art, 1, { transparentBg: true, bgHex: '#ffffff', keyMode: 'border' })
+    assert.equal(countTransparentPx(img), 12, '外围 12 格白底应全部键掉')
+    assert.equal(img.data[(1 * w + 1) * 4 + 3], 255, '中间的绿主体不受影响')
+  })
+
+  it('零容差键不掉 254 白底；容差 ≥1 就能键掉（AI 生图的噪声白底）', () => {
+    const w = 4
+    // 整幅都是 254 白（索引 0 指向 #fefefe）——模拟扩散模型输出的"白底"
+    const indices = new Uint8Array(w * w) // 全 0 = 全用 palette[0]
+    const palette = ['#fefefe', '#007800']
+    const art: PixelArt = { width: w, height: w, indices, palette, alphaMask: null }
+    const strict = artToImageData(art, 1, { transparentBg: true, bgHex: '#ffffff', keyTolerance: 0 })
+    assert.equal(countTransparentPx(strict), 0, '容差 0 时 254 白底一个都不该被键掉')
+    const tolerant = artToImageData(art, 1, { transparentBg: true, bgHex: '#ffffff', keyTolerance: 1 })
+    assert.equal(countTransparentPx(tolerant), w * w, '容差 1 时应全部键掉')
+  })
+
+  it('容差必须按"三通道最大差"判定，不能把邻近色一概吃掉', () => {
+    const w = 2
+    // #ffffff 与 #f8f8f8 的最大通道差 = 7
+    const palette = ['#f8f8f8', '#ffffff']
+    const art: PixelArt = { width: w, height: 1, indices: new Uint8Array([0, 1]), palette, alphaMask: null }
+    const t3 = artToImageData(art, 1, { transparentBg: true, bgHex: '#ffffff', keyMode: 'border', keyTolerance: 3 })
+    assert.equal(countTransparentPx(t3), 1, '差 7 > 容差 3，只该键掉精确那格')
+    const t7 = artToImageData(art, 1, { transparentBg: true, bgHex: '#ffffff', keyMode: 'border', keyTolerance: 7 })
+    assert.equal(countTransparentPx(t7), 2, '差 7 ≤ 容差 7，两格都该键掉')
+  })
+
+  it('不传 keyMode/keyTolerance 时行为与旧版完全一致（默认 global + 零容差）', () => {
+    const art = bodyWithWhiteHighlight()
+    const legacy = artToImageData(art, 1, { transparentBg: true, bgHex: '#ffffff' })
+    const explicit = artToImageData(art, 1, { transparentBg: true, bgHex: '#ffffff', keyMode: 'global', keyTolerance: 0 })
+    assert.deepEqual([...legacy.data], [...explicit.data], '默认值必须等于显式 global+0，否则是破坏性变更')
+  })
+
+  it('键控在放大导出时同样成立（scale 不影响键控范围）', () => {
+    const art = bodyWithWhiteHighlight()
+    const img = artToImageData(art, 2, { transparentBg: true, bgHex: '#ffffff', keyMode: 'border' })
+    assert.equal(img.width, 16)
+    assert.equal(countTransparentPx(img), 48 * 4, '16×16 下背景 48 格 × 4 像素')
+    assert.equal(img.data[(6 * 16 + 6) * 4 + 3], 255, '(3,3) 高光在 2 倍下仍不透明')
   })
 })
 

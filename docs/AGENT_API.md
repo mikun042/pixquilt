@@ -63,6 +63,8 @@ node tool/artc.mjs --ops '[{"op":"eraseColor","color":"#ffffff"},{"op":"trim"}]'
 | `--alpha` | 保留原图透明（真 alpha 通道） |
 | `--transparent` | 背景色导出为透明（单色键控） |
 | `--matte` | 合成 / 键控底色（默认 #ffffff） |
+| `--key-mode` | 键控范围：`global`（默认）全图同色都透明；`border` 只键掉与四边连通的底色区域。白底 + 主体内部有同色高光（眼白/高光）时必须用 `border`，否则那些像素会被一起挖穿成洞 |
+| `--key-tolerance` | 键控颜色容差 0–255（三通道最大差，默认 0 = 精确同色）。扩散模型（ComfyUI 等）输出的「白底」实际是 254/255 混合噪声，容差 0 一个都键不掉，需要 1–3 |
 | `--lock-palette` | 只允许使用给定色板（拼豆与资产批次必备） |
 | `--sheet [列数]` | 输出 `_sheet.json` 图集坐标表（帧等尺寸 + offsetX/offsetY） |
 | `--pixbin` | 额外输出 `.pixbin`（二进制像素数据，大画布往返更快） |
@@ -123,6 +125,8 @@ node tool/artc.mjs --ops '[{"op":"eraseColor","color":"#ffffff"},{"op":"trim"}]'
 | `saturation` | number | -100 … 100 | `0` | 饱和度调整（转换前） |
 | `transparent` | enum | `none` / `key` / `alpha` | `"none"` | 透明处理：不透明（合成到 matteColor）/ 单色键控 / 真 alpha 通道 |
 | `matteColor` | hex | — | `"#ffffff"` | alpha 合成与单色键控用的底色 |
+| `keyMode` | enum | `global` / `border` | `"global"` | 键控范围：global 全图同色都透明；border 只键掉与四边连通的底色区域（白底 + 主体内部有同色高光时必须用 border）（transparent=key） |
+| `keyTolerance` | number | 0 … 255 | `0` | 键控颜色容差（三通道最大差，0=精确同色）；扩散模型输出的白底常是 254/255 噪声，需要 1–3（transparent=key） |
 | `exactWidth` | number | 1 … 2048 | `null` | 强制输出宽度（游戏资产模式；须与 exactHeight 同时给出） |
 | `exactHeight` | number | 1 … 2048 | `null` | 强制输出高度 |
 | `lockPalette` | boolean | — | `false` | 只允许使用给定色板（拼豆/资产批次；量化与算子都不会新增颜色） |

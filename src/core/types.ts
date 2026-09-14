@@ -22,6 +22,8 @@ export type PaletteMode = 'auto' | 'preset' | 'custom'
 export type DownsampleMode = 'average' | 'nearest'
 export type CropRatio = 'free' | '1:1' | '4:3' | '16:9'
 export type TransparentMode = 'none' | 'key' | 'alpha'
+/** 键控范围：全图同色 / 只键与四边连通的底色区域（后者保护主体内部同色像素） */
+export type KeyMode = 'global' | 'border'
 
 /** 工具清单单一来源：类型、偏好白名单、UI 按钮顺序、API 校验都由它派生 */
 export const TOOLS = ['pencil', 'bucket', 'picker', 'rect', 'ellipse', 'selection'] as const
@@ -55,6 +57,13 @@ export interface ConvertParams {
   transparent: TransparentMode
   /** alpha 合成与键控用的底色（旧项目叫 flattenBg） */
   matteColor: string
+  /**
+   * 键控范围：`global` 全图同色都透明；`border` 只键掉与四边连通的底色区域。
+   * 白底 + 主体内部有白色高光时必须用 `border`，否则高光会被挖穿。
+   */
+  keyMode: KeyMode
+  /** 键控颜色容差（0–255，三通道最大差）；AI 生图的白底是 254/255 噪声，需要 >0 */
+  keyTolerance: number
   /** 强制输出精确尺寸（游戏资产模式）：给定时忽略 longEdge 的按比例推导 */
   exactWidth?: number
   exactHeight?: number
@@ -79,6 +88,8 @@ export const DEFAULT_PARAMS: ConvertParams = {
   saturation: 0,
   transparent: 'none',
   matteColor: '#ffffff',
+  keyMode: 'global',
+  keyTolerance: 0,
 }
 
 export interface PixelArt {
@@ -291,6 +302,8 @@ export function sanitizeParams(raw: unknown): SanitizeReport {
     saturation: numP('saturation', -100, 100, 0),
     transparent,
     matteColor: hexField(matteRaw, d.matteColor),
+    keyMode: enumP('keyMode', ['global', 'border'] as const, d.keyMode),
+    keyTolerance: numP('keyTolerance', 0, 255, d.keyTolerance),
   }
 
   // exactWidth/Height：给了就必须是正整数，否则两个一起丢弃（半给会让尺寸推导自相矛盾）

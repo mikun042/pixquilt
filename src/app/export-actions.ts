@@ -46,7 +46,12 @@ export function createExportActions(deps: ExportDeps) {
     if (!art) return
     const params = deps.getParams()
     try {
-      const blob = await artToPngBlob(art, scale, { transparentBg: params.transparent === 'key', bgHex: params.matteColor })
+      const blob = await artToPngBlob(art, scale, {
+        transparentBg: params.transparent === 'key',
+        bgHex: params.matteColor,
+        keyMode: params.keyMode,
+        keyTolerance: params.keyTolerance,
+      })
       const name = `${safeFileBase(deps.getSourceName())}_${art.width}x${art.height}_${scale}x.png`
       download(blob, name)
       deps.toast(`已导出 ${name}`)

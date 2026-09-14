@@ -53,6 +53,7 @@ const VALUE_FLAGS = new Set([
   'in', 'out', 'name', 'index', 'scale', 'ops', 'ops-file', 'blank', 'blank-color', 'long-edge', 'size',
   'dither', 'contrast', 'saturation', 'brightness', 'crop', 'downsample', 'palette-k',
   'palette', 'preset', 'style', 'matte', 'cleanup-min', 'bead-mm', 'bead-gram', 'board',
+  'key-mode', 'key-tolerance',
 ])
 /** 允许出现的全部开关。新增 flag 必须同时改这里与帮助文本（见 BOOL_FLAGS 上方注释）。 */
 export const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...OPTIONAL_VALUE_FLAGS, ...VALUE_FLAGS])
@@ -246,6 +247,14 @@ export function buildParams(args) {
   if (args.alpha) params.transparent = 'alpha'
   if (args.transparent) params.transparent = 'key'
   if (args.matte !== undefined) params.matteColor = String(args.matte)
+  if (args['key-mode'] !== undefined) {
+    params.transparent = 'key'
+    params.keyMode = String(args['key-mode'])
+  }
+  if (args['key-tolerance'] !== undefined) {
+    params.transparent = 'key'
+    params.keyTolerance = Number(args['key-tolerance'])
+  }
   if (args['no-cleanup']) params.cleanup = false
   if (args['cleanup-min'] !== undefined) params.cleanupMinSize = Number(args['cleanup-min'])
   if (args['lock-palette']) params.lockPalette = true
@@ -353,6 +362,19 @@ export function sanitizeName(s) {
  * 而屏幕上的产物明明有 60% 透明格——agent 按这个字段判断会得出"键控没生效"的错误结论
  * （实测被这条坑过一轮，见 docs/ARCHITECTURE.md §8.10 第 ⑦ 类）。
  */
+/**
+ * 把透明参数翻译成 core/raster 的 RasterOptions。
+ * 集中一处的原因：renderOne / --blank / pngStats 三处都要用，各写一遍必然分叉。
+ */
+function keyOptions(params) {
+  return {
+    transparentBg: params.transparent === 'key',
+    bgHex: params.matteColor,
+    keyMode: params.keyMode,
+    keyTolerance: params.keyTolerance,
+  }
+}
+
 function pngStats(art, scale, pngOpts) {
   const img = artToImageData(art, scale, pngOpts)
   let transparentPixels = 0
@@ -366,8 +388,8 @@ function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wa
   const applied = ops.length ? applyOps(rendered, ops, { allowApproxColor: !params.lockPalette }) : { art: rendered, changes: [], applied: false }
   const art = applied.art
 
-  const transparentBg = params.transparent === 'key'
-  const pngOpts = { transparentBg, bgHex: params.matteColor }
+  // 键控三件套（bgHex / keyMode / keyTolerance）只有一个来源，避免导出与统计用了不同的口径
+  const pngOpts = keyOptions(params)
   const png = artToPngBytesNode(art, scale, pngOpts)
   const vars = { name: basename(src, extname(src)), index, w: art.width, h: art.height, scale }
   const base = sanitizeName(assertNoPlaceholders(applyTemplate(nameTemplate, vars), nameTemplate))
@@ -658,6 +680,36 @@ async function selftest() {
     eq(modelSide, 1, '模型侧应有 1 个透明格')
     eq(st.pngTransparent, 4, 'scale=2 时产物应为 2×2=4 个透明像素')
     return `模型 1 格 → 产物 4 像素`
+  })
+
+  // 键控新选项的 CLI 侧接线：--key-mode / --key-tolerance 必须真的进 params 并被 keyOptions 透传
+  check('CLI：--key-mode / --key-tolerance 进入参数并被导出采用', () => {
+    const a = buildParams({ 'key-mode': 'border' })
+    eq(a.params.transparent, 'key', '给了 --key-mode 就应自动进入键控模式（否则选项静默失效）')
+    eq(a.params.keyMode, 'border', 'keyMode 应传进参数')
+    const b = buildParams({ 'key-tolerance': '3' })
+    eq(b.params.transparent, 'key', '给了 --key-tolerance 也应自动进入键控模式')
+    eq(b.params.keyTolerance, 3, 'keyTolerance 应为数字 3')
+    const opts = keyOptions(a.params)
+    eq(opts.keyMode, 'border', 'keyOptions 应把 keyMode 透传给 core/raster')
+    return 'keyMode=border / keyTolerance=3 均已接线'
+  })
+
+  check('CLI：--key-mode border 保护主体内部同色高光（与 global 形成对照）', () => {
+    // 白底 7×7，中央 3×3 深绿主体，主体**正中** 1 格白高光（与背景同色且被主体完全包围）
+    const w = 7
+    const indices = new Uint8Array(w * w)
+    const palette = ['#ffffff', '#007800']
+    for (let y = 2; y <= 4; y++) for (let x = 2; x <= 4; x++) indices[y * w + x] = 1
+    indices[3 * w + 3] = 0 // 正中高光：四周都被绿色包围，与背景不连通
+    const art = { width: w, height: w, indices, palette, alphaMask: null }
+    const g = pngStats(art, 1, { transparentBg: true, bgHex: '#ffffff', keyMode: 'global', keyTolerance: 0 })
+    const b = pngStats(art, 1, { transparentBg: true, bgHex: '#ffffff', keyMode: 'border', keyTolerance: 0 })
+    // 7×7=49 格：主体 9 格（含 1 格高光），背景 40 格
+    eq(g.pngTransparent, 41, 'global 应键掉背景 40 格 + 主体内高光 1 格 = 41')
+    eq(b.pngTransparent, 40, 'border 应只键掉背景 40 格，被围住的高光保留')
+    eq(g.pngTransparent - b.pngTransparent, 1, '两种模式的差值必须恰好等于被保护的那 1 格高光')
+    return `global ${g.pngTransparent} 格 vs border ${b.pngTransparent} 格（差的就是高光那 1 格）`
   })
 
   check('导出：pixbin 往返', () => {
@@ -1028,7 +1080,7 @@ async function main() {
     // 写死 1 会让同批多张空白画布全部撞名覆盖。
     const blankVars = { name: blankName, index: blankIndex, w: art.width, h: art.height, scale }
     const base = sanitizeName(assertNoPlaceholders(applyTemplate(nameTemplate, blankVars), nameTemplate))
-    const png = artToPngBytesNode(art, scale, { transparentBg: params.transparent === 'key', bgHex: params.matteColor })
+    const png = artToPngBytesNode(art, scale, keyOptions(params))
     writeFileSync(join(outDir, `${base}.png`), png)
     writeFileSync(join(outDir, `${base}.hex`), serializeHexPalette(art.palette, codes), 'utf8')
     writeFileSync(join(outDir, `${base}.json`), pixelJSONString(art, { codes }), 'utf8')
@@ -1039,7 +1091,7 @@ async function main() {
       height: art.height,
       paletteSize: art.palette.length,
       transparent: countTransparent(art.indices, art.alphaMask),
-      ...pngStats(art, scale, { transparentBg: params.transparent === 'key', bgHex: params.matteColor }),
+      ...pngStats(art, scale, keyOptions(params)),
       hash: artHash(art),
       changes: r.changes.length,
     }
@@ -1216,6 +1268,10 @@ function printHelp() {
   --alpha                 保留原图透明（真 alpha 通道）
   --transparent           背景色导出为透明（单色键控）
   --matte <#rrggbb>       合成/键控底色（默认 #ffffff）
+  --key-mode <模式>       global（默认）全图同色都透明 | border 只键与四边连通的底色区域
+                          （白底 + 主体内部有同色高光时必须用 border，否则高光会被挖穿）
+  --key-tolerance <n>     键控颜色容差 0–255（三通道最大差，默认 0=精确同色）；
+                          AI 生图的"白底"常是 254/255 噪声，需要 1–3 才能键掉
   --lock-palette          只允许使用给定色板（拼豆/资产批次）
 
 导出与附加产物：

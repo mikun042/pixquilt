@@ -119,6 +119,16 @@ export function build() {
     ['--alpha', '保留原图透明（真 alpha 通道）', ['alpha']],
     ['--transparent', '背景色导出为透明（单色键控）', ['transparent']],
     ['--matte', '合成 / 键控底色（默认 #ffffff）', ['matte']],
+    [
+      '--key-mode',
+      '键控范围：`global`（默认）全图同色都透明；`border` 只键掉与四边连通的底色区域。白底 + 主体内部有同色高光（眼白/高光）时必须用 `border`，否则那些像素会被一起挖穿成洞',
+      ['key-mode'],
+    ],
+    [
+      '--key-tolerance',
+      '键控颜色容差 0–255（三通道最大差，默认 0 = 精确同色）。扩散模型（ComfyUI 等）输出的「白底」实际是 254/255 混合噪声，容差 0 一个都键不掉，需要 1–3',
+      ['key-tolerance'],
+    ],
     ['--lock-palette', '只允许使用给定色板（拼豆与资产批次必备）', ['lock-palette']],
 
     ['--sheet [列数]', '输出 `_sheet.json` 图集坐标表（帧等尺寸 + offsetX/offsetY）', ['sheet']],

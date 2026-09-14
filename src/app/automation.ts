@@ -20,6 +20,20 @@ import { artStats, countTransparent, countUsage, hasRealAlpha } from '../core/st
 import { beadListCsv, beadReport, beadSvg } from '../core/bead.ts'
 import { CAPABILITIES, OP_SPECS, PARAM_SPECS, describeAll } from '../core/spec.ts'
 
+/**
+ * 导出时的键控选项。`bgHex` 缺省时由实现补当前的 `matteColor`。
+ *
+ * `keyMode` / `keyTolerance` 与 CLI 的 `--key-mode` / `--key-tolerance` 同语义：
+ * 白底 + 主体内部有同色高光（眼白/高光）要用 `border`，否则会被一起挖穿成洞；
+ * 扩散模型输出的「白底」是 254/255 噪声，要配 `keyTolerance`（1–3）才键得掉。
+ */
+export interface ExportKeyOptions {
+  transparentBg?: boolean
+  bgHex?: string
+  keyMode?: 'global' | 'border'
+  keyTolerance?: number
+}
+
 export interface AutomationDeps {
   getParams: () => ConvertParams
   setParams: (params: ConvertParams) => void
@@ -45,10 +59,10 @@ export interface AutomationDeps {
   redo: () => void
   toast: (msg: string, kind?: 'info' | 'warn' | 'error') => void
   /** 导出当前画布为 PNG dataURL。键控透明需要同时给出键控色：bgHex 缺省时由注入方补 matteColor */
-  exportPNG: (scale: number, opts?: { transparentBg?: boolean; bgHex?: string }) => string
+  exportPNG: (scale: number, opts?: ExportKeyOptions) => string
   /** 把临时画布编码成 PNG dataURL（由平台层注入：浏览器走 canvas，Node 走 zlib），
    *  这样 core 的导出模块就不必依赖任何平台 API —— 浏览器包才不会被 node:zlib 拖住。 */
-  pngDataURL: (art: PixelArt, scale: number, opts?: { transparentBg?: boolean; bgHex?: string }) => Promise<string>
+  pngDataURL: (art: PixelArt, scale: number, opts?: ExportKeyOptions) => Promise<string>
   setPrefs: (patch: { tool?: string; primary?: string; bg?: string; brushSize?: number; transparent?: boolean }) => void
   getPrefs: () => { tool: string; primary: string; bg: string; brushSize: number; eraserToAlpha: boolean }
   importImage: (file: File) => Promise<void>
@@ -215,11 +229,16 @@ export function installAutomationApi(deps: AutomationDeps): void {
     artHash: (): string => artHash(requireArt()),
 
     /* ---------------------------------------------------------- 导出（返回字符串/字节，不触发下载） */
-    exportPNG: (scale = 1, opts?: { transparentBg?: boolean; bgHex?: string }): string => {
+    exportPNG: (scale = 1, opts?: ExportKeyOptions): string => {
       requireArt()
       // 键控（transparentBg）必须配合键控色才有意义：core/raster.ts 里 keyOut 需要两者同时具备。
       // 原先只透传 transparentBg，导致"按文档调用 API 却拿到不透明的图"——这里补上 matteColor 兜底。
-      const merged = opts?.transparentBg ? { ...opts, bgHex: opts.bgHex ?? deps.getParams().matteColor } : opts
+      // keyMode / keyTolerance 同样从当前参数兜底：agent 通常只传 transparentBg，
+      // 而"白底 + 内部高光要用 border"这件事在参数里已经调好了，不必每次重申。
+      const p = deps.getParams()
+      const merged = opts?.transparentBg
+        ? { keyMode: p.keyMode, keyTolerance: p.keyTolerance, ...opts, bgHex: opts.bgHex ?? p.matteColor }
+        : opts
       return deps.exportPNG(scale, merged)
     },
     exportPaletteHex: (): string => {
@@ -285,7 +304,7 @@ export function installAutomationApi(deps: AutomationDeps): void {
       src: File | Blob | string,
       params?: Partial<ConvertParams>,
       scale = 1,
-      opts?: { transparentBg?: boolean; ops?: EditOp[] },
+      opts?: { transparentBg?: boolean; ops?: EditOp[]; keyMode?: 'global' | 'border'; keyTolerance?: number },
     ): Promise<{
       width: number
       height: number
@@ -303,7 +322,7 @@ export function installAutomationApi(deps: AutomationDeps): void {
       const { art: base } = runPipeline(image, p)
       // 无副作用路径**不继承主色**：绘画类算子必须显式给 color，结果才与工作区状态无关
       const art = opts?.ops?.length ? applyOps(base, opts.ops, { allowApproxColor: !p.lockPalette }).art : base
-      const pngOpts = { transparentBg: opts?.transparentBg, bgHex: p.matteColor }
+      const pngOpts = { transparentBg: opts?.transparentBg, bgHex: p.matteColor, keyMode: opts?.keyMode, keyTolerance: opts?.keyTolerance }
       return {
         width: art.width,
         height: art.height,
@@ -329,7 +348,7 @@ export function installAutomationApi(deps: AutomationDeps): void {
       opts: { width: number; height: number; color?: string; transparent?: boolean; ops?: EditOp[] },
       params?: Partial<ConvertParams>,
       scale = 1,
-      exp?: { transparentBg?: boolean; ops?: unknown },
+      exp?: { transparentBg?: boolean; ops?: unknown; keyMode?: 'global' | 'border'; keyTolerance?: number },
     ): Promise<{
       width: number
       height: number
@@ -357,7 +376,7 @@ export function installAutomationApi(deps: AutomationDeps): void {
       // 无副作用路径**不继承主色**：绘画类算子必须显式给 color，结果才与工作区状态无关
       const r = opts.ops?.length ? applyOps(base, opts.ops, { allowApproxColor: !p.lockPalette }) : null
       const art = r ? r.art : base
-      const png = await deps.pngDataURL(art, scale, { transparentBg: exp?.transparentBg, bgHex: p.matteColor })
+      const png = await deps.pngDataURL(art, scale, { transparentBg: exp?.transparentBg, bgHex: p.matteColor, keyMode: exp?.keyMode, keyTolerance: exp?.keyTolerance })
       return {
         width: art.width,
         height: art.height,
