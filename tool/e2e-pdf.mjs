@@ -15,110 +15,29 @@
  *
  * 用法：node tool/e2e-pdf.mjs [--app <html 路径>]
  */
-import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { inflateSync } from 'node:zlib'
 
-const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
-const BROWSERS = [
-  process.env['PROGRAMFILES(X86)'] && join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
-].filter(Boolean)
+import { argValue, createChecker, sleep, startBrowser } from './cdp.mjs'
 
-const argOf = (name, fallback) => {
-  const i = process.argv.indexOf(name)
-  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback
-}
-const app = argOf('--app', join(ROOT, 'dist', 'index.html'))
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+
+const app = argValue('app', join(ROOT, 'dist', 'index.html'))
 if (!existsSync(app)) {
   console.error(`找不到产物：${app}（先跑 npm run build）`)
   process.exit(2)
 }
 
-const results = []
-const check = (name, fn) => {
-  try {
-    const detail = fn()
-    results.push({ name, ok: true, detail: detail === undefined ? '' : String(detail) })
-  } catch (err) {
-    results.push({ name, ok: false, detail: err?.message ?? String(err) })
-  }
-}
-const assert = (cond, msg) => {
-  if (!cond) throw new Error(msg)
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const { results, check, assert, report } = createChecker('PDF 与图标验证')
 
 /* ---------------------------------------------- CDP */
 
-class Cdp {
-  constructor(ws) {
-    this.ws = ws
-    this.id = 0
-    this.pending = new Map()
-    ws.addEventListener('message', (ev) => {
-      const m = JSON.parse(ev.data)
-      if (m.id && this.pending.has(m.id)) {
-        const { resolve, reject, timer } = this.pending.get(m.id)
-        this.pending.delete(m.id)
-        clearTimeout(timer)
-        m.error ? reject(new Error(m.error.message)) : resolve(m.result)
-      }
-    })
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url)
-    await new Promise((res, rej) => {
-      ws.addEventListener('open', res, { once: true })
-      ws.addEventListener('error', () => rej(new Error('CDP 连接失败')), { once: true })
-    })
-    return new Cdp(ws)
-  }
-  send(method, params = {}, timeoutMs = 30000) {
-    const id = ++this.id
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error(`CDP 超时：${method}`))
-      }, timeoutMs)
-      this.pending.set(id, {
-        resolve: (v) => { clearTimeout(timer); resolve(v) },
-        reject: (e) => { clearTimeout(timer); reject(e) },
-      })
-      this.ws.send(JSON.stringify({ id, method, params }))
-    })
-  }
-  async eval(expression) {
-    const r = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text)
-    return r.result.value
-  }
-}
-
-const browser = BROWSERS.find(existsSync)
-if (!browser) {
-  console.error('找不到 Edge 或 Chrome')
-  process.exit(2)
-}
-
-const userDataDir = mkdtempSync(join(tmpdir(), 'e2e-pdf-'))
-const child = spawn(browser, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`,
-  '--no-first-run', '--no-default-browser-check', '--window-size=1400,900', 'about:blank'], { stdio: 'ignore' })
-const portFile = join(userDataDir, 'DevToolsActivePort')
-let port = 0
-for (let i = 0; i < 150; i++) {
-  if (existsSync(portFile)) {
-    port = Number(readFileSync(portFile, 'utf8').split('\n')[0])
-    if (port) break
-  }
-  await sleep(100)
-}
-const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
-const cdp = await Cdp.connect(targets.find((t) => t.type === 'page').webSocketDebuggerUrl)
+// 这个脚本原先用"读 DevToolsActivePort 文件"的方式取端口（stdout 抓不到 ws 时的备选路径），
+// 共用模块两种方式都支持，这里保持它原来的策略不变。
+const session = await startBrowser({ profilePrefix: 'e2e-pdf-', portStrategy: 'portfile', extraArgs: ['--window-size=1400,900'] })
+const { cdp } = session
 
 /** PDF 解析：取出所有 stream 并解压（只认独立成行的 stream 标记，避开 startxref 里的子串） */
 function pdfStreams(bytes) {
@@ -377,13 +296,10 @@ try {
   fatal = err
 }
 
-const passed = results.filter((r) => r.ok).length
-for (const r of results) console.log(` ${r.ok ? '✔' : '✘'} ${r.name}${r.detail ? ` — ${r.detail}` : ''}`)
-if (fatal) console.log(`\n✘ 运行中断：${fatal.message}`)
-console.log(`\nPDF 与图标验证：${passed}/${results.length} 通过`)
-
-cdp.ws.close()
-child.kill()
-await sleep(300)
-rmSync(userDataDir, { recursive: true, force: true })
-process.exit(passed === results.length && !fatal ? 0 : 1)
+await session.close()
+if (fatal) {
+  console.log(`
+✘ 运行中断：${fatal.message}`)
+  process.exit(1)
+}
+report()

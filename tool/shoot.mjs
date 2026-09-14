@@ -16,80 +16,21 @@
  * 注意：**必须先设桌面视口**。headless 默认 800×600 会命中 CSS 的 ≤980px 窄屏规则，
  * 把左栏 `display:none`，取色器就没有布局尺寸（截图会是空白）。
  */
-import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+
+import { argValue, startBrowser } from './cdp.mjs'
 
 import { decodePngNode } from '../src/io/node-png.ts'
 import { encodePngNode } from '../src/io/node-png.ts'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 
-function arg(name, fallback) {
-  const i = process.argv.indexOf(`--${name}`)
-  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback
-}
+const OUT_DIR = join(ROOT, argValue('out', '.tmp-shots'))
+const WIDTH = Number(argValue('width', '1400'))
+const HEIGHT = Number(argValue('height', '900'))
 
-const OUT_DIR = join(ROOT, arg('out', '.tmp-shots'))
-const WIDTH = Number(arg('width', '1400'))
-const HEIGHT = Number(arg('height', '900'))
-
-const BROWSERS = [
-  process.env['PROGRAMFILES(X86)'] && join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
-].filter(Boolean)
-
-class Cdp {
-  constructor(ws) {
-    this.ws = ws
-    this.id = 0
-    this.pending = new Map()
-    ws.addEventListener('message', (ev) => {
-      const m = JSON.parse(ev.data)
-      if (m.id && this.pending.has(m.id)) {
-        const { resolve, reject } = this.pending.get(m.id)
-        this.pending.delete(m.id)
-        m.error ? reject(new Error(m.error.message)) : resolve(m.result)
-      }
-    })
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url)
-    await new Promise((res, rej) => {
-      ws.addEventListener('open', res, { once: true })
-      ws.addEventListener('error', () => rej(new Error('CDP WebSocket 连接失败')), { once: true })
-    })
-    return new Cdp(ws)
-  }
-  send(method, params = {}, timeoutMs = 20000) {
-    const id = ++this.id
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error(`CDP 超时：${method}`))
-      }, timeoutMs)
-      this.pending.set(id, {
-        resolve: (v) => {
-          clearTimeout(timer)
-          resolve(v)
-        },
-        reject: (e) => {
-          clearTimeout(timer)
-          reject(e)
-        },
-      })
-      this.ws.send(JSON.stringify({ id, method, params }))
-    })
-  }
-  async eval(expression) {
-    const r = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text)
-    return r.result.value
-  }
-}
 
 /** 从整图里裁出一块（用于只截取色器区域） */
 function crop(img, x, y, w, h) {
@@ -106,33 +47,12 @@ function crop(img, x, y, w, h) {
 }
 
 async function main() {
-  const browser = BROWSERS.find((p) => existsSync(p))
-  if (!browser) throw new Error('找不到 Edge/Chrome')
   const app = join(ROOT, '像素画工作台.html')
   if (!existsSync(app)) throw new Error(`找不到 ${app}，先跑 npm run build`)
 
   mkdirSync(OUT_DIR, { recursive: true })
-  const userDataDir = mkdtempSync(join(tmpdir(), 'shoot-'))
-  const child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] })
-
-  const wsUrl = await new Promise((resolve, reject) => {
-    let buf = ''
-    const t = setTimeout(() => reject(new Error('等待 DevTools 端口超时')), 25000)
-    const onData = (c) => {
-      buf += String(c)
-      const m = buf.match(/ws:\/\/[^\s]+/)
-      if (m) {
-        clearTimeout(t)
-        resolve(m[0])
-      }
-    }
-    child.stdout.on('data', onData)
-    child.stderr.on('data', onData)
-  })
-
-  const port = wsUrl.match(/:(\d+)\//)[1]
-  const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
-  const cdp = await Cdp.connect(list.find((t) => t.type === 'page').webSocketDebuggerUrl)
+  const session = await startBrowser({ profilePrefix: 'shoot-' })
+  const { cdp } = session
 
   try {
     await cdp.send('Runtime.enable')
@@ -150,13 +70,13 @@ async function main() {
     await new Promise((r) => setTimeout(r, 400))
 
     // 可选：先把主色设成指定 hex（参考图同色对比用；不改算法，只走页内自动化接口）
-    const color = arg('color', '')
+    const color = argValue('color')
     if (color) {
       await cdp.eval(`(() => { window.pixelArtStudio.setPrimary('#${color.replace(/^#/, '')}'); return true })()`)
       await new Promise((r) => setTimeout(r, 300))
     }
     // 可选：切到 HSV 段（参考图第二张就是 HSV 段）
-    const model = arg('model', '')
+    const model = argValue('model')
     if (model) {
       await cdp.eval(`(() => { const t = [...document.querySelectorAll('.cp-tab')].find((b) => b.textContent.toLowerCase() === ${JSON.stringify(model.toLowerCase())}); if (t) t.click(); return !!t })()`)
       await new Promise((r) => setTimeout(r, 300))
@@ -187,10 +107,7 @@ async function main() {
     console.log('  取色器位置：' + JSON.stringify({ x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.w), h: Math.round(box.h) }))
     console.log('  提示：与参考图并排比较；定量分析可用 node tool/ref-analysis.mjs <png>')
   } finally {
-    cdp.ws.close()
-    child.kill()
-    await new Promise((r) => setTimeout(r, 300))
-    rmSync(userDataDir, { recursive: true, force: true })
+    await session.close()
   }
 }
 

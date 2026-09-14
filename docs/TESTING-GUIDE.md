@@ -24,7 +24,7 @@
 | Node | v24.18.1（`node --test` 能直接跑 `.ts`，Node 会剥掉类型） |
 | 依赖 | 3 个 devDependency（esbuild / typescript / @types/node），运行期 0 依赖 |
 | 浏览器 | Edge `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`；Chrome `C:\Program Files\Google\Chrome\Application\chrome.exe` |
-| 无头测试 | 项目自带零依赖 CDP 客户端（`tool/e2e*.mjs`），不需要装 Playwright |
+| 无头测试 | 项目自带零依赖 CDP 客户端（`tool/cdp.mjs`，被 e2e 各脚本与截图/探针工具共用），不需要装 Playwright |
 
 ### 0.2 先跑一遍基线，再开始测
 
@@ -132,7 +132,7 @@ Hex 输入、数值行填充比例、色板点选、Alpha 行两端语义、数�
 
 自动化没覆盖的部分（**这份清单才是你工作的重点**）。每项都给了"怎么测 / 期望结果 / 如何判失败"。
 
-> 建议做法：写一个自己的 CDP 脚本（照抄 `tool/e2e.mjs` 的 Cdp 类，约 60 行）做半自动验证，
+> 建议做法：直接 `import { startBrowser, createChecker } from './cdp.mjs'`（约 5 行就有一个可用的浏览器会话 + 断言收集器），
 > 无法自动化的（观感、布局、交互手感）再截图人眼确认。
 
 ### A. 导入（4 项）

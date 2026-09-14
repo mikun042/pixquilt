@@ -98,7 +98,8 @@ tool/artc.mjs            ← 批处理 CLI（agent 主入口）
 tool/quickstart.mjs      ← Agent 快速上手（一条命令跑通全链路）
 tool/build.mjs           ← 单文件构建（内联 CSS + JS，核对产物哈希）
 tool/describe.mjs        ← 由 core/spec.ts 生成 docs/AGENT_API.md
-tool/e2e*.mjs            ← 无头浏览器验证（自写零依赖 CDP 客户端）
+tool/cdp.mjs             ← 零依赖 CDP 客户端 + 启动/断言样板（e2e/截图/探针共用这一份）
+tool/e2e*.mjs            ← 无头浏览器验证（全都建在 tool/cdp.mjs 上）
 docs/                    ← 见下方「文档导航」
 ```
 

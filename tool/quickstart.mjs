@@ -10,11 +10,12 @@
  *   node tool/quickstart.mjs --no-browser   # 跳过页内 API 验证（无浏览器环境用）
  *   node tool/quickstart.mjs --out 目录      # 换输出目录
  */
-import { spawn, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+
+import { startBrowser } from './cdp.mjs'
 
 import { encodePngNode } from '../src/io/node-png.ts'
 import { decodePngNode } from '../src/io/node-png.ts'
@@ -186,65 +187,22 @@ ok('用量守恒')
 step(5, SKIP_BROWSER ? '页内 API：已跳过（--no-browser）' : '页内 API：用无头浏览器驱动界面出图')
 
 if (!SKIP_BROWSER) {
-  const BROWSERS = [
-    process.env['PROGRAMFILES(X86)'] && join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-    process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-    process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
-  ].filter(Boolean)
-  const browser = BROWSERS.find((p) => existsSync(p))
-  if (!browser) {
+  // 共用 cdp.mjs：浏览器定位 / 启动 / 取端口 / 清理都收在那里（原先这里内联了第七份 CDP 客户端）
+  let session = null
+  try {
+    session = await startBrowser({ profilePrefix: 'quickstart-' })
+  } catch {
+    // 找不到浏览器不是失败：其余链路已经验证过了
     console.log('  ⚠ 找不到 Edge/Chrome，跳过这一步（其余链路已验证）')
-  } else {
-    const userDataDir = join(tmpdir(), `quickstart-${Date.now()}`)
-    const child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] })
-    let id = 0
-    const pending = new Map()
-    let ws
+  }
+  if (session) {
+    const { cdp: send } = session
+    const evl = (expr) => session.cdp.eval(expr)
     try {
-      const wsUrl = await new Promise((resolve, reject) => {
-        let buf = ''
-        const t = setTimeout(() => reject(new Error('等待 DevTools 端口超时')), 25000)
-        const onData = (c) => {
-          buf += String(c)
-          const m = buf.match(/ws:\/\/[^\s]+/)
-          if (m) {
-            clearTimeout(t)
-            resolve(m[0])
-          }
-        }
-        child.stdout.on('data', onData)
-        child.stderr.on('data', onData)
-      })
-      const port = wsUrl.match(/:(\d+)\//)[1]
-      const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
-      ws = new WebSocket(list.find((t) => t.type === 'page').webSocketDebuggerUrl)
-      await new Promise((r, j) => {
-        ws.addEventListener('open', r, { once: true })
-        ws.addEventListener('error', () => j(new Error('CDP 连接失败')), { once: true })
-      })
-      ws.addEventListener('message', (ev) => {
-        const m = JSON.parse(ev.data)
-        if (m.id && pending.has(m.id)) {
-          const { res, rej } = pending.get(m.id)
-          pending.delete(m.id)
-          m.error ? rej(new Error(m.error.message)) : res(m.result)
-        }
-      })
-      const send = (method, params = {}) =>
-        new Promise((res, rej) => {
-          const i = ++id
-          pending.set(i, { res, rej })
-          ws.send(JSON.stringify({ id: i, method, params }))
-        })
-      const evl = async (expr) => {
-        const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true })
-        if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text)
-        return r.result.value
-      }
-      await send('Runtime.enable')
-      await send('Page.enable')
-      await send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false })
-      await send('Page.navigate', { url: pathToFileURL(join(ROOT, '像素画工作台.html')).href })
+      await send.send('Runtime.enable')
+      await send.send('Page.enable')
+      await send.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false })
+      await send.send('Page.navigate', { url: pathToFileURL(join(ROOT, '像素画工作台.html')).href })
       for (let i = 0; i < 60; i++) {
         if (await evl('!!window.pixelArtStudio')) break
         await new Promise((r) => setTimeout(r, 150))
@@ -286,18 +244,7 @@ if (!SKIP_BROWSER) {
       const back = decodePngNode(new Uint8Array(bytes))
       ok(`页内 API 产出的 PNG 已落盘：from-page-api.png（${back.width}×${back.height}，${bytes.length} 字节）`)
     } finally {
-      try {
-        ws?.close()
-      } catch {
-        /* ignore */
-      }
-      child.kill()
-      await new Promise((r) => setTimeout(r, 200))
-      try {
-        rmSync(userDataDir, { recursive: true, force: true })
-      } catch {
-        /* ignore */
-      }
+      await session.close()
     }
   }
 }

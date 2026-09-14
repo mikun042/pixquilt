@@ -21,7 +21,7 @@ npm run verify     # 全绿才算通过（下面 §3 说明每一项是什么）
 | Node | **v24.18.1**。`node --test` 直接跑 `.ts`，靠类型剥离，测试不需要先构建 |
 | 依赖 | 仅 `esbuild` / `typescript` / `@types/node`（devDependencies）；**运行期 0 依赖** |
 | 浏览器 | Edge `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`、Chrome `C:\Program Files\Google\Chrome\Application\chrome.exe` |
-| 无头验证 | `tool/e2e*.mjs` 是自写的零依赖 CDP 客户端 |
+| 无头验证 | `tool/cdp.mjs` 是自写的零依赖 CDP 客户端与启动/断言样板；`tool/e2e*.mjs`、`shoot`、`probe`、`shot-el`、`quickstart` 都建在它上面 |
 
 ---
 
@@ -243,7 +243,7 @@ npm run probe -- "<js表达式>" [--pre "<js>"] [--click 选择器] [--wheel 选
 
 | # | 事项 | 价值 | 风险 | 备注 |
 |---|---|---|---|---|
-| A1 | **Node 端多格式解码**（JPEG/WebP/GIF） | 高 | 中 | AI 批量生产的输入常常是 JPG/WebP，目前只能先转 PNG 或走浏览器通道。建议优先用无依赖方案：把 `tool/e2e*.mjs` 里的 CDP 客户端抽成 `tool/cdp.mjs`，用无头浏览器做解码前处理；**不要**为此引入 sharp 这类重依赖 |
+| A1 | **Node 端多格式解码**（JPEG/WebP/GIF） | 高 | 中 | AI 批量生产的输入常常是 JPG/WebP，目前只能先转 PNG 或走浏览器通道。前置工作已完成：CDP 客户端已抽成 `tool/cdp.mjs`（见 §4.1），现在只要写一个解码脚本挂上去；**不要**为此引入 sharp 这类重依赖 |
 | A2 | **自动草稿**（IndexedDB） | 中 | 中 | 当前刷新页面会丢失所有编辑（只有手动导出的项目 JSON）。要做 `src/app/storage.ts`（防抖写入 params + art + 原图），启动恢复后 `canvasApi.setArt`。**坑**：要与"新建/导入项目时清空草稿"的顺序对齐——草稿 effect 先 `return` 后 `clearTimeout` 会让已清空的画布复活 |
 | A3 | **拼豆官方色卡导入向导** | 高（拼豆用户最在意号色对不对） | 低 | 内建卡是近似色。`.hex` 已支持 `编号 #rrggbb` 两列，还需要"导入后在 UI 里显示号色表、允许改号/删色" |
 | A4 | **多引擎元数据导出**（Godot `.tres` / Unity / Tiled） | 中 | 低 | 目前只有 `--sheet` 的图集坐标表。建议 `src/core/sheetmeta.ts` 纯函数，CLI 加 `--engine` |

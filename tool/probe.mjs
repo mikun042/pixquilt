@@ -4,12 +4,11 @@
  *   node .tmp/dom-probe.mjs "<js 表达式>"
  * 表达式里可用 document/window/getComputedStyle 等。
  */
-import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { argValue, hasFlag, startBrowser } from './cdp.mjs'
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const EXPR = process.argv[2] ?? '1'
 /** 可选：先用**真实鼠标事件**（Input.dispatchMouseEvent）点某个选择器——合成 .click() 不经过命中测试，测不出"点不动" */
@@ -22,54 +21,13 @@ const WHEEL = process.argv.includes('--wheel') ? process.argv[process.argv.index
 const WHEEL_DY = argOf('dy', 200)
 /** 可选：在某个选择器上发一次真实鼠标移动（悬停相关功能用） */
 const MOVE = process.argv.includes('--move') ? process.argv[process.argv.indexOf('--move') + 1] : ''
-const BROWSERS = [
-  process.env['PROGRAMFILES(X86)'] && join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
-].filter(Boolean)
-
-class Cdp {
-  constructor(ws) {
-    this.ws = ws; this.id = 0; this.pending = new Map()
-    ws.addEventListener('message', (ev) => {
-      const m = JSON.parse(ev.data)
-      if (m.id && this.pending.has(m.id)) { const { resolve, reject } = this.pending.get(m.id); this.pending.delete(m.id); m.error ? reject(new Error(m.error.message)) : resolve(m.result) }
-    })
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url)
-    await new Promise((res, rej) => { ws.addEventListener('open', res, { once: true }); ws.addEventListener('error', () => rej(new Error('CDP 连接失败')), { once: true }) })
-    return new Cdp(ws)
-  }
-  send(method, params = {}, timeoutMs = 20000) {
-    const id = ++this.id
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`CDP 超时：${method}`)) }, timeoutMs)
-      this.pending.set(id, { resolve: (v) => { clearTimeout(timer); resolve(v) }, reject: (e) => { clearTimeout(timer); reject(e) } })
-      this.ws.send(JSON.stringify({ id, method, params }))
-    })
-  }
-  async eval(expression) {
-    const r = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text)
-    return r.result.value
-  }
-}
 
 async function main() {
-  const browser = BROWSERS.find((p) => existsSync(p))
-  if (!browser) throw new Error('找不到 Edge/Chrome')
   const app = join(ROOT, '像素画工作台.html')
-  const userDataDir = mkdtempSync(join(tmpdir(), 'probe-'))
-  const child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] })
-  const wsUrl = await new Promise((resolve, reject) => {
-    let buf = ''
-    const t = setTimeout(() => reject(new Error('等待 DevTools 端口超时')), 25000)
-    const onData = (c) => { buf += String(c); const m = buf.match(/ws:\/\/[^\s]+/); if (m) { clearTimeout(t); resolve(m[0]) } }
-    child.stdout.on('data', onData); child.stderr.on('data', onData)
-  })
-  const port = wsUrl.match(/:(\d+)\//)[1]
-  const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
-  const cdp = await Cdp.connect(list.find((t) => t.type === 'page').webSocketDebuggerUrl)
+  if (!existsSync(app)) throw new Error(`找不到 ${app}，先跑 npm run build`)
+  // 共用 cdp.mjs：浏览器定位、启动参数、超时与临时 profile 清理都收在那里
+  const session = await startBrowser({ profilePrefix: 'probe-' })
+  const { cdp } = session
   try {
     await cdp.send('Runtime.enable'); await cdp.send('Page.enable')
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: VW, height: VH, deviceScaleFactor: 1, mobile: false })
@@ -146,9 +104,7 @@ async function main() {
     )
     console.log(out === undefined ? '(undefined)' : out)
   } finally {
-    cdp.ws.close(); child.kill()
-    await new Promise((r) => setTimeout(r, 300))
-    rmSync(userDataDir, { recursive: true, force: true })
+    await session.close()
   }
 }
 main().catch((e) => { console.error(`失败：${e?.message ?? e}`); process.exit(1) })

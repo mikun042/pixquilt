@@ -10,113 +10,28 @@
  *
  * 用法：node tool/e2e-regressions.mjs [--app <html 路径>]
  */
-import { spawn, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { argValue, createChecker, sleep, startBrowser } from './cdp.mjs'
+
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
-const BROWSERS = [
-  process.env['PROGRAMFILES(X86)'] && join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
-].filter(Boolean)
 
-class Cdp {
-  constructor(ws) {
-    this.ws = ws
-    this.id = 0
-    this.pending = new Map()
-    ws.addEventListener('message', (ev) => {
-      const m = JSON.parse(ev.data)
-      if (m.id && this.pending.has(m.id)) {
-        const { resolve, reject, timer } = this.pending.get(m.id)
-        this.pending.delete(m.id)
-        clearTimeout(timer)
-        m.error ? reject(new Error(m.error.message)) : resolve(m.result)
-      }
-    })
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url)
-    await new Promise((res, rej) => {
-      ws.addEventListener('open', res, { once: true })
-      ws.addEventListener('error', () => rej(new Error('CDP WebSocket 连接失败')), { once: true })
-    })
-    return new Cdp(ws)
-  }
-  send(method, params = {}, timeoutMs = 20000) {
-    const id = ++this.id
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error(`CDP 超时：${method}`))
-      }, timeoutMs)
-      this.pending.set(id, {
-        resolve: (v) => {
-          clearTimeout(timer)
-          resolve(v)
-        },
-        reject: (e) => {
-          clearTimeout(timer)
-          reject(e)
-        },
-      })
-      this.ws.send(JSON.stringify({ id, method, params }))
-    })
-  }
-  async eval(expression) {
-    const r = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text)
-    return r.result.value
-  }
-}
-
-const results = []
-/**
- * 断言收集器。
- * **必须 await 回调**：这些用例是 async（要发真实输入并等待），
+/*
+ * 断言收集器来自 tool/cdp.mjs，**回调一律 await**：这些用例是 async（要发真实输入并等待），
  * 不 await 就会把 Promise 当结果、`String(promise)` 变成 "[object Promise]"，
- * 而且断言在后台抛错也不会被这里捕获——会变成"永久通过"的假测试。
+ * 而且断言在后台抛错也不会被捕获——会变成"永久通过"的假测试。
  */
-const check = async (name, fn) => {
-  try {
-    const detail = await fn()
-    results.push({ name, ok: true, detail: detail === undefined ? '' : String(detail) })
-  } catch (err) {
-    results.push({ name, ok: false, detail: err?.message ?? String(err) })
-  }
-}
-const assert = (c, m) => {
-  if (!c) throw new Error(m)
-}
+const { check, assert, report } = createChecker('回归验证')
 
-const appArg = process.argv.indexOf('--app')
-const app = appArg >= 0 ? process.argv[appArg + 1] : join(ROOT, '像素画工作台.html')
+const app = argValue('app', join(ROOT, '像素画工作台.html'))
 if (!existsSync(app)) throw new Error(`找不到 ${app}，先跑 npm run build`)
 
-const browser = BROWSERS.find((p) => existsSync(p))
-const userDataDir = mkdtempSync(join(tmpdir(), 'regressions-'))
-const child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] })
-const wsUrl = await new Promise((resolve, reject) => {
-  let buf = ''
-  const t = setTimeout(() => reject(new Error('等待 DevTools 端口超时')), 25000)
-  const onData = (c) => {
-    buf += String(c)
-    const m = buf.match(/ws:\/\/[^\s]+/)
-    if (m) {
-      clearTimeout(t)
-      resolve(m[0])
-    }
-  }
-  child.stdout.on('data', onData)
-  child.stderr.on('data', onData)
-})
-const port = wsUrl.match(/:(\d+)\//)[1]
-const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
-const cdp = await Cdp.connect(list.find((t) => t.type === 'page').webSocketDebuggerUrl)
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const session = await startBrowser({ profilePrefix: 'regressions-' })
+const { cdp } = session
 
 await cdp.send('Runtime.enable')
 await cdp.send('Page.enable')
@@ -739,12 +654,5 @@ await check('桌面宽度：两侧各自独立折叠，能同时收起（不再�
 
 /* ---------------------------------------------- 结果 */
 
-const passed = results.filter((r) => r.ok).length
-for (const r of results) console.log(` ${r.ok ? '✔' : '✘'} ${r.name}${r.detail ? ` — ${r.detail}` : ''}`)
-console.log(`\n回归验证：${passed}/${results.length} 通过`)
-
-cdp.ws.close()
-child.kill()
-await sleep(300)
-rmSync(userDataDir, { recursive: true, force: true })
-process.exit(passed === results.length ? 0 : 1)
+await session.close()
+report()

@@ -11,180 +11,34 @@
  *
  * 用法：node tool/e2e.mjs [--app <html 路径>] [--keep-open]
  */
-import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
-// 断言里要用到撤销栈的真实上限：**直接 import 源码里的常量**，避免在测试里另抄一份数字
+import { argValue, createChecker, sleep, startBrowser } from './cdp.mjs'
+// 断言里要用到撤销栈的真实上限：**直接 import 源码里的常量**，免得在测试里另抄一份数字
 // （抄一份的话，常量改了测试不会红，就失去意义了）
 import { HISTORY_MAX_BYTES, HISTORY_MAX_FRAMES } from '../src/core/limits.ts'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 
-const BROWSER_CANDIDATES = [
-  process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env['PROGRAMFILES(X86)'] && join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
-  process.env['PROGRAMFILES(X86)'] && join(process.env['PROGRAMFILES(X86)'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
-  process.env['LOCALAPPDATA'] && join(process.env['LOCALAPPDATA'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
-].filter(Boolean)
-
-function pickBrowser(explicit) {
-  if (explicit) return explicit
-  const found = BROWSER_CANDIDATES.find((p) => existsSync(p))
-  if (!found) throw new Error('找不到 Edge/Chrome，请用 --browser <路径> 指定')
-  return found
-}
-
-/** 极简 CDP 客户端：只用 WebSocket + fetch（Node 内置），不引第三方依赖 */
-class Cdp {
-  constructor(ws) {
-    this.ws = ws
-    this.id = 0
-    this.pending = new Map()
-    /** 定时器必须在收到响应时清掉：上一版忘记清，导致进程每次空转 120 秒 */
-    this.pendingTimers = new Set()
-    ws.addEventListener('message', (ev) => {
-      const msg = JSON.parse(ev.data)
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve, reject, timer } = this.pending.get(msg.id)
-        this.pending.delete(msg.id)
-        this.pendingTimers.delete(timer)
-        clearTimeout(timer)
-        if (msg.error) reject(new Error(msg.error.message))
-        else resolve(msg.result)
-      }
-    })
-  }
-
-  static async connect(wsUrl) {
-    const ws = new WebSocket(wsUrl)
-    await new Promise((resolve, reject) => {
-      ws.addEventListener('open', resolve, { once: true })
-      ws.addEventListener('error', () => reject(new Error('CDP WebSocket 连接失败')), { once: true })
-    })
-    return new Cdp(ws)
-  }
-
-  send(method, params = {}, timeoutMs = 20000) {
-    const id = ++this.id
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        this.pendingTimers.delete(timer)
-        reject(new Error(`CDP 超时：${method}`))
-      }, timeoutMs)
-      this.pendingTimers.add(timer)
-      this.pending.set(id, { resolve, reject, timer })
-      this.ws.send(JSON.stringify({ id, method, params }))
-    })
-  }
-
-  /** 在页面里求值；表达式必须是可序列化的返回值 */
-  async eval(expression) {
-    const res = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
-    if (res.exceptionDetails) {
-      throw new Error(`页面求值抛错：${res.exceptionDetails.exception?.description ?? res.exceptionDetails.text}`)
-    }
-    return res.result.value
-  }
-
-  close() {
-    for (const t of this.pendingTimers) clearTimeout(t)
-    this.pendingTimers.clear()
-    try {
-      this.ws.close()
-    } catch {
-      /* 已关闭 */
-    }
-  }
-}
-
-async function launchHeadless(browserPath) {
-  const userDataDir = mkdtempSync(join(tmpdir(), 'pixel-e2e-'))
-  const args = [
-    '--headless=new',
-    '--disable-gpu',
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-extensions',
-    '--allow-file-access-from-files',
-    '--remote-debugging-port=0',
-    `--user-data-dir=${userDataDir}`,
-    'about:blank',
-  ]
-  const child = spawn(browserPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-  const wsUrl = await new Promise((resolve, reject) => {
-    let buffer = ''
-    const timer = setTimeout(() => reject(new Error('等待浏览器 DevTools 端口超时')), 25000)
-    const onData = (chunk) => {
-      buffer += String(chunk)
-      const m = buffer.match(/ws:\/\/[^\s]+/)
-      if (m) {
-        clearTimeout(timer)
-        resolve(m[0])
-      }
-    }
-    child.stdout.on('data', onData)
-    child.stderr.on('data', onData)
-    child.on('exit', (code) => {
-      clearTimeout(timer)
-      reject(new Error(`浏览器提前退出（code ${code}）`))
-    })
-  })
-  return { child, wsUrl, userDataDir }
-}
-
-/** 确保页面有个可用的 tab（--headless=new 下初始为 about:blank） */
-async function firstPageTarget(wsUrl) {
-  const { host, port } = parseWs(wsUrl)
-  const res = await fetch(`http://${host}:${port}/json/list`)
-  const list = await res.json()
-  const page = list.find((t) => t.type === 'page')
-  if (!page) throw new Error('浏览器没有可用的页面目标')
-  return page.webSocketDebuggerUrl
-}
-
-function parseWs(wsUrl) {
-  const m = wsUrl.match(/ws:\/\/([^:/]+):(\d+)\//)
-  if (!m) throw new Error(`无法解析 DevTools 地址：${wsUrl}`)
-  return { host: m[1], port: m[2] }
-}
-
 /* ------------------------------------------------------------------ 断言 */
 
-const results = []
-function check(name, fn) {
-  try {
-    const detail = fn()
-    results.push({ name, ok: true, detail: detail === undefined ? '' : String(detail) })
-  } catch (err) {
-    results.push({ name, ok: false, detail: err?.message ?? String(err) })
-  }
-}
-const assert = (cond, msg) => {
-  if (!cond) throw new Error(msg)
-}
+const { results, check, assert, report } = createChecker('端到端')
 
 async function main() {
-  const args = process.argv.slice(2)
-  const appArg = args.indexOf('--app')
-  const browserArg = args.indexOf('--browser')
-  const app = appArg >= 0 ? args[appArg + 1] : join(ROOT, '像素画工作台.html')
-  const browser = pickBrowser(browserArg >= 0 ? args[browserArg + 1] : undefined)
-
+  const app = argValue('app', join(ROOT, '像素画工作台.html'))
   if (!existsSync(app)) throw new Error(`找不到工作台 HTML：${app}（先跑 npm run build）`)
-  console.log(`浏览器：${browser}`)
-  console.log(`产物：${app}\n`)
 
-  const { child, wsUrl, userDataDir } = await launchHeadless(browser)
-  let cdp
+  const session = await startBrowser({ browserPath: argValue('browser') || undefined, profilePrefix: 'pixel-e2e-' })
+  const { cdp } = session
+  console.log(`浏览器：${session.browser}`)
+  console.log(`产物：${app}
+`)
+
+  const url = pathToFileURL(app).href
   const consoleErrors = []
   try {
-    cdp = await Cdp.connect(await firstPageTarget(wsUrl))
     await cdp.send('Runtime.enable')
     await cdp.send('Page.enable')
     cdp.ws.addEventListener('message', (ev) => {
@@ -194,7 +48,6 @@ async function main() {
       }
     })
 
-    const url = pathToFileURL(app).href
     /*
      * **整条 suite 都用桌面视口**。无头默认是 800×600，而 ≤980px 时 CSS 会把两侧栏隐藏、
      * 参数面板拿到 0×0 的矩形——那时任何侧栏的几何/命中断言都会失真（docs/DEVELOPMENT.md §3.2 第 1 条）。
@@ -854,20 +707,10 @@ async function main() {
       return '0 条'
     })
   } finally {
-    cdp?.close()
-    child.kill()
-    await new Promise((r) => setTimeout(r, 300))
-    try {
-      rmSync(userDataDir, { recursive: true, force: true })
-    } catch {
-      /* 临时目录清理失败不影响结论 */
-    }
+    await session.close()
   }
 
-  const passed = results.filter((r) => r.ok).length
-  for (const r of results) console.log(` ${r.ok ? '✔' : '✘'} ${r.name}${r.detail ? ` — ${r.detail}` : ''}`)
-  console.log(`\n端到端：${passed}/${results.length} 通过`)
-  process.exit(passed === results.length ? 0 : 1)
+  report()
 }
 
 main().catch((err) => {

@@ -3,97 +3,22 @@
  * 取色器专项端到端验证（Blender 结构：色轮 + 明度竖条 + 透明度横条 + RGB/HSV/Hex 标签 + 色板）。
  * 用真实无头浏览器 + 合成 PointerEvent 拖动，断言颜色确实按几何位置变化。
  */
-import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
+import { createChecker, startBrowser } from './cdp.mjs'
+
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
-const BROWSERS = [
-  process.env['PROGRAMFILES(X86)'] && join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
-].filter(Boolean)
 
-class Cdp {
-  constructor(ws) {
-    this.ws = ws
-    this.id = 0
-    this.pending = new Map()
-    ws.addEventListener('message', (ev) => {
-      const m = JSON.parse(ev.data)
-      if (m.id && this.pending.has(m.id)) {
-        const { resolve, reject } = this.pending.get(m.id)
-        this.pending.delete(m.id)
-        m.error ? reject(new Error(m.error.message)) : resolve(m.result)
-      }
-    })
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url)
-    await new Promise((r, j) => {
-      ws.addEventListener('open', r, { once: true })
-      ws.addEventListener('error', () => j(new Error('ws 连接失败')), { once: true })
-    })
-    return new Cdp(ws)
-  }
-  send(method, params = {}) {
-    const id = ++this.id
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
-      this.ws.send(JSON.stringify({ id, method, params }))
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id)
-          reject(new Error(`超时：${method}`))
-        }
-      }, 20000)
-    })
-  }
-  async eval(expression) {
-    const r = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text)
-    return r.result.value
-  }
-}
-
-const results = []
-const check = (name, fn) => {
-  try {
-    results.push({ name, ok: true, detail: String(fn() ?? '') })
-  } catch (err) {
-    results.push({ name, ok: false, detail: err?.message ?? String(err) })
-  }
-}
-const assert = (c, m) => {
-  if (!c) throw new Error(m)
-}
+const { check, assert, report } = createChecker('取色器验证')
 /** '#RRGGBB' → {r,g,b}，用于按通道断言"哪个方位是什么色相" */
 const rgbOf = (hex) => {
   const c = String(hex).replace('#', '')
   return { r: parseInt(c.slice(0, 2), 16), g: parseInt(c.slice(2, 4), 16), b: parseInt(c.slice(4, 6), 16) }
 }
 
-const userDataDir = mkdtempSync(join(tmpdir(), 'cp-e2e-'))
-const browser = BROWSERS.find((p) => existsSync(p))
-const child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] })
-const wsUrl = await new Promise((resolve, reject) => {
-  let buf = ''
-  const t = setTimeout(() => reject(new Error('等端口超时')), 25000)
-  const onData = (c) => {
-    buf += String(c)
-    const m = buf.match(/ws:\/\/[^\s]+/)
-    if (m) {
-      clearTimeout(t)
-      resolve(m[0])
-    }
-  }
-  child.stdout.on('data', onData)
-  child.stderr.on('data', onData)
-})
-const port = wsUrl.match(/:(\d+)\//)[1]
-const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
-const cdp = await Cdp.connect(list.find((t) => t.type === 'page').webSocketDebuggerUrl)
+const session = await startBrowser({ profilePrefix: 'cp-e2e-' })
+const { cdp } = session
 await cdp.send('Runtime.enable')
 await cdp.send('Page.enable')
 // 必须先设成桌面视口：headless 默认 800×600 会命中 ≤980px 的窄屏规则、把左侧栏 display:none，
@@ -469,12 +394,5 @@ check('色板/取色不影响画布内容（取色只改主色）', () => {
   return '画布未变'
 })
 
-const passed = results.filter((r) => r.ok).length
-for (const r of results) console.log(` ${r.ok ? '✔' : '✘'} ${r.name}${r.detail ? ` — ${r.detail}` : ''}`)
-console.log(`\n取色器验证：${passed}/${results.length} 通过`)
-
-cdp.ws.close()
-child.kill()
-await new Promise((r) => setTimeout(r, 300))
-rmSync(userDataDir, { recursive: true, force: true })
-process.exit(passed === results.length ? 0 : 1)
+await session.close()
+report()

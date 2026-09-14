@@ -10,104 +10,21 @@
  *
  * 用法：node tool/e2e-slider.mjs [--app <html 路径>]
  */
-import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { argValue, createChecker, startBrowser } from './cdp.mjs'
+
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
-const BROWSERS = [
-  process.env['PROGRAMFILES(X86)'] && join(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-  process.env['PROGRAMFILES'] && join(process.env['PROGRAMFILES'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
-].filter(Boolean)
 
-class Cdp {
-  constructor(ws) {
-    this.ws = ws
-    this.id = 0
-    this.pending = new Map()
-    ws.addEventListener('message', (ev) => {
-      const m = JSON.parse(ev.data)
-      if (m.id && this.pending.has(m.id)) {
-        const { resolve, reject } = this.pending.get(m.id)
-        this.pending.delete(m.id)
-        m.error ? reject(new Error(m.error.message)) : resolve(m.result)
-      }
-    })
-  }
-  static async connect(url) {
-    const ws = new WebSocket(url)
-    await new Promise((res, rej) => {
-      ws.addEventListener('open', res, { once: true })
-      ws.addEventListener('error', () => rej(new Error('CDP WebSocket 连接失败')), { once: true })
-    })
-    return new Cdp(ws)
-  }
-  send(method, params = {}) {
-    const id = ++this.id
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error(`CDP 超时：${method}`))
-      }, 20000)
-      this.pending.set(id, {
-        resolve: (v) => {
-          clearTimeout(timer)
-          resolve(v)
-        },
-        reject: (e) => {
-          clearTimeout(timer)
-          reject(e)
-        },
-      })
-      this.ws.send(JSON.stringify({ id, method, params }))
-    })
-  }
-  async eval(expression) {
-    const r = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text)
-    return r.result.value
-  }
-}
+const { check, assert, report } = createChecker('滑条拖动验证')
 
-const results = []
-const check = (name, fn) => {
-  try {
-    results.push({ name, ok: true, detail: String(fn() ?? '') })
-  } catch (err) {
-    results.push({ name, ok: false, detail: err?.message ?? String(err) })
-  }
-}
-const assert = (c, m) => {
-  if (!c) throw new Error(m)
-}
-
-const appArg = process.argv.indexOf('--app')
-const app = appArg >= 0 ? process.argv[appArg + 1] : join(ROOT, '像素画工作台.html')
+const app = argValue('app', join(ROOT, '像素画工作台.html'))
 if (!existsSync(app)) throw new Error(`找不到 ${app}，先跑 npm run build`)
 
-const browser = BROWSERS.find((p) => existsSync(p))
-const userDataDir = mkdtempSync(join(tmpdir(), 'slider-e2e-'))
-const child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] })
-const wsUrl = await new Promise((resolve, reject) => {
-  let buf = ''
-  const t = setTimeout(() => reject(new Error('等待 DevTools 端口超时')), 25000)
-  const onData = (c) => {
-    buf += String(c)
-    const m = buf.match(/ws:\/\/[^\s]+/)
-    if (m) {
-      clearTimeout(t)
-      resolve(m[0])
-    }
-  }
-  child.stdout.on('data', onData)
-  child.stderr.on('data', onData)
-})
-const port = wsUrl.match(/:(\d+)\//)[1]
-const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
-const cdp = await Cdp.connect(list.find((t) => t.type === 'page').webSocketDebuggerUrl)
+const session = await startBrowser({ profilePrefix: 'slider-e2e-' })
+const { cdp } = session
 
 await cdp.send('Runtime.enable')
 await cdp.send('Page.enable')
@@ -339,12 +256,5 @@ check('零尺寸免疫：面板不可见时拖动不产生非法颜色', () => {
   return `${r.after}（未变）`
 })
 
-const passed = results.filter((r) => r.ok).length
-for (const r of results) console.log(` ${r.ok ? '✔' : '✘'} ${r.name}${r.detail ? ` — ${r.detail}` : ''}`)
-console.log(`\n滑条拖动验证：${passed}/${results.length} 通过`)
-
-cdp.ws.close()
-child.kill()
-await new Promise((r) => setTimeout(r, 300))
-rmSync(userDataDir, { recursive: true, force: true })
-process.exit(passed === results.length ? 0 : 1)
+await session.close()
+report()
