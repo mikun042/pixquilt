@@ -73,10 +73,20 @@ async function main() {
 
   /* ---------------- 吸管图标 ---------------- */
 
+  /*
+   * 选择器必须**明确指向吸管**，不能再用 `.cp-icon-btn svg || .tool-btn svg`。
+   *
+   * 那个写法原先能跑，只是因为当时整个 DOM 里只有吸管一个 SVG。2026-09-15 引入像素图标后，
+   * `.tool-btn svg` 命中的是**画笔**（单条实心 path），于是断言报
+   * "吸管至少要有管身与管头两条路径，实际 1"——失败信息指向吸管，出问题的却是选择器。
+   * 靠"DOM 里只有它一个"这种隐式约定的断言，加进第二个同类元素就会崩；改成按名字找。
+   */
   const geom = JSON.parse(await cdp.eval(`(() => {
-    const svg = document.querySelector('.cp-icon-btn svg') ||
-      document.querySelector('.tool-btn svg')
-    if (!svg) return JSON.stringify({ error: '找不到内联 SVG 图标' })
+    const pickBtn = [...document.querySelectorAll('.tool-btn')]
+      .find((b) => (b.title || '').includes('取色'))
+    const svg = (pickBtn && pickBtn.querySelector('svg')) ||
+      document.querySelector('.cp-icon-btn svg')
+    if (!svg) return JSON.stringify({ error: '找不到吸管 SVG（既不在取色工具按钮里，也不在取色器里）' })
     const paths = [...svg.querySelectorAll('path')].map((p) => {
       const b = p.getBBox()
       return { x: b.x, y: b.y, w: b.width, h: b.height, len: p.getTotalLength() }
