@@ -367,10 +367,11 @@ const statusbar = document.getElementById('statusbar') as HTMLElement
 /**
  * 工具按钮的图标。`icon` 是字符兜底，`svg` 指定时优先用内联 SVG。
  *
- * 现状（2026-09-15）：**部分工具已换成像素图标**（矩形/椭圆/选区），
- * 画笔与填充仍是字符——它们的像素版还在 `output/UI素材32/` 里调（形状读不出语义）。
- * 所以这一排目前是"像素图标 + 吸管 + 字符"三种并存，属**过渡状态**：
- * 待那 8 个图标达标后会统一成图标。不要把这当最终形态。
+ * 现状（2026-09-15）：**6 个工具已全部换成图标**（画笔/填充/矩形/椭圆/选区是像素格，
+ * 取色是手绘 SVG 吸管）。字符只作为 `iconEl` 返回 null 时的兜底保留。
+ *
+ * 改图标形状请改 `tool/icons/` 里的形状定义（**不要改这里的 path 数据**，
+ * 那是生成物），详见 `tool/icons/README.md`。
  *
  * 取色用 SVG 吸管：Unicode 里没有吸管符号，原先用 `⌖`（准星）——
  * 用户反馈"看上去不像吸管"。图标语义错了会让人根本找不到这个工具。
@@ -426,10 +427,12 @@ function renderTools(): void {
   leftRail.append(brushes)
 
   const colors = el('div', { class: 'color-row' })
+  // 只有"正在编辑的那一路"才提示"点击收起"——另一路点下去是切换编辑目标，不是收起
+  const pickerOpen = store.get('showPicker')
   colors.append(
-    colorSlot('主色', store.get('primary'), () => openPicker('primary')),
+    colorSlot('主色', store.get('primary'), pickerOpen && pickerTarget === 'primary', () => togglePicker('primary')),
     el('button', { class: 'btn tiny', title: '交换主色/背景色（Tab）', onclick: swapColors }, ['⇄']),
-    colorSlot('背景', store.get('bg'), () => openPicker('bg')),
+    colorSlot('背景', store.get('bg'), pickerOpen && pickerTarget === 'bg', () => togglePicker('bg')),
   )
   leftRail.append(colors)
 
@@ -442,8 +445,15 @@ function renderTools(): void {
   )
 }
 
-function colorSlot(label: string, hex: string, onclick: () => void): HTMLElement {
-  return el('button', { class: 'color-slot', title: `${label} ${hex}`, onclick }, [
+/**
+ * 主色 / 背景色的色块按钮。
+ *
+ * `open` 决定提示语：展开着的时候要告诉用户"再点一下能收起"，
+ * 否则这个交互完全不可发现（用户只会去找那颗「收起」按钮）。
+ */
+function colorSlot(label: string, hex: string, open: boolean, onclick: () => void): HTMLElement {
+  const hint = open ? '点击收起取色器' : '点击打开取色器'
+  return el('button', { class: 'color-slot', title: `${label} ${hex} · ${hint}`, onclick }, [
     el('span', { class: 'chip', style: { background: hex } }),
     el('span', { class: 'chip-label' }, [label]),
   ])
@@ -458,9 +468,34 @@ function swapColors(): void {
 type PickerTarget = 'primary' | 'bg'
 
 let pickerTarget: PickerTarget = 'primary'
-function openPicker(target: PickerTarget): void {
+
+/**
+ * 点主色 / 背景色色块：打开取色器；**再点同一个色块则收起**。
+ *
+ * 为什么按 target 分别判断而不是简单地"点一下就切开关"：
+ *  - 点**另一个**色块是"改编辑目标"，应当**切过去并保持展开**，不能顺手收起来——
+ *    否则"主色 → 背景"这样连点两下会变成"开了又关"，用户得点三次才换得过去；
+ *  - 只有点**当前正在编辑的**那个色块才是"我知道它是开着的，我要收起它"。
+ * 收起这一路交给 `closePicker`，与「收起」按钮、Esc 走同一条出口。
+ */
+function togglePicker(target: PickerTarget): void {
+  if (store.get('showPicker') && pickerTarget === target) {
+    closePicker()
+    return
+  }
   pickerTarget = target
   store.set('showPicker', true)
+  renderAll()
+}
+
+/**
+ * 收起取色器（「收起」按钮 / 再点色块 / 载入预设等都要走这条出口）。
+ *
+ * 集中成一处的原因：`showPicker=false` 只是标志位，真正让它消失要等 `renderPickerPanel`
+ * 把宿主摘掉并 `dispose()`（见那边的注释）。散着写容易出现"状态关了、界面还在"。
+ */
+function closePicker(): void {
+  store.set('showPicker', false)
   renderAll()
 }
 
@@ -519,8 +554,7 @@ function pickerCallbacks(getTarget: () => PickerTarget): ColorPickerCallbacks {
       renderAll()
     },
     onClose: () => {
-      store.set('showPicker', false)
-      renderAll()
+      closePicker()
     },
   }
 }
