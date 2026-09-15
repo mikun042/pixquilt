@@ -11,7 +11,7 @@
  * 因此"页内调好参数后交给 CLI 批量跑"是安全的。
  */
 import { DEFAULT_PARAMS, STYLE_PRESETS, TOOLS, coerceParams, sanitizeParams, type ConvertParams, type PixelArt } from '../core/types.ts'
-import { PRESETS, getPreset, serializeHexPalette } from '../core/palettes.ts'
+import { PRESETS, codesForParams, serializeHexPalette } from '../core/palettes.ts'
 import { applyOps, blankArt, type EditOp } from '../core/ops.ts'
 import { runPipeline } from '../core/pipeline.ts'
 import { artHash, decodePixBin, encodePixBin, layoutSheet, parseProjectFile, pixelJSONString, projectJSONString } from '../core/export.ts'
@@ -19,6 +19,7 @@ import { base64ToBytes, bytesToBase64 } from '../core/binary.ts'
 import { artStats, countTransparent, countUsage, hasRealAlpha } from '../core/stats.ts'
 import { beadListCsv, beadReport, beadSvg } from '../core/bead.ts'
 import { CAPABILITIES, OP_SPECS, PARAM_SPECS, describeAll } from '../core/spec.ts'
+import { ENGINE_FORMATS, exportSheetMeta, isEngineFormat } from '../core/sheetmeta.ts'
 
 /**
  * 导出时的键控选项。`bgHex` 缺省时由实现补当前的 `matteColor`。
@@ -394,24 +395,45 @@ export function installAutomationApi(deps: AutomationDeps): void {
     /** 拼豆用量报告：号色 / 格数 / 珠数 / 重量 / 袋数 / 分板 */
     beadReport: (opts: { codes?: string[]; beadMm?: number; beadGram?: number; boardCells?: number } = {}) => {
       const art = requireArt()
-      const preset = getPreset(deps.getParams().presetPaletteId)
-      return beadReport(art, { codes: opts.codes ?? preset?.codes, ...opts })
+      // 号色按当前参数解析（含用户导入的 customPaletteCodes）——原先只认内建预置卡，
+      // 于是自定义色卡的编号永远上不了图纸。显式传 opts.codes 仍以调用方为准。
+      return beadReport(art, { codes: codesForParams(deps.getParams()), ...opts })
     },
     /** 拼豆图纸 SVG（可打印/可缩放） */
     exportBeadSvg: (opts: Record<string, unknown> = {}): string => {
       const art = requireArt()
-      const preset = getPreset(deps.getParams().presetPaletteId)
-      return beadSvg(art, { codes: preset?.codes, ...opts })
+      return beadSvg(art, { codes: codesForParams(deps.getParams()), ...opts })
     },
     /** 缺口清单 CSV（照着买） */
     exportBeadCsv: (opts: Record<string, unknown> = {}): string => {
       const art = requireArt()
-      const preset = getPreset(deps.getParams().presetPaletteId)
-      return beadListCsv(art, { codes: preset?.codes, ...opts })
+      return beadListCsv(art, { codes: codesForParams(deps.getParams()), ...opts })
     },
     /** 图集坐标表：帧等尺寸 + offsetX/offsetY（引擎侧直接用），不渲染像素 */
     layoutSheet: (frames: { name: string; width: number; height: number }[], columns = 0, padding = 0) =>
       layoutSheet(frames, columns, padding),
+    /**
+     * 把图集坐标翻译成**引擎能直接吃**的元数据（与 CLI 的 `--engine` 同一份实现）。
+     *
+     * 页面里没有"图集"这个概念（单画布模型），所以入参直接就是帧列表——
+     * 与 `layoutSheet` 保持同一形状，agent 可以先生成坐标、再逐格式导出。
+     */
+    exportSheetMeta: (
+      format: string,
+      frames: { name: string; width: number; height: number }[],
+      opts: { columns?: number; padding?: number; texturePath: string; textureGuid?: string; name?: string; pixelsPerUnit?: number },
+    ): string => {
+      if (!isEngineFormat(format)) {
+        throw new Error(`未知引擎格式：${format}（可选 ${ENGINE_FORMATS.join(' / ')}）`)
+      }
+      const sheet = layoutSheet(frames, opts.columns ?? 0, opts.padding ?? 0)
+      return exportSheetMeta(format, sheet, {
+        texturePath: opts.texturePath,
+        textureGuid: opts.textureGuid,
+        name: opts.name,
+        pixelsPerUnit: opts.pixelsPerUnit,
+      })
+    },
 
     /* ---------------------------------------------------------- 编辑器状态写入 */
     setTool: (tool: string): string => {

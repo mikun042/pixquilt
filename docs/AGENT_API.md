@@ -14,14 +14,14 @@ node tool/artc.mjs --in 素材目录 --out 输出 --palette beads16 --long-edge 
 node tool/artc.mjs --in 素材目录 --out 输出 --palette gameboy --size 32x32 --alpha --sheet 4
 
 # ② 自检与自省（先确认环境与能力，再写脚本）
-node tool/artc.mjs --selftest      # 40 项链路自检，无需任何素材
+node tool/artc.mjs --selftest      # 42 项链路自检，无需任何素材
 node tool/artc.mjs --describe     # 打印完整的算子/参数/能力 JSON
 
 # ③ 页内 API（浏览器自动化 / Playwright / CDP evaluate）
 #    打开 像素画工作台.html 后：window.pixelArtStudio.describe()
 ```
 
-- 接口版本：`apiLevel = 2`，产品版本 `0.1.0`，项目文件 Schema `v3`
+- 接口版本：`apiLevel = 2`，产品版本 `0.1.0`，项目文件 Schema `v4`
 - 上限：画布单边 ≤ 2048 格；色板 ≤ 256 色；导出单边 ≤ 16384px 且面积 ≤ 67108864 像素
 - 多帧动画：**尚未实现**（`capabilities().animation === false`）；动画素材请逐帧出图后用 `--sheet` 拼图集
 
@@ -66,9 +66,15 @@ node tool/artc.mjs --ops '[{"op":"eraseColor","color":"#ffffff"},{"op":"trim"}]'
 | `--key-mode` | 键控范围：`global`（默认）全图同色都透明；`border` 只键掉与四边连通的底色区域。白底 + 主体内部有同色高光（眼白/高光）时必须用 `border`，否则那些像素会被一起挖穿成洞 |
 | `--key-tolerance` | 键控颜色容差 0–255（三通道最大差，默认 0 = 精确同色）。扩散模型（ComfyUI 等）输出的「白底」实际是 254/255 混合噪声，容差 0 一个都键不掉，需要 1–3 |
 | `--lock-palette` | 只允许使用给定色板（拼豆与资产批次必备） |
+| `--browser-decode` | 借无头浏览器原生解码器，把 Node 解不了的格式（JPEG/WebP/GIF/BMP/AVIF/ICO/SVG）先转 PNG 再处理。**需要本机有 Chrome/Edge/Chromium**；不加时非 PNG 会被跳过并如实报告（不是静默忽略） |
 | `--slice` | 把输入图**切成多张**（与 `--sheet` 方向相反：`--sheet` 拼图集、`--slice` 拆图集）。`auto` 按全透明行/列自动推断；`列数x行数` 显式网格；`WxHpx` 每格像素尺寸 |
 | `--sheet [列数]` | 输出 `_sheet.json` 图集坐标表（帧等尺寸 + offsetX/offsetY） |
 | `--pixbin` | 额外输出 `.pixbin`（二进制像素数据，大画布往返更快） |
+| `--engine <格式>` | 在 `_sheet.json` 之外，再输出一份**引擎能直接吃**的图集元数据：`godot`（`.tres` SpriteFrames）/ `unity`（`.meta` 的 spriteSheet 段，需 `--texture-guid`）/ `tiled`（`.tsx`）。坐标与 `_sheet.json` 同源 |
+| `--texture-path <路径>` | `--engine` 里引用的贴图路径（默认 `_sheet.png`） |
+| `--texture-guid <guid>` | Unity 格式**必需**：从你那份 `.png.meta` 里取（没有 guid 的 `.meta` 无效，所以这里直接报错而不是留空） |
+| `--ppu <n>` | Unity 的 `pixelsPerUnit`（默认取帧高——像素画要的是「1 格 = 1 单位」，不是 Unity 默认的 100） |
+| `--tile-size <WxH>` | Tiled 的瓦片尺寸（默认取帧尺寸） |
 | `--bead [每板格数]` | 拼豆模式：输出 `*_图纸.svg` 与 `*_缺口清单.csv`（默认每板 58 格） |
 | `--pdf` | 额外输出 `*_拼豆图纸.pdf`（A4 分页可打印；需同时用 `--bead`） |
 | `--bead-mm / --bead-gram` | 单颗直径 mm（默认 5）/ 单颗重量 g（默认 0.08） |
@@ -117,6 +123,7 @@ node tool/artc.mjs --ops '[{"op":"eraseColor","color":"#ffffff"},{"op":"trim"}]'
 | `paletteK` | number | 2 … 64 | `24` | 自动取色的目标颜色数（paletteMode=auto） |
 | `presetPaletteId` | string | — | `"pico8"` | 预置色卡 id（pico8 / gameboy / nes / cga / beads16 / beads24）（paletteMode=preset） |
 | `customPalette` | string | — | `[]` | 自定义色板（#rrggbb 数组，≤256）（paletteMode=custom） |
+| `customPaletteCodes` | string | — | `[]` | 自定义色板的号色数组，与 customPalette 按下标一一对应（如 ["S12","S31"]）；缺项留空串，下游会自动编号 C1/C2…。**拼豆用户靠它让自己的色卡编号印在图纸上**（paletteMode=custom（与 customPalette 等长）） |
 | `dither` | enum | `none` / `floyd` / `bayer` | `"none"` | 抖动方式（开启时自动关闭杂色清理） |
 | `ditherStrength` | number | 0 … 100 | `100` | 抖动强度（dither!=none） |
 | `cleanup` | boolean | — | `true` | 杂色清理：把孤立小色块并入邻域主色。注意它**只改颜色归属，不删除脱离主体的小碎片**（不减少连通块数）——去碎片请在上游处理或用 --no-cleanup 自行保留 |
@@ -378,6 +385,9 @@ ps.beadReport({ codes, beadMm, beadGram, boardCells })
 ps.exportBeadSvg({ cellPx: 22 })   // 可打印图纸（格内写号色 + 板标注 + 图例）
 ps.exportBeadCsv()                 // 缺口清单（照着买）
 ps.layoutSheet(frames, columns, padding)  // 图集坐标表：帧等尺寸 + offsetX/offsetY
+ps.exportSheetMeta(fmt, frames, opts)      // 转成引擎格式：godot | unity（需 textureGuid）| tiled
+//   opts: { columns?, padding?, texturePath, textureGuid?, name?, pixelsPerUnit? }
+//   与 CLI 的 --engine 同一份实现（src/core/sheetmeta.ts），坐标同源、不会两处漂移
 ```
 
 ### 编辑（不必依赖界面操作，但**会改当前画布**）

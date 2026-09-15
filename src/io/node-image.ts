@@ -7,10 +7,16 @@
  * 能力边界（**如实声明，不做半成品**）：
  *  - 支持：PNG（位深 8/16，颜色类型 0/2/3/4/6，非隔行）
  *  - 不支持：JPEG / WebP / GIF / AVIF / BMP / ICO / SVG
- *    → 两条真实可用的替代路径：先用图像工具转 PNG；或经浏览器通道
- *      （页内 API `window.pixelArtStudio.importImage`，浏览器原生解码覆盖这些格式）。
- *    ⚠️ 不要在这里提及任何**未实现**的 CLI flag——本项目曾出现"报错让用户改用
- *      `--browser-decode`，但该 flag 从未实现"的死路文案。
+ *    → 三条真实可用的替代路径：
+ *      ① 先用图像工具转 PNG；
+ *      ② 经浏览器通道（页内 API `window.pixelArtStudio.importImage`，浏览器原生解码这些格式）；
+ *      ③ CLI 加 `--browser-decode`（见 `src/io/node-decode.ts`）——借无头浏览器原生解码器
+ *         批量转 PNG 再走同一条渲染链路。**需要本机有浏览器**。
+ *    ⚠️ 注意这两件事的区别：`canDecodeInNode()` **仍然只对 PNG 返回 true**——
+ *      `--browser-decode` 是"另一条通道"，不是"Node 现在支持所有格式了"。
+ *      把能力声明跟着通道一起放宽，就等于给下游一句假话（mock 掉的能力最容易被误信）。
+ *    ⚠️ 也不要在这里提及任何**未实现**的 CLI flag——本项目曾出现"报错让用户改用
+ *      某个 flag，但该 flag 从未实现"的死路文案（正是 `--browser-decode` 的前身）。
  */
 import { readFileSync } from 'node:fs'
 import { extname } from 'node:path'

@@ -59,7 +59,7 @@ export function build() {
   lines.push('node tool/artc.mjs --in 素材目录 --out 输出 --palette gameboy --size 32x32 --alpha --sheet 4')
   lines.push('')
   lines.push('# ② 自检与自省（先确认环境与能力，再写脚本）')
-  lines.push('node tool/artc.mjs --selftest      # 40 项链路自检，无需任何素材')
+  lines.push('node tool/artc.mjs --selftest      # 42 项链路自检，无需任何素材')
   lines.push('node tool/artc.mjs --describe     # 打印完整的算子/参数/能力 JSON')
   lines.push('')
   lines.push('# ③ 页内 API（浏览器自动化 / Playwright / CDP evaluate）')
@@ -130,6 +130,11 @@ export function build() {
       ['key-tolerance'],
     ],
     ['--lock-palette', '只允许使用给定色板（拼豆与资产批次必备）', ['lock-palette']],
+    [
+      '--browser-decode',
+      '借无头浏览器原生解码器，把 Node 解不了的格式（JPEG/WebP/GIF/BMP/AVIF/ICO/SVG）先转 PNG 再处理。**需要本机有 Chrome/Edge/Chromium**；不加时非 PNG 会被跳过并如实报告（不是静默忽略）',
+      ['browser-decode'],
+    ],
 
     [
       '--slice',
@@ -138,6 +143,15 @@ export function build() {
     ],
     ['--sheet [列数]', '输出 `_sheet.json` 图集坐标表（帧等尺寸 + offsetX/offsetY）', ['sheet']],
     ['--pixbin', '额外输出 `.pixbin`（二进制像素数据，大画布往返更快）', ['pixbin']],
+    [
+      '--engine <格式>',
+      '在 `_sheet.json` 之外，再输出一份**引擎能直接吃**的图集元数据：`godot`（`.tres` SpriteFrames）/ `unity`（`.meta` 的 spriteSheet 段，需 `--texture-guid`）/ `tiled`（`.tsx`）。坐标与 `_sheet.json` 同源',
+      ['engine'],
+    ],
+    ['--texture-path <路径>', '`--engine` 里引用的贴图路径（默认 `_sheet.png`）', ['texture-path']],
+    ['--texture-guid <guid>', 'Unity 格式**必需**：从你那份 `.png.meta` 里取（没有 guid 的 `.meta` 无效，所以这里直接报错而不是留空）', ['texture-guid']],
+    ['--ppu <n>', 'Unity 的 `pixelsPerUnit`（默认取帧高——像素画要的是「1 格 = 1 单位」，不是 Unity 默认的 100）', ['ppu']],
+    ['--tile-size <WxH>', 'Tiled 的瓦片尺寸（默认取帧尺寸）', ['tile-size']],
     ['--bead [每板格数]', '拼豆模式：输出 `*_图纸.svg` 与 `*_缺口清单.csv`（默认每板 58 格）', ['bead']],
     ['--pdf', '额外输出 `*_拼豆图纸.pdf`（A4 分页可打印；需同时用 `--bead`）', ['pdf']],
     ['--bead-mm / --bead-gram', '单颗直径 mm（默认 5）/ 单颗重量 g（默认 0.08）', ['bead-mm', 'bead-gram']],
@@ -283,6 +297,9 @@ export function build() {
   lines.push('ps.exportBeadSvg({ cellPx: 22 })   // 可打印图纸（格内写号色 + 板标注 + 图例）')
   lines.push('ps.exportBeadCsv()                 // 缺口清单（照着买）')
   lines.push('ps.layoutSheet(frames, columns, padding)  // 图集坐标表：帧等尺寸 + offsetX/offsetY')
+  lines.push('ps.exportSheetMeta(fmt, frames, opts)      // 转成引擎格式：godot | unity（需 textureGuid）| tiled')
+  lines.push('//   opts: { columns?, padding?, texturePath, textureGuid?, name?, pixelsPerUnit? }')
+  lines.push('//   与 CLI 的 --engine 同一份实现（src/core/sheetmeta.ts），坐标同源、不会两处漂移')
   lines.push('```')
   lines.push('')
   lines.push('### 编辑（不必依赖界面操作，但**会改当前画布**）')

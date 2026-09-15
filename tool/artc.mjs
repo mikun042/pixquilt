@@ -24,6 +24,7 @@ import { applyOps, blankArt } from '../src/core/ops.ts'
 import { DEFAULT_PARAMS, coerceParams, normalizeHex, sanitizeParams, STYLE_PRESETS } from '../src/core/types.ts'
 import { PRESETS, getPreset, isPresetId, parseHexPalette, serializeHexPalette } from '../src/core/palettes.ts'
 import { artHash, encodePixBin, layoutSheet, parseProjectFile, pixelJSONString } from '../src/core/export.ts'
+import { ENGINE_EXT, ENGINE_FORMATS, exportSheetMeta, isEngineFormat } from '../src/core/sheetmeta.ts'
 import { beadListCsv, beadReport, beadSvg } from '../src/core/bead.ts'
 import { beadPdfNode } from '../src/io/node-pdf.ts'
 import { countTransparent, countUsage } from '../src/core/stats.ts'
@@ -34,6 +35,7 @@ import { sliceAuto, sliceByGrid } from '../src/core/slice.ts'
 import { encodePngNode } from '../src/io/node-png.ts'
 import { artToImageData } from '../src/core/raster.ts'
 import { canDecodeInNode, isImagePath, loadImageNode, UnsupportedImageError } from '../src/io/node-image.ts'
+import { decodeOneToPng, needsBrowserDecode } from '../src/io/node-decode.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -47,6 +49,9 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const BOOL_FLAGS = new Set([
   'help', 'selftest', 'describe', 'dry-run', 'json', 'bead', 'alpha', 'transparent',
   'sheet', 'pixbin', 'no-cleanup', 'quiet', 'lock-palette', 'blank-transparent', 'progress', 'pdf',
+  // 浏览器通道解码：把 Node 不能直接解的格式（JPEG/WebP/GIF/BMP/AVIF/ICO/SVG）
+  // 借无头浏览器原生解码器转成 PNG，再走同一条渲染链路。见 src/io/node-decode.ts
+  'browser-decode',
 ])
 /** 可选值开关：后面跟的值不以 -- 开头才算值（`--sheet` 与 `--sheet 4` 都合法） */
 const OPTIONAL_VALUE_FLAGS = new Set(['sheet', 'bead'])
@@ -56,6 +61,8 @@ const VALUE_FLAGS = new Set([
   'dither', 'contrast', 'saturation', 'brightness', 'crop', 'downsample', 'palette-k',
   'palette', 'preset', 'style', 'matte', 'cleanup-min', 'bead-mm', 'bead-gram', 'board',
   'key-mode', 'key-tolerance', 'slice',
+  // 图集元数据的多引擎导出（见 src/core/sheetmeta.ts）：--engine godot|unity|tiled
+  'engine', 'texture-path', 'texture-guid', 'ppu', 'tile-size',
 ])
 /** 允许出现的全部开关。新增 flag 必须同时改这里与帮助文本（见 BOOL_FLAGS 上方注释）。 */
 export const KNOWN_FLAGS = new Set([...BOOL_FLAGS, ...OPTIONAL_VALUE_FLAGS, ...VALUE_FLAGS])
@@ -220,7 +227,13 @@ export function resolvePaletteFlag(value) {
   const text = readFileSync(path, 'utf8')
   const parsed = parseHexPalette(text)
   if (!parsed.colors.length) throw new Error(`色板文件里没有合法颜色：${value}（每行一个 #rrggbb，可带号色）`)
-  return { patch: { paletteMode: 'custom', customPalette: parsed.colors }, codes: parsed.codes, source: `文件 ${basename(path)}（${parsed.colors.length} 色）` }
+  // 号色**同时写进参数**（customPaletteCodes）：只塞进返回值的话，
+  // 它活不过一次 `--dry-run`/项目文件往返，也没法被页内 API 或 UI 复用。
+  return {
+    patch: { paletteMode: 'custom', customPalette: parsed.colors, customPaletteCodes: parsed.codes },
+    codes: parsed.codes,
+    source: `文件 ${basename(path)}（${parsed.colors.length} 色）`,
+  }
 }
 
 /**
@@ -1007,6 +1020,50 @@ async function selftest() {
     return `${mentioned.size} 个 flag 双向一致`
   })
 
+  /*
+   * --browser-decode 的两条能力边界。
+   *
+   * 这条守的是**声明与实现一致**：`src/io/node-image.ts` 一直如实声明"Node 端只直接解码 PNG"，
+   * 而 `--browser-decode` 是另一条通道（借浏览器原生解码器）。两者必须分得清——
+   * 不能因为加了这条通道，就把 `canDecodeInNode('a.jpg')` 悄悄改成 true
+   * （那会让"Node 端能力"这块招牌变成假话，而 mock 掉的能力最容易被下游误信）。
+   */
+  check('CLI：--browser-decode 只覆盖"浏览器能解"的格式，且不篡改 Node 端能力声明', () => {
+    // Node 端的能力声明**不因新通道改变**：仍然只承诺 PNG
+    eq(canDecodeInNode('a.png'), true, 'PNG 仍应可解码')
+    eq(canDecodeInNode('a.jpg'), false, 'JPEG 在 Node 端仍不可直接解码（能力声明不能被新通道篡改）')
+    // 但"需不需要走浏览器通道"要如实回答
+    eq(needsBrowserDecode('a.jpg'), true, 'JPEG 应可由浏览器通道解码')
+    eq(needsBrowserDecode('a.webp'), true, 'WebP 应可由浏览器通道解码')
+    eq(needsBrowserDecode('a.gif'), true, 'GIF 应可由浏览器通道解码')
+    eq(needsBrowserDecode('a.bmp'), true, 'BMP 应可由浏览器通道解码')
+    eq(needsBrowserDecode('a.png'), false, 'PNG 不该走浏览器通道（没必要起浏览器）')
+    eq(needsBrowserDecode('a.txt'), false, '非图片不该被当成可解码')
+    return '4 种浏览器格式可解；Node 端仍只承诺 PNG'
+  })
+
+  /*
+   * 性能基准脚本的存在性与自洽性。
+   *
+   * 为什么**不在这里跑基准**：绝对耗时随机器浮动，把它当断言会变成"在慢机器上永远红"的假警报。
+   * 这里只守两件不会因机器而异的事：
+   *  ① `tool/bench.mjs` 还在，且 package.json 里有 `npm run bench`（否则会像"文档提到但不存在
+   *     的文件"那样静默腐坏——本项目已有 `tool/bench.mjs` 曾被 ARCHITECTURE 引用却不存在的前例）；
+   *  ② 它**声明了自己的用法与取舍**（`--quick` 与"耗时不当断言"的说明），
+   *     免得后来者把它当成"跑一次就能判定性能好坏"的测试。
+   * 真正的性能结论由 `npm run bench` 自己断言（比值类，与机器无关）。
+   */
+  check('工程：性能基准脚本存在、已接线，且声明了"耗时不当断言"', () => {
+    const benchPath = join(dirname(fileURLToPath(import.meta.url)), 'bench.mjs')
+    assert(existsSync(benchPath), 'tool/bench.mjs 不见了——ARCHITECTURE「性能」一节的结论就没有可复现依据了')
+    const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'))
+    assert(pkg.scripts && pkg.scripts.bench, 'package.json 里没有 bench 脚本（npm run bench）')
+    const src = readFileSync(benchPath, 'utf8')
+    assert(/--quick/.test(src), 'bench.mjs 应支持 --quick（缩小规模，用于改动后随手跑）')
+    assert(/不要\*\*把它当断言|不要\*\*把它当断言或写进文档|绝对耗时随机器浮动/.test(src), 'bench.mjs 应写明"绝对耗时不当断言"')
+    return 'bench.mjs 存在、已接线、含 --quick 与免责说明'
+  })
+
   check('工程：artc.mjs 被 import 时不得执行 main()（否则导入方会被 process.exit 带走）', () => {
     const src = readFileSync(fileURLToPath(import.meta.url), 'utf8')
     assert(/const invokedDirectly =/.test(src), '缺少"直接执行"守卫')
@@ -1204,10 +1261,49 @@ async function main() {
     // collectInputs 按"是图片扩展名"收文件（含 .svg/.jpg/.webp），但 Node 端只有 PNG 解码器。
     // 不预筛的话，素材目录里混进一张参考图 .svg 就会让整批以 exit 1 结束——而失败清单指向的
     // 其实是一张本就不该被处理的文件。真正的 decode 失败（.png 损坏）才配得上非零退出。
-    const decodable = []
+    let decodable = []
+    const browserDecodeQueue = []
     for (const f of inputs) {
       if (canDecodeInNode(f)) decodable.push(f)
-      else skipped.push({ src: basename(f), reason: `Node 端只解码 PNG，已跳过 ${extname(f) || '（无扩展名）'}` })
+      else if (args['browser-decode'] && needsBrowserDecode(f)) browserDecodeQueue.push(f)
+      else {
+        skipped.push({
+          src: basename(f),
+          reason: args['browser-decode']
+            ? `浏览器通道也解不了这个格式（${extname(f) || '（无扩展名）'}），已跳过`
+            : `Node 端只解码 PNG，已跳过 ${extname(f) || '（无扩展名）'}（加 --browser-decode 可借浏览器解码）`,
+        })
+      }
+    }
+
+    /*
+     * --browser-decode：把浏览器能解、Node 不能解的格式先转成 PNG 落到临时目录，
+     * 再并入 decodable 走**同一条**渲染链路（与 --slice 落临时文件的理由一致：
+     * renderOne 的入口是文件路径，走文件才不会长出第二套渲染逻辑）。
+     */
+    let decodeTmp = null
+    if (browserDecodeQueue.length) {
+      const { startBrowser } = await import('./cdp.mjs')
+      // browserPath 不用传：startBrowser 内部已经走 browserFromEnv()（--browser > PIXEL_BROWSER > 候选路径）
+      const session = await startBrowser({ profilePrefix: 'artc-decode-' })
+      decodeTmp = mkdtempSync(join(tmpdir(), 'artc-decode-'))
+      try {
+        await session.cdp.send('Runtime.enable')
+        await session.cdp.send('Page.navigate', { url: 'about:blank' })
+        for (const f of browserDecodeQueue) {
+          try {
+            const r = await decodeOneToPng(session, f, decodeTmp)
+            decodable.push(r.dest)
+            if (!args.quiet) progress(`⟳ 浏览器解码 ${basename(f)} → PNG（${r.width}×${r.height}）`)
+          } catch (err) {
+            // 单张失败不中断整批（与下面的渲染失败同一条约定）
+            failures.push({ src: basename(f), reason: `浏览器解码失败：${err?.message ?? err}` })
+          }
+        }
+      } finally {
+        await session.close?.()
+      }
+      decodable = decodable.sort()
     }
     // --slice：把每张输入图先切成多张子图（写到临时文件），再走下面同一条渲染链路。
     // 之所以落临时文件而不是把内存图直接喂给 renderOne：renderOne 的入口是**文件路径**
@@ -1239,7 +1335,12 @@ async function main() {
     const sliceTmp = sliceUnits ? dirname(sliceUnits[0]) : null
     if (!renderList.length) {
       const exts = [...new Set(inputs.map((f) => extname(f).toLowerCase() || '（无扩展名）'))].join('、')
-      throw new Error(`输入目录里没有可处理的 PNG：${args.in}（发现 ${inputs.length} 个文件，扩展名 ${exts}）`)
+      // 目录里全是非 PNG 时，**直接把出路写进错误信息**：这是最常见的第一次使用失败
+      // （AI 生图常给 .jpg/.webp），用户/agent 不该靠翻文档才知道有这个开关。
+      const hint = args['browser-decode']
+        ? '（已开 --browser-decode，但这些格式浏览器也解不了）'
+        : '——这些格式可以加 --browser-decode 借浏览器解码'
+      throw new Error(`输入目录里没有可处理的 PNG：${args.in}（发现 ${inputs.length} 个文件，扩展名 ${exts}）${hint}`)
     }
     for (let i = 0; i < renderList.length; i++) {
       const src = renderList[i]
@@ -1303,8 +1404,9 @@ async function main() {
         console.error(`✘ ${basename(src)}：${reason}`)
       }
     }
-    // 切片临时目录只服务于本轮渲染，渲染完即删（不清会像 CDP 的 profile 那样在系统 temp 里堆积）
+    // 切片/解码临时目录只服务于本轮渲染，渲染完即删（不清会像 CDP 的 profile 那样在系统 temp 里堆积）
     if (sliceTmp) rmSync(sliceTmp, { recursive: true, force: true })
+    if (decodeTmp) rmSync(decodeTmp, { recursive: true, force: true })
   }
 
   // 图集坐标表对 --blank 与 --in 两条产出路径同样成立，因此放在两者之外：
@@ -1313,6 +1415,32 @@ async function main() {
     const sheet = layoutSheet(results.map((r) => ({ name: r.file.replace(/\.png$/, ''), width: r.width, height: r.height })), sheetCols)
     writeFileSync(join(outDir, '_sheet.json'), JSON.stringify(sheet, null, 2), 'utf8')
     if (!args.quiet) progress(`✔ 图集坐标表 _sheet.json（${sheet.columns}×${sheet.rows}，${sheet.frames.length} 帧）`)
+
+    /*
+     * --engine：把同一份坐标翻译成引擎认识的格式（见 src/core/sheetmeta.ts）。
+     *
+     * 与 _sheet.json **并存**而不是替换：json 是"通用可读"的那份，引擎格式是"能直接吃"的那份，
+     * 两者面向不同用法，没有谁替代谁。
+     */
+    if (args.engine !== undefined) {
+      const fmt = String(args.engine)
+      if (!isEngineFormat(fmt)) {
+        throw new Error(`未知引擎格式：${fmt}（可选 ${ENGINE_FORMATS.join(' / ')}）`)
+      }
+      const tileSize = args['tile-size'] !== undefined ? parseBlankSpec(String(args['tile-size']), '--tile-size') : null
+      const meta = exportSheetMeta(fmt, sheet, {
+        // 贴图路径：默认用图集文件名，用户可用 --texture-path 覆盖成引擎里的实际路径
+        texturePath: args['texture-path'] !== undefined ? String(args['texture-path']) : '_sheet.png',
+        textureGuid: args['texture-guid'] !== undefined ? String(args['texture-guid']) : undefined,
+        name: args.name !== undefined ? basename(String(args.name), extname(String(args.name))) : 'sheet',
+        pixelsPerUnit: args.ppu !== undefined ? Number(args.ppu) : undefined,
+        tileWidth: tileSize?.width,
+        tileHeight: tileSize?.height,
+      })
+      const dest = join(outDir, `_sheet${ENGINE_EXT[fmt]}`)
+      writeFileSync(dest, meta, 'utf8')
+      if (!args.quiet) progress(`✔ ${fmt} 元数据 _sheet${ENGINE_EXT[fmt]}（${sheet.frames.length} 帧）`)
+    }
   }
 
   const summary = {
@@ -1383,6 +1511,9 @@ function printHelp() {
   --transparent           背景色导出为透明（单色键控）
   --slice <规格>          把输入图**切成多张**（与 --sheet 方向相反：--sheet 拼图集、--slice 拆图集）
                           auto 按全透明行/列自动推断 | 列数x行数 | 每格像素 WxHpx
+  --browser-decode        借无头浏览器原生解码器，把 Node 解不了的格式（JPEG/WebP/GIF/BMP/
+                          AVIF/ICO/SVG）先转成 PNG 再处理。**需要本机有 Chrome/Edge/Chromium**；
+                          不加这个开关时非 PNG 会被跳过并如实报告（不是静默忽略）
   --matte <#rrggbb>       合成/键控底色（默认 #ffffff）
   --key-mode <模式>       global（默认）全图同色都透明 | border 只键与四边连通的底色区域
                           （白底 + 主体内部有同色高光时必须用 border，否则高光会被挖穿）
@@ -1392,6 +1523,12 @@ function printHelp() {
 
 导出与附加产物：
   --sheet [列数]          额外输出 _sheet.json 图集坐标表（帧等尺寸 + offsetX/offsetY）
+  --engine <格式>         再输出一份引擎能直接吃的元数据：godot（.tres SpriteFrames）/ 
+                          unity（.meta 的 spriteSheet 段，需 --texture-guid）/ tiled（.tsx）
+  --texture-path <路径>   --engine 里引用的贴图路径（默认 _sheet.png）
+  --texture-guid <guid>   Unity 格式必需：从你那份 .png.meta 里取
+  --ppu <n>               Unity 的 pixelsPerUnit（默认取帧高）
+  --tile-size <WxH>       Tiled 的瓦片尺寸（默认取帧尺寸）
   --pixbin                额外输出 .pixbin（二进制像素数据，大画布往返更快）
   --bead [每板格数]       拼豆模式：输出 *_图纸.svg 与 *_缺口清单.csv（默认每板 58 格）
   --pdf                   额外输出 *_拼豆图纸.pdf（A4 分页可打印；需同时用 --bead）
