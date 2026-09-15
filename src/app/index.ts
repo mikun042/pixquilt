@@ -320,9 +320,10 @@ const statusbar = document.getElementById('statusbar') as HTMLElement
  * 而 title 由 `name` 拼出。改成"吸管"会让那条断言报"工具条里找不到取色工具"。
  */
 const TOOL_META: Record<string, { icon: string; svg?: IconName; name: string; key: string }> = {
-  pencil: { icon: '✎', name: '画笔', key: 'B' },
+  pencil: { icon: '✎', svg: 'pencil', name: '画笔', key: 'B' },
   selection: { icon: '⬚', svg: 'selection', name: '选区', key: 'M' },
-  bucket: { icon: '▨', name: '填充', key: 'G' },
+  bucket: { icon: '▨', svg: 'bucket', name: '填充', key: 'G' },
+  // 取色保留手绘曲线的吸管：Unicode 里没有吸管符号，而它经多轮截图校准、并被两条断言锁着
   picker: { icon: '⌖', svg: 'eyedropper', name: '取色', key: 'I' },
   rect: { icon: '▭', svg: 'rect', name: '矩形', key: 'U' },
   ellipse: { icon: '◯', svg: 'ellipse', name: '椭圆', key: 'O' },

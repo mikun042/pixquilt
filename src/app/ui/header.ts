@@ -115,12 +115,12 @@ export function createHeader(deps: HeaderDeps): HeaderApi {
     undoBtn = el(
       'button',
       { class: 'btn act', title: '撤销（Ctrl+Z）', 'aria-label': '撤销', onclick: () => deps.undo() },
-      [el('span', { class: 'act-icon' }, ['↶']), el('span', { class: 'act-label' }, ['撤销'])],
+      [iconSpan('undo', '↶'), el('span', { class: 'act-label' }, ['撤销'])],
     )
     redoBtn = el(
       'button',
       { class: 'btn act', title: '重做（Ctrl+Y / Ctrl+Shift+Z）', 'aria-label': '重做', onclick: () => deps.redo() },
-      [el('span', { class: 'act-icon' }, ['↷']), el('span', { class: 'act-label' }, ['重做'])],
+      [iconSpan('redo', '↷'), el('span', { class: 'act-label' }, ['重做'])],
     )
     regenerateBtn = el(
       'button',
@@ -133,7 +133,7 @@ export function createHeader(deps: HeaderDeps): HeaderApi {
           deps.regenerate()
         },
       },
-      [el('span', { class: 'act-icon' }, ['⟳']), el('span', { class: 'act-label' }, ['重新转换'])],
+      [iconSpan('regenerate', '⟳'), el('span', { class: 'act-label' }, ['重新转换'])],
     )
     const newBtn = el(
       'button',
@@ -157,7 +157,7 @@ export function createHeader(deps: HeaderDeps): HeaderApi {
     const helpBtn = document.getElementById('btn-help') as HTMLButtonElement | null
     if (helpBtn) {
       // 「? 快捷键」放在顶栏最右侧：与其它按钮拉开距离，避免误触
-      helpBtn.append(el('span', { class: 'act-icon' }, ['?']), el('span', { class: 'act-label' }, ['快捷键']))
+      helpBtn.append(iconSpan('help', '?'), el('span', { class: 'act-label' }, ['快捷键']))
       helpBtn.title = '快捷键速查（按 ? 也能打开）'
       helpBtn.setAttribute('aria-label', '快捷键速查')
       helpBtn.dataset.testid = 'help'
