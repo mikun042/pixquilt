@@ -13,13 +13,26 @@
  * 用法：node tool/verify-sections.mjs
  */
 import { mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { startBrowser, sleep } from './cdp.mjs'
 
-const APP = 'F:/<项目目录>/像素画工作台.html'
-const SHOT_DIR = 'F:/<项目目录>/.tmp-shots/sections'
+/*
+ * 路径按 `import.meta.url` 定位，**不要写死绝对路径**。
+ * 这两行原先是 `F:/<项目目录>/...`——换个盘符/换台机器就直接找不到文件，
+ * 而在作者本机永远跑得通（同类缺陷在 tool/icons/pixel-gen.mjs 也出现过一次）。
+ *
+ * 注意 `APP` 是**文件系统路径**（下面导航时自己拼 `file:///`），不是 URL。
+ */
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+const APP = join(ROOT, '像素画工作台.html').replace(/\\/g, '/')
+const SHOT_DIR = join(ROOT, '.tmp-shots', 'sections')
 
 /** 每个分组里"最有代表性的控件"——用它来判断这一组是否真的显示了内容 */
 const PROBE = {
+  // 预设是唯一默认展开的分组，代表控件用第一颗 chip（见下方 DEFAULT_OPEN）
+  preset: '.preset-chip',
   size: 'select',
   crop: 'select',
   palette: 'select',
@@ -111,7 +124,7 @@ async function main() {
     )
 
   /*
-   * ① 初始状态必须是**全部收起**。
+   * ① 初始状态必须是**全部收起**（唯一的例外见下方 `DEFAULT_OPEN`）。
    *
    * 这条守的是"右栏不要有的展开有的收起"这个明确要求（用户提出）。
    * 加它的理由：折叠功能本身早就有断言（下面的逐组展开/收起），但"初始状态"没有——
@@ -119,13 +132,26 @@ async function main() {
    */
   const initial = []
   for (const id of IDS) initial.push({ id, ...(await probe(id)) })
-  const expandedAtStart = initial.filter((s) => s.expanded !== 'false' || s.bodyH !== 0)
+  // 唯一允许默认展开的分组：预设。它是面板主入口、最高频动作，收起会让人找不到"怎么切用途"
+  const DEFAULT_OPEN = new Set(['preset'])
+  const expandedAtStart = initial.filter(
+    (s) => !DEFAULT_OPEN.has(s.id) && (s.expanded !== 'false' || s.bodyH !== 0),
+  )
+  const presetWrong = initial.filter((s) => DEFAULT_OPEN.has(s.id) && (s.expanded !== 'true' || s.bodyH === 0))
   console.log('初始状态检查：')
-  for (const s of initial) console.log(`  ${s.expanded === 'false' && s.bodyH === 0 ? '✔' : '✘'} ${s.id.padEnd(11)} aria-expanded=${s.expanded} 主体高度=${s.bodyH}`)
+  for (const s of initial) {
+    const wantOpen = DEFAULT_OPEN.has(s.id)
+    const okNow = wantOpen ? s.expanded === 'true' && s.bodyH > 0 : s.expanded === 'false' && s.bodyH === 0
+    console.log(`  ${okNow ? '✔' : '✘'} ${s.id.padEnd(11)} aria-expanded=${s.expanded} 主体高度=${s.bodyH}${wantOpen ? '（应展开）' : ''}`)
+  }
   if (expandedAtStart.length) {
     console.log(`\n✘ 以下分组默认是展开的（要求全部默认收起）：${expandedAtStart.map((s) => s.id).join(' ')}`)
-  } else {
-    console.log('✔ 全部分组默认收起\n')
+  }
+  if (presetWrong.length) {
+    console.log(`\n✘ 以下分组应默认展开却没有：${presetWrong.map((s) => s.id).join(' ')}`)
+  }
+  if (!expandedAtStart.length && !presetWrong.length) {
+    console.log(`✔ 初始状态正确（${[...DEFAULT_OPEN].join('/')} 默认展开，其余默认收起）\n`)
   }
 
   const rows = []

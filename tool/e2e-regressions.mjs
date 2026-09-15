@@ -45,6 +45,30 @@ for (let i = 0; i < 60; i++) {
 
 const mouse = (type, x, y) =>
   cdp.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 })
+
+/**
+ * 用**真实鼠标**点击一个由 JS 表达式定位的元素（先滚进视野再按中心点）。
+ *
+ * 为什么不直接用 `e.click()`：合成 click 绕过命中测试，测不出"元素被遮挡 /
+ * 命中区变小 / pointer-events:none"这类问题——而本项目在取色器上真实踩过。
+ * 表达式返回 null 时明确报错，不静默跳过（否则断言会变成"什么都没测"却全绿）。
+ */
+const clickByExpr = async (expr) => {
+  const p = JSON.parse(
+    await cdp.eval(`(() => {
+      const e = ${expr}
+      if (!e) return JSON.stringify({ error: '找不到元素：${expr.replace(/'/g, "\\'")}' })
+      e.scrollIntoView({ block: 'center' })
+      const r = e.getBoundingClientRect()
+      return JSON.stringify({ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) })
+    })()`),
+  )
+  if (p.error) throw new Error(p.error)
+  await mouse('mousePressed', p.x, p.y)
+  await mouse('mouseReleased', p.x, p.y)
+  await sleep(220)
+}
+
 const key = async (k, opts = {}) => {
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code: opts.code ?? `Key${k.toUpperCase()}`, modifiers: opts.modifiers ?? 0 })
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code: opts.code ?? `Key${k.toUpperCase()}`, modifiers: opts.modifiers ?? 0 })
@@ -377,10 +401,35 @@ await check('getInfo().hasEdits 反映真实编辑状态（不再恒为 false）
 
 await check('CLI：不存在"接受了但没有任何效果"的 flag（--keep-size 已移除）', async () => {
   const { execFileSync } = await import('node:child_process')
-  const out = execFileSync(process.execPath, ['tool/artc.mjs', '--help'], { encoding: 'utf8' })
-  assert(!/keep-size/.test(out), '帮助文本里仍宣传 --keep-size（该 flag 无实现）')
-  assert(!/browser-decode/.test(out), '帮助文本里仍宣传 --browser-decode（该 flag 无实现）')
-  return '帮助文本只列已实现的参数'
+  const help = execFileSync(process.execPath, ['tool/artc.mjs', '--help'], { encoding: 'utf8' })
+  /*
+   * `--keep-size` 是真实的死 flag：登记在 KNOWN_FLAGS 里、被帮助文本宣传，却**没有任何消费点**，
+   * 传了既不生效也不报错。这类"接受了但没效果"的参数比报错更糟，所以永久钉住它不再出现。
+   */
+  assert(!/keep-size/.test(help), '帮助文本里仍宣传 --keep-size（该 flag 无实现）')
+
+  /*
+   * `--browser-decode` 此前也在这条断言里，但它的处境**已经变了**：
+   * 当时它是一句"报错里让你改用某个 flag、而那个 flag 从未实现"的死路文案；
+   * 2026-09-15 起它**真的实现了**（`src/io/node-decode.ts` + CLI 里的消费点）。
+   *
+   * 所以这里不再断言"帮助里没有它"，而是断言**它不能退化成死 flag**：
+   * 只要帮助里还宣传它，就要求代码里真的有消费点。这比删掉这行更保守——
+   * 既允许功能落地，又继续挡住"宣传了却没接线"。
+   */
+  if (/browser-decode/.test(help)) {
+    const src = readFileSync(join(ROOT, 'tool', 'artc.mjs'), 'utf8')
+    assert(
+      /args\['browser-decode'\]/.test(src),
+      '帮助文本宣传 --browser-decode，但 tool/artc.mjs 里没有它的消费点（死 flag）',
+    )
+    const { needsBrowserDecode } = await import(new URL('../src/io/node-decode.ts', import.meta.url).href)
+    assert(
+      needsBrowserDecode('x.jpg') && needsBrowserDecode('x.webp') && !needsBrowserDecode('x.png'),
+      '解码通道的格式判定不符预期',
+    )
+  }
+  return '帮助文本只列已实现的参数（--browser-decode 有消费点）'
 })
 
 /* ------------------------------- CLI：工具问题记录（2026-09-13 第二轮）修复的回归 */
@@ -757,6 +806,604 @@ await check('参数面板折叠：真实鼠标点标题栏能收起/展开，且
   assert(reclosed.stillInDom, '收起后控件必须仍在 DOM 里（display:none，不是移除节点）——否则页内 API 与其它断言会失效')
 
   return `默认收起 → 点开(h=${opened.h}) → 点收(h=${reclosed.h})，控件始终在 DOM`
+})
+
+/* ---------------------------------------------- 图标几何：全部图标，而不只是吸管 */
+
+/*
+ * 为什么单列这一条：`e2e-pdf.mjs` 早就有"笔画落在 viewBox 内"的断言，但它**只查吸管一个图标**。
+ * 于是 2026-09-15 发现的那批缺陷全都从它眼皮底下溜了过去：
+ *   · 8 个 SVG 图标的坐标是 **32 设计网格**（最大到 30），而图标 viewBox 是 24
+ *     → 被裁掉大半：重新转换只剩一段残弧、"快捷键"的方点整个落在画布外看不见；
+ *   · 重做图标的镜像写在 `<g transform>` 上，被提取器静默丢掉
+ *     → **重做与撤销导出成完全相同的两条路径**（箭头都朝左）。
+ * 两个都是"看得见、却没有任何断言说话"的静默失效。所以这里把断言从"吸管"扩到**所有图标**，
+ * 并额外锁一条"重做必须是撤销的镜像"。
+ *
+ * 坐标一律是 24 空间（SVG_PATHS 由 svg-data.mjs 从 32 网格缩放到 24 后落盘，
+ * PIXEL_PATHS 与吸管本来就在 24 空间），因此可以用同一个 24 的框来判定。
+ */
+const STROKE_TOL = 1.8 // 描边半宽：几何包围盒之外还有 sw/2 的笔画，允许它略微出界
+const icons = JSON.parse(
+  await cdp.eval(`JSON.stringify((() => {
+    const label = (svg) => {
+      const btn = svg.closest('button')
+      if (!btn) return (svg.getAttribute('class') || 'svg')
+      return (btn.getAttribute('aria-label') || btn.getAttribute('title') || btn.textContent || '').trim().slice(0, 12) || btn.id
+    }
+    return [...document.querySelectorAll('svg.icon-svg')].map((svg) => {
+      const paths = [...svg.querySelectorAll('path')].map((p) => {
+        const b = p.getBBox()
+        return { d: p.getAttribute('d'),
+          x: +b.x.toFixed(2), y: +b.y.toFixed(2), w: +b.width.toFixed(2), h: +b.height.toFixed(2),
+          len: +p.getTotalLength().toFixed(2) }
+      })
+      const box = paths.reduce((a, p) => ({
+        x0: Math.min(a.x0, p.x), y0: Math.min(a.y0, p.y),
+        x1: Math.max(a.x1, p.x + p.w), y1: Math.max(a.y1, p.y + p.h),
+      }), { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 })
+      return { label: label(svg), viewBox: svg.getAttribute('viewBox'), paths, box }
+    })
+  })())`),
+)
+
+check('图标几何：每个图标的笔画都落在自己的 viewBox 内（不裁切、不过小）', () => {
+  assert(icons.length >= 8, `页面上只找到 ${icons.length} 个图标，太少了（工具条 + 顶栏应有多个）`)
+  const bad = []
+  for (const ic of icons) {
+    if (ic.viewBox !== '0 0 24 24') {
+      bad.push(`${ic.label}: viewBox=${ic.viewBox}`)
+      continue
+    }
+    const { x0, y0, x1, y1 } = ic.box
+    if (x0 < -STROKE_TOL || y0 < -STROKE_TOL || x1 > 24 + STROKE_TOL || y1 > 24 + STROKE_TOL) {
+      bad.push(`${ic.label}: 笔画出界 [${x0},${y0}]-[${x1},${y1}]（24 的框装不下就会被裁掉）`)
+    }
+    if (x1 - x0 < 8 || y1 - y0 < 8) {
+      bad.push(`${ic.label}: 图标过小 ${(x1 - x0).toFixed(1)}×${(y1 - y0).toFixed(1)}（可能被裁得只剩一角）`)
+    }
+  }
+  assert(bad.length === 0, `有 ${bad.length} 个图标几何不合格：\n    ${bad.join('\n    ')}`)
+  return `${icons.length} 个图标：笔画均在 24 框内且 ≥8×8`
+})
+
+check('图标语义：重做必须是撤销的水平镜像（不能长得一样）', () => {
+  const undo = icons.find((ic) => ic.label === '撤销')
+  const redo = icons.find((ic) => ic.label === '重做')
+  assert(undo, '顶栏找不到「撤销」图标')
+  assert(redo, '顶栏找不到「重做」图标')
+  // ① 路径数据不能逐字相同——直接锁住"镜像 transform 被静默丢掉"那个缺陷
+  const du = undo.paths.map((p) => p.d).join('|')
+  const dr = redo.paths.map((p) => p.d).join('|')
+  assert(du !== dr, '重做与撤销的路径数据完全相同——重做没有镜像（箭头方向必然也反了）')
+  // ② 几何上互为镜像（绕 x=12 翻转）：两端坐标之和应各自等于 24
+  const near = (a, b, tol = 0.6) => Math.abs(a - b) <= tol
+  assert(
+    near(undo.box.x0 + redo.box.x1, 24) && near(undo.box.x1 + redo.box.x0, 24),
+    `重做不是撤销的镜像：undo x=[${undo.box.x0},${undo.box.x1}] redo x=[${redo.box.x0},${redo.box.x1}]`,
+  )
+  assert(
+    near(undo.box.y0, redo.box.y0) && near(undo.box.y1, redo.box.y1),
+    `镜像不该改变纵向范围：undo y=[${undo.box.y0},${undo.box.y1}] redo y=[${redo.box.y0},${redo.box.y1}]`,
+  )
+  return `undo x=[${undo.box.x0},${undo.box.x1}] ↔ redo x=[${redo.box.x0},${redo.box.x1}]，严格镜像`
+})
+
+/* ---------------------------------------------- 取色器开合（点色块也能收起） */
+
+/*
+ * 需求：左侧点「主色 / 背景色」展开取色器后，**再点同一个色块要能收起**，
+ * 而不是只能用面板里那颗「收起」按钮。
+ *
+ * 这里特意覆盖**两种不同的点击语义**，只测一种会漏掉最容易写错的那种：
+ *   ① 点**当前正在编辑**的那一路 → 收起；
+ *   ② 点**另一路** → 切过去并**保持展开**。
+ * ② 是易错点：若把实现写成"点一下就翻转 showPicker"，②会变成"开了又关"，
+ * 用户从主色切到背景得点三次——而只测①的话，这种错误实现照样是绿的。
+ *
+ * 用真实鼠标（`Input.dispatchMouseEvent`）：色块是 `<button>`，合成 `.click()` 绕过命中测试，
+ * 测不出被遮挡、命中区变小这类问题（本项目在取色器上真实踩过）。
+ */
+const slotPos = async (i) =>
+  JSON.parse(
+    await cdp.eval(`(() => {
+      const el = document.querySelectorAll('.color-slot')[${i}]
+      if (!el) return JSON.stringify({ error: '找不到第 ${i} 个 .color-slot' })
+      const r = el.getBoundingClientRect()
+      return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
+    })()`),
+  )
+const pickerState = async () =>
+  JSON.parse(
+    await cdp.eval(`(() => {
+      const slots = [...document.querySelectorAll('.color-slot')]
+      const cp = document.querySelector('.cp')
+      const host = document.querySelector('.picker-wrap')
+      return JSON.stringify({
+        show: window.__app.store.get('showPicker'),
+        visible: !!(cp && cp.offsetParent !== null),
+        hostAttached: !!(host && host.parentNode),
+        titles: slots.map((s) => s.getAttribute('title') || ''),
+      })
+    })()`),
+  )
+const clickSlot = async (i) => {
+  const p = await slotPos(i)
+  assert(!p.error, p.error)
+  await mouse('mousePressed', p.x, p.y)
+  await mouse('mouseReleased', p.x, p.y)
+  await sleep(200)
+}
+
+await check('取色器开合：再点当前色块可收起；点另一路是切换目标而不收起', async () => {
+  // 先归零，保证从"收起"开始（前面的用例可能留下展开状态）
+  await cdp.eval(`window.__app.store.set('showPicker', false)`)
+  await sleep(150)
+
+  await clickSlot(0) // 点主色 → 展开
+  let s = await pickerState()
+  assert(s.show === true && s.visible === true, `点主色应展开，实际 show=${s.show} visible=${s.visible}`)
+  assert(s.titles[0].includes('点击收起取色器'), `主色提示语应变为"点击收起"，实际「${s.titles[0]}」`)
+
+  await clickSlot(0) // 再点主色 → 收起（本次新增的行为）
+  s = await pickerState()
+  assert(s.show === false, `再点主色应收起，实际 show=${s.show}`)
+  assert(s.visible === false, '收起后取色器不应可见')
+  assert(s.hostAttached === false, '收起后宿主应从文档摘除（不是只隐藏）——否则会留下孤儿节点')
+
+  await clickSlot(0) // 再展开
+  await clickSlot(1) // 点背景 → 切换编辑目标且保持展开
+  s = await pickerState()
+  assert(s.show === true && s.visible === true, `点另一路应保持展开，实际 show=${s.show} visible=${s.visible}`)
+  assert(s.titles[1].includes('点击收起取色器'), `背景应变为"点击收起"，实际「${s.titles[1]}」`)
+  assert(s.titles[0].includes('点击打开取色器'), `主色应回到"点击打开"，实际「${s.titles[0]}」`)
+
+  await clickSlot(1) // 再点背景 → 收起
+  s = await pickerState()
+  assert(s.show === false && s.visible === false, '再点背景应收起')
+
+  // 面板里那颗「收起」按钮必须仍然有效（别为了新交互弄坏旧出口）
+  await clickSlot(0)
+  const foot = JSON.parse(
+    await cdp.eval(`(() => {
+      const b = document.querySelector('.cp-foot .btn')
+      if (!b) return JSON.stringify({ error: '找不到「收起」按钮' })
+      const r = b.getBoundingClientRect()
+      return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
+    })()`),
+  )
+  assert(!foot.error, foot.error)
+  await mouse('mousePressed', foot.x, foot.y)
+  await mouse('mouseReleased', foot.x, foot.y)
+  await sleep(200)
+  s = await pickerState()
+  assert(s.show === false && s.visible === false, '「收起」按钮应仍能收起（原出口不能坏）')
+
+  return '点当前色块收起 / 点另一路切换并保持展开 / 「收起」按钮仍有效'
+})
+
+/* ---------------------------------------------- 预设分组：默认展开，且能折叠 */
+
+/*
+ * 预设区在 2026-09-15 从"独立标题 + 裸内容"并进了 `section()` 那套折叠机制。
+ *
+ * 为什么为它单独写一条（旁边的"参数面板折叠"测的是**默认收起**的「抖动」组，方向相反）：
+ *  - **默认展开**是它与其他 9 组的关键差异，也是它的正确形态（面板主入口 + 最高频动作）；
+ *    如果哪天有人顺手把它改成默认收起，第一次用的人会找不到"怎么切用途"——
+ *    而现有断言照样全绿（它们用 querySelector 找 chip，折叠也找得到）。
+ *  - 顺带锁住"它真的进了折叠机制"：有 `section-head-preset` / `section-body-preset`
+ *    这对 data-testid，是"并进同一套机制"的可观测证据，而不是各自写一套标题栏。
+ *  - 收起后 chip 必须**仍在 DOM 里**（同旁边那条的结构性约束）：页内 API 的
+ *    `applyStylePreset` 与预设相关断言都靠 querySelector，节点被摘掉会以
+ *    "找不到控件"的形式在别处失败。
+ */
+await check('预设分组：默认可折叠、默认展开，且收起后 chip 仍在 DOM 里', async () => {
+  const headSel = '[data-testid="section-head-preset"]'
+  const bodySel = '[data-testid="section-body-preset"]'
+  const read = () =>
+    cdp.eval(`(() => {
+      const h = document.querySelector('${headSel}')
+      const b = document.querySelector('${bodySel}')
+      if (!h || !b) return JSON.stringify({ error: '找不到预设分组的标题或主体（没并进 section 机制？）' })
+      return JSON.stringify({
+        expanded: h.getAttribute('aria-expanded'),
+        h: Math.round(b.getBoundingClientRect().height),
+        chipsInDom: document.querySelectorAll('#panel-params .preset-chip').length,
+        caret: h.querySelector('.panel-caret')?.textContent ?? '',
+      })
+    })()`)
+
+  /*
+   * ① **先验默认态，且不做任何"纠正"**。
+   *
+   * 这一步必须放在最前面、且不能有"如果收起就点开"之类的兜底——那种兜底会**反过来
+   * 抹掉它要抓的缺陷**：`toggleSection()` 会把结果写进 sessionOpen 与 localStorage，
+   * 于是"默认收起"这个变异会被兜底动作"修好"，断言照样变绿（本用例第一版就是这样，
+   * 变异验证时暴露了它）。默认态要在一个**没被本用例碰过**的状态下读。
+   * 每次运行都是全新的临时 profile（startBrowser 建 mkdtemp 再删），所以这里的默认态干净。
+   */
+  let s = JSON.parse(await read())
+  assert(!s.error, s.error)
+  assert(
+    s.expanded === 'true',
+    `预设分组应**默认展开**（面板主入口 + 最高频动作），实际 aria-expanded=${s.expanded}。` +
+      `若改成了默认收起，第一次用的人会找不到"怎么切用途"。`,
+  )
+  assert(s.h > 0, `默认展开时主体应有高度，实际 ${s.h}`)
+  assert(s.chipsInDom >= 6, `预设 chip 应有 ≥6 个，实际 ${s.chipsInDom}`)
+  assert(s.caret === '▾', `展开时三角应为 ▾，实际「${s.caret}」`)
+
+  // ② 真实鼠标点标题栏 → 收起
+  const pos = JSON.parse(await cdp.eval(`(() => {
+    const h = document.querySelector('${headSel}'); h.scrollIntoView({ block: 'center' })
+    const r = h.getBoundingClientRect()
+    return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
+  })()`))
+  await mouse('mousePressed', pos.x, pos.y)
+  await mouse('mouseReleased', pos.x, pos.y)
+  await sleep(200)
+  const closed = JSON.parse(await read())
+  assert(closed.expanded === 'false', `点标题栏应收起，实际 aria-expanded=${closed.expanded}`)
+  assert(closed.h === 0, `收起后主体高度应为 0，实际 ${closed.h}`)
+  assert(closed.chipsInDom >= 6, '收起后 chip 必须仍在 DOM 里（display:none，不是移除节点）——否则页内 API 与其它断言会失效')
+  assert(closed.caret === '▸', `收起时三角应为 ▸，实际「${closed.caret}」`)
+
+  // ② 再点一次 → 展开（必须能回来，别做成单向）
+  const pos2 = JSON.parse(await cdp.eval(`(() => {
+    const h = document.querySelector('${headSel}'); h.scrollIntoView({ block: 'center' })
+    const r = h.getBoundingClientRect()
+    return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
+  })()`))
+  await mouse('mousePressed', pos2.x, pos2.y)
+  await mouse('mouseReleased', pos2.x, pos2.y)
+  await sleep(200)
+  const reopened = JSON.parse(await read())
+  assert(reopened.expanded === 'true' && reopened.h > 0, `再点应展开，实际 expanded=${reopened.expanded} h=${reopened.h}`)
+
+  // ③ 收起点一下 chip：预设有 6 个出厂 chip，收起后程序化点击仍应生效（页内 API 同路径）
+  const applied = await cdp.eval(`(() => {
+    const c = document.querySelector('#panel-params .preset-chip')
+    if (!c) return 'no-chip'
+    return 'ok'
+  })()`)
+  assert(applied === 'ok', '预设 chip 应可被 querySelector 取到（收起时也一样）')
+
+  return `默认展开(▾ h=${s.h}) → 收起(h=0, chip 仍在 DOM) → 再展开(h=${reopened.h})`
+})
+
+/* ---------------------------------------------- 拼豆色卡向导（号色不能再被丢掉） */
+
+/*
+ * 本轮修的缺陷：`.hex` 一直支持 `编号 #rrggbb` 两列，但**导入时号色被解析完就丢掉**
+ * （只存 colors），于是图纸 / 缺口清单 / PDF 上印的永远是自动编号 C1/C2…，
+ * 用户色卡里的 S12 / B01 根本出不来。而"编号与我的色卡对不对得上"正是拼豆用户最在意的事。
+ *
+ * 这条断言按用户真实路径走一遍：**选自定义档 → 导入带号色的文件 → 号色进参数 →
+ * 号色表出现 → 改号 → 删色 → 号色真的印上清单与图纸**。
+ * 只测"导入成功"是不够的——号色被丢掉的版本同样"导入成功"。
+ */
+await check('色卡向导：导入带号色的 .hex，号色进参数、能改能删、并真的印上图纸', async () => {
+  const NL = String.fromCharCode(10)
+  const hexText = ['S12 #ff8800', 'S31 #22cc44', 'S99 #ffffff', 'S07 #1a1a1a', ''].join(NL)
+  const params = async () =>
+    JSON.parse(
+      await cdp.eval(`(() => {
+        const p = window.pixelArtStudio.getParams()
+        return JSON.stringify({ mode: p.paletteMode, colors: p.customPalette, codes: p.customPaletteCodes })
+      })()`),
+    )
+
+  // ① 切到「自定义 / .hex」档并展开分组——导入按钮只在这个档下存在
+  await cdp.eval(`(() => {
+    const head = document.querySelector('[data-testid="section-head-palette"]')
+    if (head && head.getAttribute('aria-expanded') === 'false') head.click()
+    return true
+  })()`)
+  await sleep(250)
+  const setMode = JSON.parse(
+    await cdp.eval(`(() => {
+      const sel = document.querySelector('[data-testid="section-body-palette"] select')
+      if (!sel) return JSON.stringify({ error: '色板分组里找不到 select' })
+      sel.value = 'custom'
+      sel.dispatchEvent(new Event('change', { bubbles: true }))
+      return JSON.stringify({ ok: true })
+    })()`),
+  )
+  assert(!setMode.error, setMode.error)
+  await sleep(300)
+
+  // ② 导入：给隐藏的 file input 塞真 File 再派发 change（与点「导入 .hex 文件」同一回调）
+  const fired = JSON.parse(
+    await cdp.eval(`(() => {
+      const input = [...document.querySelectorAll('input[type=file]')].find((i) => (i.accept || '').includes('.hex'))
+      if (!input) return JSON.stringify({ error: '找不到 .hex 文件选择框' })
+      const dt = new DataTransfer()
+      dt.items.add(new File([${JSON.stringify(hexText)}], 'card.hex', { type: 'text/plain' }))
+      input.files = dt.files
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+      return JSON.stringify({ ok: true })
+    })()`),
+  )
+  assert(!fired.error, fired.error)
+  await sleep(500)
+
+  const afterImport = await params()
+  assert(afterImport.colors.length === 4, `应载入 4 色，实际 ${afterImport.colors.length}`)
+  assert(
+    Array.isArray(afterImport.codes) && afterImport.codes.length === 4,
+    `号色必须被存进参数（不能再丢），实际 ${JSON.stringify(afterImport.codes)}`,
+  )
+  assert(afterImport.codes[0] === 'S12', `首个号色应为 S12，实际 ${afterImport.codes[0]}`)
+
+  // ③ 号色表出现，且逐行显示号色 + hex
+  const table = JSON.parse(
+    await cdp.eval(`(() => {
+      const lines = [...document.querySelectorAll('.code-line')]
+      return JSON.stringify({
+        has: !!document.querySelector('[data-testid="codes-table"]'),
+        n: lines.length,
+        first: (document.querySelector('.code-line input') || {}).value || '',
+      })
+    })()`),
+  )
+  assert(table.has, '有号色时应出现号色表')
+  assert(table.n === 4, `号色表应有 4 行，实际 ${table.n}`)
+  assert(table.first === 'S12', `首行号色应为 S12，实际「${table.first}」`)
+
+  // ④ 改号：真实鼠标聚焦 + 真实键盘输入（用原生 select() 清空，见下方注释）
+  await clickByExpr(`document.querySelector('.code-line input')`)
+  await cdp.eval(`document.querySelector('.code-line input').select()`)
+  for (const ch of 'X99') {
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, code: `Key${ch}`, text: ch })
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, code: `Key${ch}` })
+  }
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', text: NL })
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter' })
+  await sleep(350)
+  const afterEdit = await params()
+  assert(afterEdit.codes[0] === 'X99', `改号后首项应为 X99，实际「${afterEdit.codes[0]}」`)
+
+  // ⑤ 删色：颜色与号色必须**一起**删（只删一边会让后面号色整体错位）
+  await clickByExpr(`document.querySelector('[data-testid="code-del-0"]')`)
+  const afterDel = await params()
+  assert(afterDel.colors[0] === '#22cc44', `删后首个颜色应为 #22cc44，实际 ${afterDel.colors[0]}`)
+  assert(afterDel.codes[0] === 'S31', `删后首个号色应为 S31（不错位），实际 ${afterDel.codes[0]}`)
+  assert(afterDel.colors.length === 3, `删后应剩 3 色，实际 ${afterDel.colors.length}`)
+
+  // ⑥ 号色真的上清单与图纸——这一条才是整件事的目的
+  const sheet = JSON.parse(
+    await cdp.eval(`(() => {
+      const ps = window.pixelArtStudio
+      ps.newCanvas({ width: 8, height: 8, color: '#22cc44' })
+      const csv = ps.exportBeadCsv()
+      const svg = ps.exportBeadSvg()
+      return JSON.stringify({
+        row: csv.split(String.fromCharCode(10))[1] || '',
+        svgHasCode: svg.includes('S31'),
+        svgHasAutoC1: /[^A-Za-z]C1[^0-9]/.test(svg),
+      })
+    })()`),
+  )
+  assert(sheet.row.startsWith('S31,'), `清单首行应以用户号色 S31 开头，实际「${sheet.row}」`)
+  assert(sheet.svgHasCode, '图纸 SVG 里应出现用户号色 S31')
+  assert(!sheet.svgHasAutoC1, '图纸里不应再出现自动编号 C1（说明号色没被用上）')
+
+  return `导入 S12/S31/S99/S07 → 改号 X99 → 删色剩 3 → 清单「${sheet.row}」且图纸含 S31`
+})
+
+/* ---------------------------------------------- 自动草稿（刷新不再丢编辑） */
+
+/*
+ * 自动草稿是**唯一一条会在后台偷偷写、并在启动时抢先读**的路径，而 `app.art` 与画布副本
+ * 之间原本只有三条同步路径（ARCHITECTURE §2.1）——它是第四条。这类"少写一条同步"的缺陷
+ * 在本项目的历史上全是**静默丢数据**，所以这里必须把关键不变量钉死。
+ *
+ * 形态是用户拍板的"提示后由用户决定"，不是静默恢复：
+ * 打开工具想从头开始的人，不该莫名看到上次的旧画布。
+ *
+ * 这里用真实刷新（`Page.navigate`）而不是模拟事件——`pagehide` 里那次 flush 能不能在
+ * 页面被拆掉前完成，只有真刷新才测得出来（正是靠这条发现了下面那个丢数据窗口）。
+ */
+const draftRead = () =>
+  cdp.eval(`(async () => {
+    const db = await new Promise((res, rej) => { const r = indexedDB.open('pixel-art-studio', 1); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error) })
+    const rec = await new Promise((res) => { const tx = db.transaction('draft', 'readonly'); const q = tx.objectStore('draft').get('art'); q.onsuccess = () => res(q.result); q.onerror = () => res(null) })
+    db.close()
+    if (!rec) return JSON.stringify({ present: false })
+    const pf = JSON.parse(rec.project)
+    return JSON.stringify({ present: true, version: rec.version, size: pf.width + 'x' + pf.height })
+  })()`)
+
+const draftReload = async () => {
+  await cdp.send('Page.navigate', { url: pathToFileURL(app).href })
+  for (let i = 0; i < 60; i++) {
+    if (await cdp.eval('!!window.pixelArtStudio')) break
+    await sleep(200)
+  }
+  await sleep(700) // 等异步读草稿 + 弹提示条
+}
+const draftBarShown = () => cdp.eval(`!!document.querySelector('[data-testid="draft-bar"]')`)
+
+/** 清干净：删库 → 重载，确保用例从"完全没有草稿"开始 */
+const draftReset = async () => {
+  await cdp.eval(`indexedDB.deleteDatabase('pixel-art-studio')`).catch(() => {})
+  await sleep(300)
+  await draftReload()
+}
+
+await check('自动草稿：★ 首次编辑后立刻刷新也不丢（曾经有个"先清后写"的空窗）', async () => {
+  /*
+   * 这条守的是一个**真实的丢数据窗口**，实现时实测发现：
+   * 早先的 `replaceArt` 是"clearDraft() + 排一次防抖写"——用户还没有过任何草稿时
+   * （第一次新建/导入），"编辑 → 800ms 内刷新"会连盘都没写下去（旧的刚清、新的没到点，
+   * pagehide 那次 flush 也来不及）。实测四种时延 0/100/300/600ms **全部丢失**。
+   * 现在改成"有画布就立刻 flush、只有 art===null 才清盘"，下面四种时延都该救回来。
+   */
+  for (const delay of [0, 100, 300]) {
+    await draftReset()
+    await cdp.eval(`window.pixelArtStudio.newCanvas({ width: 12, height: 12, color: '#123456' })`)
+    await cdp.eval(`window.pixelArtStudio.edit([{ op: 'setCells', cells: [[1, 1]], color: '#ff0000' }])`)
+    if (delay) await sleep(delay)
+    await draftReload()
+    assert(await draftBarShown(), `首次编辑后等 ${delay}ms 刷新就丢了草稿（这正是要防的丢数据窗口）`)
+    const rec = JSON.parse(await draftRead())
+    assert(rec.present && rec.size === '12x12', `草稿应是 12x12，实际 ${JSON.stringify(rec)}`)
+  }
+  return '首编辑后 0/100/300ms 刷新，三次都能恢复'
+})
+
+await check('自动草稿：编辑→刷新→提示条→恢复，画布与编辑逐位一致', async () => {
+  await draftReset()
+  const before = JSON.parse(
+    await cdp.eval(`(() => {
+      const ps = window.pixelArtStudio
+      ps.newCanvas({ width: 20, height: 20, color: '#223344' })
+      ps.edit([{ op: 'setCells', cells: [[0,0],[1,1],[2,2]], color: '#ff0000' }])
+      return JSON.stringify({ hash: ps.artHash() })
+    })()`),
+  )
+  await sleep(1200) // 等防抖落盘
+  await draftReload()
+
+  // 提示条出现时**不应已经恢复**画布（必须等用户点，这是拍板的形态）
+  assert(await draftBarShown(), '有草稿时刷新应出现「恢复 / 放弃」提示条')
+  const whileAsking = JSON.parse(await cdp.eval(`JSON.stringify({ hasArt: window.pixelArtStudio.getInfo().hasArt })`))
+  assert(!whileAsking.hasArt, '提示条出现时不应已经恢复画布（要等用户决定，不能静默恢复）')
+
+  await clickByExpr(`document.querySelector('[data-testid="draft-restore"]')`)
+  await sleep(600)
+  const after = JSON.parse(
+    await cdp.eval(`(() => {
+      const ps = window.pixelArtStudio
+      const i = ps.getInfo()
+      return JSON.stringify({ hasArt: i.hasArt, w: i.width, h: i.height, hash: ps.artHash() })
+    })()`),
+  )
+  assert(after.hasArt, '点「恢复」后应有画布')
+  assert(after.w === 20 && after.h === 20, `尺寸应为 20×20，实际 ${after.w}×${after.h}`)
+  assert(after.hash === before.hash, `恢复后 hash 应与刷新前一致（编辑不能丢）`)
+  assert(!(await draftBarShown()), '恢复后提示条应消失（否则用户会以为没生效而反复点）')
+  return `恢复 20×20，hash 一致（${before.hash.slice(0, 10)}…），提示条已消失`
+})
+
+await check('自动草稿：点「放弃」后画布为空、草稿被清除，且下次打开不再提示', async () => {
+  await draftReset()
+  await cdp.eval(`window.pixelArtStudio.newCanvas({ width: 16, height: 16, color: '#abcdef' })`)
+  await sleep(1200)
+  await draftReload()
+  await clickByExpr(`document.querySelector('[data-testid="draft-discard"]')`)
+  await sleep(400)
+  assert(!JSON.parse(await cdp.eval(`JSON.stringify({ hasArt: window.pixelArtStudio.getInfo().hasArt })`)).hasArt, '放弃后不应有画布')
+  assert(!(await draftBarShown()), '放弃后提示条应消失')
+  assert(!JSON.parse(await draftRead()).present, '放弃后草稿记录应已被删除')
+
+  // 再刷新一次：不该再弹（否则"放弃"等于没放弃）
+  await draftReload()
+  assert(!(await draftBarShown()), '放弃之后再次打开不应再提示（草稿确实清了）')
+  return '画布为空、草稿已删、再打开不再提示'
+})
+
+await check('自动草稿：清空/重置后刷新，旧画布不得复活（替换=新基线）', async () => {
+  /*
+   * `replaceArt` 是「整体替换 = 新基线」的唯一入口，草稿必须跟着走。
+   * 要防的是两件事：① 待写的定时器把旧画布写回去（路线图记的顺序坑）；
+   * ② 清了草稿但新内容没落盘。所以这里**不等防抖就刷新**，最接近真实触发条件。
+   */
+  await draftReset()
+  await cdp.eval(`window.pixelArtStudio.newCanvas({ width: 30, height: 30, color: '#0000ff' })`)
+  await cdp.eval(`window.pixelArtStudio.edit([{ op: 'setAll', color: '#ff00ff' }])`)
+  await sleep(120)
+  await cdp.eval(`window.pixelArtStudio.reset()`) // 清空工作区（replaceArt(null)）
+  /*
+   * ⚠️ 必须**等足一个防抖周期**（800ms）再看盘。
+   *
+   * 只等 120ms 是**查不出问题的**：那时漏网的定时器还没到点，盘上看着是空的，
+   * 断言会全绿——而 1.6s 后旧画布就被写回去了（实测逐步打点：reset 后立刻/120ms 都是 none，
+   * 1.6s 时变成 30x30）。"太快地看一眼"会让这条防线形同虚设，这正是它第一版漏掉变异的原因。
+   */
+  await sleep(1600)
+  await draftReload()
+  const shown = await draftBarShown()
+  /*
+   * ⚠️ **必须连"盘上还有没有草稿"一起查**，不能只看"当前有没有画布"。
+   *
+   * 只看画布是查不出问题的：提示条要求用户点「恢复」才会装载画布，所以"盘上留着旧草稿、
+   * 但没人点"这个状态在只看画布时是**通过**的（实测：把 clearDraft 换成"清空后仍重排写入"，
+   * 盘上确实留着 30×30，而只查画布的断言照样全绿——等于这条防线是空的）。
+   * 真正该断言的是"旧草稿不该存在于盘上"，那才是"替换=新基线"的实际含义。
+   */
+  const rec = JSON.parse(await draftRead())
+  assert(!shown, '清空后不应出现恢复提示条（说明旧草稿还在盘上）')
+  assert(!rec.present || rec.size !== '30x30', `清空后盘上不应留下旧画布，实际 ${JSON.stringify(rec)}`)
+  if (shown) {
+    // 万一弹了，也不该是那张旧图：点开看一眼再断言（失败信息更有指向性）
+    await clickByExpr(`document.querySelector('[data-testid="draft-restore"]')`)
+    await sleep(500)
+    const w = JSON.parse(await cdp.eval(`JSON.stringify({ w: window.pixelArtStudio.getInfo().width })`)).w
+    assert(w !== 30, `恢复出来的仍是被清空的旧画布（${w}×${w}），"替换=新基线"没生效`)
+  }
+  return `盘上无旧草稿（${JSON.stringify(rec)}），旧画布未复活`
+})
+
+await check('自动草稿：存储不可用时静默降级（不弹提示条、不报错、编辑照常）', async () => {
+  /*
+   * 无痕模式 / 企业策略 / 配额满时 `indexedDB` 可能直接抛错。
+   * 项目对"存储不可用"的既有约定是**静默降级**（见 TESTING-GUIDE 的 H3 边界项），
+   * 草稿也必须守：不能因此弹一个每次打开都出现的提示条、更不能让编辑不可用。
+   *
+   * 手法：在新文档执行前把 `indexedDB` 换成会抛错的 getter——比"删掉属性"更接近真实
+   * （浏览器策略禁用时是访问即抛，而 `typeof indexedDB !== 'undefined'` 那道判断拦不住抛错，
+   * 正好验证了 storage.ts 里 `draftSupported()` 用 try/catch 包住的必要性）。
+   */
+  const s2 = await startBrowser({ profilePrefix: 'nostore-' })
+  try {
+    await s2.cdp.send('Runtime.enable')
+    await s2.cdp.send('Page.enable')
+    await s2.cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `Object.defineProperty(window, 'indexedDB', { get() { throw new Error('storage disabled') } })`,
+    })
+    /*
+     * 收集页面里的**未捕获错误**（unhandledrejection + error）。
+     *
+     * 这一步是必须的：`void maybeOfferDraftRestore()` 的 Promise 被丢弃，
+     * 所以"没包 try/catch 导致读草稿抛错"**不会**表现成提示条或编辑失败——
+     * 它只会在控制台留下一个未处理的 rejection。若不在页面侧捕获并断言，
+     * 这条用例在"存储被禁用 + 没做防护"的实现下**照样全绿**（实测确认过），
+     * 那就成了一条只会点头的假防线。
+     */
+    await s2.cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `
+        window.__errs = []
+        window.addEventListener('unhandledrejection', (e) => window.__errs.push('rejection: ' + (e.reason && e.reason.message || e.reason)))
+        window.addEventListener('error', (e) => window.__errs.push('error: ' + (e.message || e)))
+      `,
+    })
+    await s2.cdp.send('Page.navigate', { url: pathToFileURL(app).href })
+    for (let i = 0; i < 60; i++) {
+      if (await s2.cdp.eval('!!window.pixelArtStudio')) break
+      await sleep(200)
+    }
+    await sleep(600)
+    const errs = JSON.parse(await s2.cdp.eval('JSON.stringify(window.__errs || [])'))
+    assert(
+      errs.length === 0,
+      `存储不可用时不应产生未捕获错误（草稿必须静默降级）：${JSON.stringify(errs)}`,
+    )
+    const bar = await s2.cdp.eval(`!!document.querySelector('[data-testid="draft-bar"]')`)
+    assert(!bar, '存储不可用时不应弹草稿提示条')
+    const edited = JSON.parse(
+      await s2.cdp.eval(`(() => {
+        const ps = window.pixelArtStudio
+        ps.newCanvas({ width: 10, height: 10, color: '#123456' })
+        ps.edit([{ op: 'setCells', cells: [[1, 1]], color: '#ff0000' }])
+        return JSON.stringify({ hasArt: ps.getInfo().hasArt })
+      })()`),
+    )
+    assert(edited.hasArt, '存储不可用时编辑必须照常（草稿只是锦上添花）')
+  } finally {
+    await s2.close?.()
+  }
+  return '无提示条、无报错、新建与编辑照常'
 })
 
 /* ---------------------------------------------- 结果 */

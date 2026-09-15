@@ -1,11 +1,13 @@
 /**
  * 零依赖的无头浏览器 CDP 客户端 + 启动/清理样板。
  *
- * 为什么抽出来：这段代码原先是**六份复制**（`e2e` / `e2e-picker` / `e2e-slider` /
+ * 为什么抽出来：这段代码原先在**六个脚本里各复制一份**（`e2e` / `e2e-picker` / `e2e-slider` /
  * `e2e-regressions` / `e2e-pdf` / `shoot`），浏览器候选路径、启动参数、临时 profile 清理、
  * 超时与定时器清理各写一遍，且已经出现细微分叉（有的脚本忘了在响应时清定时器，
  * 导致进程空转、有的用 `stdout` 抓 ws、有的读 `DevToolsActivePort` 文件）。
  * 拼错一份就等于少一条防线，而这类代码没有测试覆盖。
+ * （抽出后凡是碰浏览器的地方都改成 import 这一份；**别在这里写死"共 N 个脚本"**，
+ *   它只会过期——想知道当前有几个消费者就 `grep -rl startBrowser tool/`。）
  *
  * 依赖只有 Node 内置模块（`node:child_process` / `node:fs` / `node:os` / `node:path`），
  * 与项目"零第三方依赖"的约定一致。
@@ -80,8 +82,8 @@ export function pickBrowser(explicitPath) {
 /**
  * 浏览器来源的统一优先级：`--browser <路径>` > `PIXEL_BROWSER` 环境变量 > 候选路径 / PATH。
  *
- * 放在 `cdp.mjs` 里由 `startBrowser` 自己调用，而不是让八个脚本各写一遍
- * （此前只有 `e2e.mjs` 接了 `--browser`，其余七个脚本收到了也当没看见）。
+ * 放在 `cdp.mjs` 里由 `startBrowser` 自己调用，而不是让每个脚本各写一遍
+ * （抽出来之前，只有 `e2e.mjs` 接了 `--browser`，其余脚本收到了也当没看见）。
  */
 export function browserFromEnv() {
   return argValue('browser') || process.env.PIXEL_BROWSER || undefined

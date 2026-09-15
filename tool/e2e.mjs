@@ -177,7 +177,8 @@ async function main() {
      * （本文件测勾选框时踩过同样的坑，见下方那段注释）。
      */
     {
-      const ids = ['size', 'crop', 'palette', 'downsample', 'dither', 'cleanup', 'adjust', 'matte', 'display']
+      // `preset` 也算一个分组（2026-09-15 起并入同一套折叠机制），一并逐个点过
+      const ids = ['preset', 'size', 'crop', 'palette', 'downsample', 'dither', 'cleanup', 'adjust', 'matte', 'display']
       const read = (id) => cdp.eval(`(() => {
         const h = document.querySelector('[data-testid="section-head-${id}"]')
         const b = document.querySelector('[data-testid="section-body-${id}"]')

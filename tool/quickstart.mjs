@@ -229,7 +229,9 @@ if (!SKIP_BROWSER) {
       )
       if (!r.png) throw new Error('renderBlank 未返回 PNG dataURL')
       ok(`renderBlank（无副作用一站式）：${r.w}×${r.h}，${r.changes} 条算子改动，hash ${r.hash}`)
-      info('它不碰工作区状态、撤销栈与自动草稿，所以适合批量并行调用')
+      // 注意别写成"不碰自动草稿"：**自动草稿根本没实现**（刷新页面会丢未导出的编辑，
+      // 见 src/core/limits.ts 里 DRAFT_* 那段的说明与路线图 A2）。
+      info('它不碰工作区状态、当前画布与撤销栈，所以适合批量并行调用')
 
       // 把页内产出的 PNG 落到磁盘，证明"agent 能拿到可用的图"
       const dataUrl = await evl(`(async () => {

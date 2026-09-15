@@ -26,7 +26,13 @@
     "e2e:pdf": "node tool/e2e-pdf.mjs",
     "shot:el": "node tool/shot-el.mjs",
     "probe": "node tool/probe.mjs",
-    "verify:sections": "node tool/verify-sections.mjs"
+    "verify:sections": "node tool/verify-sections.mjs",
+    "bench": "node tool/bench.mjs",
+    "icons:sync": "node tool/icons/pixel-sync.mjs && node tool/icons/svg-sync.mjs",
+    "icons:check": "node tool/icons/pixel-sync.mjs --check && node tool/icons/svg-sync.mjs --check",
+    "icons:gen": "node tool/icons/pixel-gen.mjs",
+    "icons:preview": "node tool/icons/preview-svg.mjs",
+    "icons:16": "node tool/icons/preview-16.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",

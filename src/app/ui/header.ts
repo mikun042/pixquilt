@@ -55,8 +55,9 @@ export interface HeaderApi {
  * 顶栏动作图标：优先用像素 SVG，外面仍套 `.act-icon`（CSS 靠这个类控制尺寸与对齐）。
  * `iconEl` 返回 null 时回退成字符——**不要静默产出空按钮**（见 icons.ts 的约定）。
  *
- * 现状：只有「新建」已换成像素图标，撤销/重做/重新转换/帮助仍是字符
- * （它们的像素版还在 output/UI素材32/ 里调）。属过渡状态。
+ * 现状（2026-09-15）：撤销 / 重做 / 重新转换 / 新建 / 快捷键**都已换成图标**，
+ * 字符只是 `iconEl` 返回 null 时的兜底。改形状请改 `tool/icons/` 的形状定义
+ * （这里是生成物的消费方），详见 `tool/icons/README.md`。
  */
 function iconSpan(name: Parameters<typeof iconEl>[0], fallback = ''): HTMLElement {
   const svg = iconEl(name)

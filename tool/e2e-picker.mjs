@@ -433,7 +433,17 @@ check('色板/取色不影响画布内容（取色只改主色）', () => {
       })
     })()`)
 
-  // ① 打开（点主色块）
+  /*
+   * ① 打开（点主色块）。
+   *
+   * ⚠️ 先把状态归零再点。色块自 2026-09-15 起是**开合开关**（点当前色块会收起取色器），
+   * 而文件开头已经点过一次主色块把面板打开了——直接再点一下会把它**关掉**，
+   * 于是第②步找不到「收起」按钮、抛"找不到目标元素"。
+   * 不依赖"点一下就一定是打开"，而是显式把状态摆成"想看的样子"，断言才不会随交互
+   * 语义的演进而误报（这里踩过一次：新交互本身是对的，错的是用例的前置假设）。
+   */
+  await cdp.eval("window.__app.store.set('showPicker', false)")
+  await new Promise((r) => setTimeout(r, 150))
   await clickSel("document.querySelectorAll('.color-slot')[0]")
   const opened = JSON.parse(await pickerState())
   // ② 收起
