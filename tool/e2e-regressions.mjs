@@ -671,6 +671,94 @@ await check('桌面宽度：两侧各自独立折叠，能同时收起（不再�
   return `正向 ${base.rail}/${base.right} → 双收 ${r.bothHidden.rail}/${r.bothHidden.right} → 还原；反向亦然`
 })
 
+/* -------------------------------- 参数面板：可折叠分组 */
+
+/*
+ * 折叠是 2026-09-15 新增的交互。加这条断言的理由：新交互若无断言守着，
+ * 就会变成"看起来能用、改坏了没人知道"——本项目在 §8.10 记过多起同类事故。
+ *
+ * 同时锁住一条**结构性约束**：收起的分组内容必须仍在 DOM 里（用 display:none 而非移除节点）。
+ * 页内 API 与其它断言全靠 querySelector 找控件，一旦有人把收起改成"不渲染"，
+ * 那些断言会以"找不到控件"的形式失败、而失败信息指向别处。这条直接把它钉住。
+ */
+await check('参数面板折叠：真实鼠标点标题栏能收起/展开，且收起后控件仍在 DOM 里', async () => {
+  const sel = '[data-testid="section-head-dither"]'
+  const bodySel = '[data-testid="section-body-dither"]'
+
+  const before = JSON.parse(
+    await cdp.eval(`(() => {
+      const h = document.querySelector('${sel}')
+      const b = document.querySelector('${bodySel}')
+      if (!h || !b) return JSON.stringify({ error: '找不到「抖动」分组的标题或主体' })
+      h.scrollIntoView({ block: 'center' })
+      const r = h.getBoundingClientRect()
+      return JSON.stringify({
+        x: r.left + r.width / 2, y: r.top + r.height / 2,
+        expanded: h.getAttribute('aria-expanded'),
+        bodyVisible: b.getBoundingClientRect().height > 0,
+        controlsInDom: !!document.querySelector('#panel-params select'),
+      })
+    })()`),
+  )
+  assert(!before.error, before.error)
+  // 前置：这组默认是收起的（次要参数），先点开、再点收，两个方向都验
+  assert(before.expanded === 'false', `「抖动」组默认应为收起，实际 aria-expanded=${before.expanded}`)
+  assert(before.bodyVisible === false, '收起时主体不应占高度')
+
+  // ① 点一次 → 展开
+  await mouse('mousePressed', before.x, before.y)
+  await mouse('mouseReleased', before.x, before.y)
+  await sleep(200)
+  const opened = JSON.parse(
+    await cdp.eval(`(() => {
+      const h = document.querySelector('${sel}')
+      const b = document.querySelector('${bodySel}')
+      return JSON.stringify({
+        expanded: h.getAttribute('aria-expanded'),
+        h: Math.round(b.getBoundingClientRect().height),
+        hasSelect: !!b.querySelector('select'),
+      })
+    })()`),
+  )
+  assert(opened.expanded === 'true', `点标题栏后应展开，实际 aria-expanded=${opened.expanded}`)
+  assert(opened.h > 0, `展开后主体应有高度，实际 ${opened.h}`)
+  assert(opened.hasSelect, '展开后该分组里应有「抖动」下拉')
+
+  // ② 再点一次 → 收起；关键：控件必须仍在 DOM 里（只是不显示）
+  //
+  // ⚠️ 必须**重新取坐标**：展开让面板内容变高、标题栏位置整体下移，
+  // 沿用第一次的 y 会点到别的元素上，表现成"再点收不起来"。
+  // （第一版就是直接复用 before.x/y，断言报 aria-expanded 仍为 true——那是测试的取坐标问题。）
+  const pos2 = JSON.parse(
+    await cdp.eval(`(() => {
+      const h = document.querySelector('${sel}')
+      h.scrollIntoView({ block: 'center' })
+      const r = h.getBoundingClientRect()
+      return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
+    })()`),
+  )
+  await mouse('mousePressed', pos2.x, pos2.y)
+  await mouse('mouseReleased', pos2.x, pos2.y)
+  await sleep(200)
+  const reclosed = JSON.parse(
+    await cdp.eval(`(() => {
+      const h = document.querySelector('${sel}')
+      const b = document.querySelector('${bodySel}')
+      return JSON.stringify({
+        expanded: h.getAttribute('aria-expanded'),
+        h: Math.round(b.getBoundingClientRect().height),
+        stillInDom: !!b.querySelector('select'),
+        selectInPanel: !!document.querySelector('#panel-params select'),
+      })
+    })()`),
+  )
+  assert(reclosed.expanded === 'false', `再点后应收回，实际 aria-expanded=${reclosed.expanded}`)
+  assert(reclosed.h === 0, `收起后主体高度应为 0，实际 ${reclosed.h}`)
+  assert(reclosed.stillInDom, '收起后控件必须仍在 DOM 里（display:none，不是移除节点）——否则页内 API 与其它断言会失效')
+
+  return `默认收起 → 点开(h=${opened.h}) → 点收(h=${reclosed.h})，控件始终在 DOM`
+})
+
 /* ---------------------------------------------- 结果 */
 
 await session.close()
