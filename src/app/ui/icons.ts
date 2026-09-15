@@ -121,6 +121,60 @@ function eyedropperPaths(): IconPath[] {
  *
  * 一律 `fill="currentColor"`：一套图标适配正常/悬停/激活/禁用全部状态。
  */
+/**
+ * SVG 描边图标的 path 数据（32×32 viewBox 坐标，与像素图标同一坐标系）。
+ *
+ * 为什么这 8 个用 SVG 而不是像素格：它们的形状是"弧 + 箭头"结构（回转箭头、环形箭头、
+ * 提梁、问号弧），用像素格堆很难画准——实测手绘磨了 4 轮，撤销被画成"门"、
+ * 刷新环成了"C"。改用 SVG 的 stroke 画弧之后一次就对了。
+ *
+ * 而 16px 的显示尺寸下，像素格与矢量**看不出区别**（用户观察），所以：
+ *   **形状好堆的手绘像素格，形状含弧的用 SVG** —— 按形状类型分工。
+ *
+ * 每项是 path 数组：`d` 是路径，`fill` 给实心部件（箭头三角、桶身），
+ * `sw` 是 stroke-width 覆盖（默认走外层 1.7；粗弧需要单独指定）。
+ * 一律 currentColor，一套适配正常/悬停/激活/禁用。
+ */
+const SVG_PATHS: Record<string, { d: string; fill?: string; sw?: string }[]> = {
+  pencil: [
+    { d: 'M28 4 L19 13', sw: '5' },
+    { d: 'M15 17 L20 12', sw: '8' },
+    { d: 'M14 18 L17 21 L8 28 L4 28 L4 24 Z' },
+  ],
+  bucket: [
+    { d: 'M12 11 A6 6 0 0 1 22 11', fill: 'none', sw: '3.4' },
+    { d: 'M6 15 L27 15 L23 29 L11 29 Z' },
+  ],
+  undo: [
+    { d: 'M27 22 A12 12 0 0 0 11 9', fill: 'none', sw: '4.5' },
+    { d: 'M7 9 L15 9 L11 18 Z' },
+  ],
+  redo: [
+    { d: 'M28 20 A12 12 0 0 0 10 8 L10 14 L2 9 L10 4 L10 8', fill: 'none', sw: '3.4' },
+    { d: 'M5 20 L10 20 L10 27 L5 27 Z', fill: '#000000' },
+  ],
+  regenerate: [
+    { d: 'M24 6 A11 11 0 1 0 28 17', sw: '4.5' },
+    { d: 'M24 6 L23 13 L29 10 Z', fill: '#000000', sw: '1.5' },
+  ],
+  palette: [
+    { d: 'M15 4 A11 11 0 1 0 15 26 A11 11 0 1 0 15 4 ZM14 4.6 A2.6 2.4 0 1 0 14 9.4 A2.6 2.4 0 1 0 14 4.6 ZM7 9.6 A2.6 2.4 0 1 0 7 14.4 A2.6 2.4 0 1 0 7 9.6 ZM10 18.6 A2.6 2.4 0 1 0 10 23.4 A2.6 2.4 0 1 0 10 18.6 ZM22 16.8 A3.6 3.2 0 1 0 22 23.2 A3.6 3.2 0 1 0 22 16.8 Z', fill: '#000000' },
+  ],
+  help: [
+    { d: 'M8 11 A7 7 0 1 1 14 21 L14 23', sw: '5' },
+    { d: 'M14 26 L14 29', sw: '6' },
+  ],
+  sliders: [
+    { d: 'M5 8 H27', sw: '4' },
+    { d: 'M5 16 H27', sw: '4' },
+    { d: 'M5 24 H27', sw: '4' },
+    { d: 'M11 8 L11 8' },
+    { d: 'M20 16 L20 16' },
+    { d: 'M9 24 L9 24' },
+  ],
+}
+
+export type SvgIconName = keyof typeof SVG_PATHS
 const PIXEL_PATHS = {
   pencil: 'M19.5 2.25h3v0.75h-3ZM18.75 3h3v0.75h-3ZM18 3.75h3v0.75h-3ZM17.25 4.5h3v0.75h-3ZM16.5 5.25h3v0.75h-3ZM15.75 6h3v0.75h-3ZM15 6.75h3v0.75h-3ZM14.25 7.5h3v0.75h-3ZM13.5 8.25h3v0.75h-3ZM12.75 9h3v0.75h-3ZM12 9.75h3v0.75h-3ZM9.75 10.5h6v0.75h-6ZM9 11.25h6.75v0.75h-6.75ZM8.25 12h7.5v0.75h-7.5ZM7.5 12.75h8.25v0.75h-8.25ZM6.75 13.5h9v0.75h-9ZM6 14.25h9.75v0.75h-9.75ZM5.25 15h10.5v0.75h-10.5ZM4.5 15.75h11.25v0.75h-11.25ZM3.75 16.5h12v0.75h-12ZM3 17.25h12.75v0.75h-12.75ZM2.25 18h13.5v0.75h-13.5ZM1.5 18.75h14.25v0.75h-14.25ZM1.5 19.5h13.5v0.75h-13.5ZM1.5 20.25h12.75v0.75h-12.75ZM1.5 21h12v0.75h-12ZM1.5 21.75h11.25v0.75h-11.25ZM1.5 22.5h10.5v0.75h-10.5ZM1.5 23.25h9.75v0.75h-9.75Z',
   bucket: 'M7.5 1.5h7.5v0.75h-7.5ZM6 2.25h10.5v0.75h-10.5ZM5.25 3h3v0.75h-3ZM14.25 3h3v0.75h-3ZM4.5 3.75h3v0.75h-3ZM15 3.75h3v0.75h-3ZM4.5 4.5h2.25v0.75h-2.25ZM15.75 4.5h2.25v0.75h-2.25ZM4.5 5.25h3v0.75h-3ZM15 5.25h3v0.75h-3ZM5.25 6h3v0.75h-3ZM14.25 6h3v0.75h-3ZM3 8.25h18v0.75h-18ZM3 9h18v0.75h-18ZM3 9.75h18v0.75h-18ZM3 10.5h18v0.75h-18ZM3.75 11.25h16.5v0.75h-16.5ZM3.75 12h16.5v0.75h-16.5ZM4.5 12.75h15v0.75h-15ZM4.5 13.5h15v0.75h-15ZM5.25 14.25h13.5v0.75h-13.5ZM5.25 15h13.5v0.75h-13.5ZM6 15.75h12v0.75h-12ZM6 16.5h12v0.75h-12ZM6.75 17.25h10.5v0.75h-10.5ZM6.75 18h10.5v0.75h-10.5ZM7.5 18.75h9v0.75h-9ZM7.5 19.5h9v0.75h-9ZM8.25 20.25h7.5v0.75h-7.5ZM17.25 20.25h3v0.75h-3ZM8.25 21h7.5v0.75h-7.5ZM16.5 21h4.5v0.75h-4.5ZM9 21.75h6v0.75h-6ZM16.5 21.75h4.5v0.75h-4.5ZM16.5 22.5h4.5v0.75h-4.5ZM17.25 23.25h3v0.75h-3Z',
@@ -147,7 +201,7 @@ const PIXEL_PATHS = {
 export type PixelIconName = keyof typeof PIXEL_PATHS
 
 /** 全部可用图标名：吸管（手绘曲线）+ 像素图标（块面） */
-export type IconName = 'eyedropper' | PixelIconName
+export type IconName = 'eyedropper' | PixelIconName | SvgIconName
 /**
  * 创建一个 SVG 图标元素。
  * 返回 `null` 表示没有该图标——调用方应回退到文字/字符，**不要**静默产出空按钮。
@@ -174,7 +228,31 @@ export function iconEl(name: IconName): SVGSVGElement | null {
     return svg
   }
 
-  const d: string | undefined = PIXEL_PATHS[name]
+  // SVG 描边图标：多条 path，弧 + 箭头这类形状走这条
+  const svgPaths = SVG_PATHS[name as SvgIconName]
+  if (svgPaths) {
+    for (const item of svgPaths) {
+      const path = document.createElementNS(SVG_NS, 'path')
+      path.setAttribute('d', item.d)
+      /*
+       * 填充规则（与 SVG 源码里的约定一致，改前先读）：
+       *   显式 `fill: 'none'` → 只描边（弧、线这类）
+       *   其余（含未给 fill） → **实心**，填 currentColor
+       *
+       * 为什么"未给 fill"要当实心：SVG 源码里桶身、箭头三角这些部件不写 fill
+       * （靠外层 <g fill> 继承）。而 iconEl 的外层是 `fill="none"`，
+       * 所以这里必须**主动补 currentColor**——否则那些部件会变成隐形。
+       * 实测踩过：填充桶接进来后桶身消失，只剩提梁像个"帽子"。
+       */
+      path.setAttribute('fill', item.fill === 'none' ? 'none' : 'currentColor')
+      if (item.sw) path.setAttribute('stroke-width', item.sw)
+      svg.append(path)
+    }
+    return svg
+  }
+
+  // 像素图标：单条实心 path。这里 name 已排除 'eyedropper' 与 SVG 图标，直接查表。
+  const d: string | undefined = PIXEL_PATHS[name as PixelIconName]
   if (!d) return null
   const path = document.createElementNS(SVG_NS, 'path')
   path.setAttribute('d', d)
