@@ -13,14 +13,14 @@ node tool/quickstart.mjs        # 一条命令跑通全链路，产出落在 .qu
 它会依次做六件事并把每步结论打印出来（我在本机实测通过）：
 
 ```
-1. 自省           apiLevel 2 · 画布上限 2048 格 / 色板 256 色 · 算子 13 类 · 参数 21 项
+1. 自省           apiLevel 2 · 画布上限 2048 格 / 色板 256 色 · 算子 13 类 · 参数 22 项
                   预置色卡：pico8 / gameboy / nes / cga / beads16(带号色) / beads24(带号色)
-                  自检：32/32 通过
+                  自检：42/42 通过
 2. 造素材         自己生成 hero.png / slime.png（96×96，带透明背景）——不依赖仓库里有没有图
 3. 批量出资产     2 张 → 每张精确 32×32、同一套 16 色、透明 484 格；_sheet.json 帧互不相交
 4. 拼豆图纸       缺口清单 14 行（号色 B01/B05/P01… 全部来自色卡）；图纸 SVG 606 KB
                   守恒校验：合计 3364 + 透明 0 = 画布 3364
-5. 页内 API       46 个方法；renderBlank 无副作用出图（18×18 / 3 条算子改动）；PNG 落盘
+5. 页内 API       47 个方法（API 共 49 个成员）；renderBlank 无副作用出图（18×18 / 3 条算子改动）；PNG 落盘
 6. 产出清单       列出所有产物路径与体积（全部落在 .quickstart/，已 gitignore）
 ```
 
@@ -32,7 +32,7 @@ node tool/quickstart.mjs        # 一条命令跑通全链路，产出落在 .qu
 
 | 层 | 入口 | 适用场景 | 需要浏览器吗 |
 |---|---|---|---|
-| **L1 页内 API** | `window.pixelArtStudio`（46 个方法） | 操作**已打开的工作台**；Playwright / CDP `evaluate` | 是 |
+| **L1 页内 API** | `window.pixelArtStudio`（49 个成员：47 个方法 + `version` / `apiLevel` 两个常量） | 操作**已打开的工作台**；Playwright / CDP `evaluate` | 是 |
 | **L2 批处理 CLI** | `node tool/artc.mjs` | 整套素材批量出图；agent 主力入口 | **否** |
 | **L3 库内直调** | `src/core/pipeline.ts` 的 `runPipeline` + `src/io/node-*.ts` 的编解码器 | 自己写脚本、CI、无头批处理（同一份 core 算法） | 否 |
 | **L4 自省/预演** | `--describe` / `ps.describe()` / `ps.validateParams()` | 冷启动时确认能力、改参前预演 | 否 / 是 |
@@ -123,7 +123,7 @@ node tool/artc.mjs --in 图片.png --out 输出 --preset beads16 --long-edge 58 
 >
 > **排版是自适应的**：默认把整幅缩放进一页（16×16 / 32×32 / 58×58 / 120×120 实测都是 1 页）；
 > 只有缩到格子印不清时才按板分页（200×200 → 16 页，每页一块板、格子放到最大）。
-> 格内号色较小（约占格宽 45%），缩放后若小于约 1.1mm 就不印号色——**这时请改用 SVG 看编号**。
+> 格内号色较小（约占格宽 45%），缩放后若小于约 0.8mm 就不印号色——**这时请改用 SVG 看编号**。
 
 缺口清单长这样（实测）：
 
@@ -166,6 +166,7 @@ node tool/artc.mjs --blank 32x32 --blank-transparent --out 输出 \
 | `ellipse` | `x0,y0,x1,y1,color?,filled?` | 椭圆（默认实心） |
 | `transform` | `kind` | `flipX`/`flipY`/`rotate90`/`rotate180`/`rotate270` |
 | `trim` | — | 裁掉四周透明边 |
+| `fit` | `width,height,mode?` | 把**不透明内容**缩放并居中放进 WxH 画布（`mode`：`contain` 默认留透明边 / `cover` 铺满裁溢出 / `stretch` 拉伸）。游戏资产定尺寸用；最近邻缩放 |
 | `eraseColor` | `color` | 便捷：把某色全挖成透明（一键去白底） |
 | `replaceAny` | `color,to` | 便捷：全图换色（拼豆"没这个色，换一个看看"） |
 | `outline` | `color?,connectivity?,offset?` | 给内容外侧描一圈（默认完整一圈含斜角；`offset` 加粗）。只往空格写，不动已有内容 |
@@ -246,7 +247,9 @@ await page.evaluate(() => window.pixelArtStudio.whenReady())   // 就绪信号�
 const info = await page.evaluate(() => window.pixelArtStudio.describe())   // 先自省
 
 // 无副作用一站式：不碰工作区状态与撤销栈 → 适合批量并行
-// （注意：本项目**没有自动草稿**功能，whenReady() 不做任何恢复，只是一个就绪信号）
+// （注意：whenReady() 只是一个就绪信号，不做任何恢复。自动草稿是**浏览器侧**行为，
+//  启动时读 IndexedDB 并弹一条「恢复 / 放弃」提示条，但**必须用户点击**才装载画布，
+//  不会静默改变工作区状态——所以脚本开头调 reset() 仍是干净的起点。）
 const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
   { width: 32, height: 32, transparent: true,
     ops: [{ op: 'ellipse', x0: 4, y0: 4, x1: 27, y1: 27, color: '#ff004d' }, { op: 'trim' }] },
@@ -302,7 +305,7 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 | 想看某次调用到底改了什么 | `--json` 汇总里有 `hash` / `changes` / `transparent`；页内 API 返回 `changes[]`，其中 `changed` 是权威判定 |
 | 报"未知参数：--xxx" | 是真的写错了，工具**不会静默忽略**。错误信息会给出最接近的正确参数名，并提示该参数吞掉了后面的哪个值 |
 | 报"命名模板解析后仍含占位符" | `--name` 里用了不支持的占位符。可用：`{name}` `{index}` `{w}` `{h}` `{scale}`（可写 `{index:02}` 补零） |
-| 素材目录里混了 `.svg` 导致整批失败 | 已修复。现在会记进 `skippedFiles` 并以 0 退出；Node 端本来就只解码 PNG，非 PNG 请走浏览器路径 |
+| 素材目录里混了 `.svg` 导致整批失败 | 已修复。现在会记进 `skippedFiles` 并以 0 退出；非 PNG 请加 `--browser-decode`（借浏览器解码）或先转 PNG |
 | `--json` 的 stdout 解析失败 | 已修复（stdout 现在是纯 JSON）。若要同时看进度，加 `--progress`（进度写 stderr） |
 | 产物里出现 `undefined.png` | 已修复（0.1.0 之后）。确认产物是当前版本：`git log --oneline -1` |
 | 算子好像"没生效" | 检查 `ops` 放的位置：**`render` 的 `ops` 在第 4 个参数，`renderBlank` 的在第 1 个**。放错位置会直接报错并说明正确写法（以前是静默丢掉算子） |
@@ -313,7 +316,7 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 
 | 文档 | 内容 |
 |---|---|
-| `docs/AGENT_API.md` | **完整接口契约**（由 `src/core/spec.ts` 生成：`npm run describe`；改元数据后要重跑，目前无断言守着） |
+| `docs/AGENT_API.md` | **完整接口契约**（由 `src/core/spec.ts` 生成：`npm run describe`；改元数据后要重跑；有 `describe-freshness` 断言守着）） |
 | `docs/TESTING-GUIDE.md` | 如何系统性测试本项目（含自动化清单与防坑要点） |
 | `docs/USAGE.md` | 用户向：界面、参数表、快捷键、FAQ |
 | `docs/DEVELOPMENT.md` | 贡献者向：铁律、验证链、结构规则、踩过的坑、路线图 |

@@ -9,17 +9,22 @@
 |---|---|
 | **产出像素素材**（精灵图 / 拼豆图纸 / 图标 / 图集） | `node tool/artc.mjs --help`，或先 `node tool/quickstart.mjs` |
 | **要可打印的拼豆图纸** | 拼豆命令加 `--pdf` → A4 分页、每块板一页（见 `docs/AGENT-QUICKSTART.md` 配方 2） |
+| **输入是 JPG / WebP / GIF / BMP / AVIF** | 加 `--browser-decode`（借无头浏览器解码成 PNG 再处理；**需本机有浏览器**）。不加会被跳过并如实报告 |
+| **图集元数据要喂给引擎** | `--sheet --engine godot\|unity\|tiled`（Unity 需 `--texture-guid`）。页内 API 是 `ps.exportSheetMeta()` |
+| **自己的拼豆色卡要印上图纸** | 导入 `编号 #rrggbb` 两列的 `.hex`：号色会进参数、出现在图纸/清单/PDF 上，还能在「色板」分组里改号/删色 |
 | **操作界面**（Playwright / CDP 驱动已打开的页面） | 看 [`docs/AGENT-QUICKSTART.md`](docs/AGENT-QUICKSTART.md) 第五节的页内 API |
 | **测试本项目**（出测试报告） | 读 [`docs/TESTING-GUIDE.md`](docs/TESTING-GUIDE.md) |
 | **改本项目代码** | 读 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)（先看「铁律」与「验证链」两节） |
 | **改取色器外观** | 读 [`docs/UI-COLOR-PICKER.md`](docs/UI-COLOR-PICKER.md) |
+| **改工具条/顶栏的图标** | 读 [`tool/icons/README.md`](tool/icons/README.md)（改形状定义 → `npm run icons:sync`；**不要手改 `icons.ts` 的 path 数据**） |
+| **关心性能 / 怀疑变慢了** | `npm run bench`（`--quick` 更快）。**只信它报的比值**——绝对耗时随机器浮动，不作验收标准，也**不在** `npm run verify` 里 |
 
 ## 环境：**不需要 `npm install`**
 
 `src/` 零第三方依赖。下面这些**开箱即用**：
 
 ```bash
-node tool/artc.mjs --selftest     # 40 项链路自检，不需要素材、不需要装依赖
+node tool/artc.mjs --selftest     # 42 项链路自检，不需要素材、不需要装依赖
 node tool/artc.mjs --describe     # 打印全部能力/算子/参数（JSON，冷启动先读这个）
 node tool/quickstart.mjs          # 全链路跑一遍并产出真实文件
 node tool/artc.mjs --in 素材目录 --out 输出 ...   # 直接批量出图
@@ -36,7 +41,10 @@ node tool/artc.mjs --in 素材目录 --out 输出 ...   # 直接批量出图
    不要把"命令成功退出"当成"参数生效了"。
 2. **`--json` 的 stdout 是纯 JSON**，可直接 parse。要同时看进度加 `--progress`（它写 stderr）。
    此外 `--json` 之外的模式会在 stdout 混进度行。
-3. **做像素素材要显式防损**：默认参数面向"照片转像素"，对已画好的像素图是有损的。
+3. **`--browser-decode` 是"另一条通道"，不是"Node 现在支持所有格式了"**。
+   `capabilities().decodeFormatsInNode` 仍然只列 `png`——按它判断"Node 能不能直接解"是对的；
+   按 `--browser-decode` 判断"要不要起浏览器"也是对的。两件事别混为一谈。
+4. **做像素素材要显式防损**：默认参数面向"照片转像素"，对已画好的像素图是有损的。
    用 `--style sprite`（最近邻 + 不做杂色清理 + 保留透明），或手写
    `--downsample nearest --no-cleanup --palette-k 64`。见
    [`docs/AGENT-QUICKSTART.md`](docs/AGENT-QUICKSTART.md) 第四节「做无损像素素材」。
@@ -63,6 +71,7 @@ src/core/            纯逻辑，零 DOM、零 node: 依赖，Node 可直接 imp
 src/io/              Node 侧平台绑定（PNG 编解码、文件读取）
 src/app/             浏览器侧：UI、画布、页内 API
 tool/artc.mjs        批处理 CLI（你的主入口）
+tool/icons/          UI 图标管线（形状定义 → src/app/ui/icons.ts 的 path 表；见其 README）
 docs/                现行文档；docs/history/ 是历史归档（不维护，数字已过期）
 ```
 

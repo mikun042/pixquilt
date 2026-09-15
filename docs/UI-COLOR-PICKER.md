@@ -60,13 +60,13 @@ npm run ref:analyze -- "C:\Users\<用户名>\Pictures\Screenshots\屏幕截图 2
 
 | 文件 | 职责 | 行数参考 |
 |---|---|---|
-| `src/app/ui/colorpicker.ts` | **取色器全部逻辑与结构**（DOM 构建、canvas 绘制、指针交互、数值同步） | ~710 行 |
-| `src/app/style.css` | 取色器外观（`/* 取色器（Blender 结构） */` 段落） | 该段约 175 行 |
+| `src/app/ui/colorpicker.ts` | **取色器全部逻辑与结构**（DOM 构建、canvas 绘制、指针交互、数值同步） | ~730 行 |
+| `src/app/style.css` | 取色器外观（`/* 取色器（Blender 结构） */` 段落起，到文件末） | 该段约 420 行 |
 | `src/app/index.ts` | 取色器的**挂载与宿主管理**、回调接线（`renderPickerPanel` / `ensurePicker` / `pickerGroups`） | 约 90 行 |
 | `src/app/store.ts` | `el()` / `clear()` 两个 DOM 小工具（**注意在 `src/app/` 下，不在 `ui/` 里**） | — |
 | `src/core/color.ts` | 颜色换算（`hexToRgb` / `rgbToHsv` / `hsvToRgb` / `colorTextOn`）——**不要在这里改 UI 相关的东西** | — |
 
-**只改 UI 时，绝大多数改动落在 `colorpicker.ts` 与 `style.css`。** 不要动 `src/core/*`（算法层，106 项单测守着）。
+**只改 UI 时，绝大多数改动落在 `colorpicker.ts` 与 `style.css`。** 不要动 `src/core/*`（算法层，128 项单测守着）。
 
 ### 1.2 参考图实测特征（已量化，可直接用）
 
@@ -378,7 +378,7 @@ npm run verify         # 全套（9 段）：typecheck + 106 单测 + build + 40
 | 是否只改取色器 | 用户明确要求的是"**调色界面**"。若要顺带改全站配色（顶栏/左栏/参数面板/状态栏）或左栏宽度，请先确认 |
 | 是否引入外部资源 | **禁止**：产物必须保持"单文件、双击即用、不联网"。不要加 CDN、外部字体、外链图片 |
 | 是否换图标方案 | 取色器与工具条的**吸管已是内联 SVG**（`src/app/ui/icons.ts`）；其余图标仍是 Unicode 字符（`∅`、`▦`、`✚`）。若继续换 SVG，注意单文件内联与体积 |
-| 是否动算法层 | **不要动** `src/core/*`。那是 106 项单测 + 40 项自检守着的算法层 |
+| 是否动算法层 | **不要动** `src/core/*`。那是 128 项单测 + 42 项自检守着的算法层 |
 | 依赖 | 不要新增 npm 依赖。现有 UI 是零框架 vanilla TS + `el()` 工具 |
 
 ## 8. 一句话交接
