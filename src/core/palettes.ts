@@ -166,3 +166,27 @@ export function serializeHexPalette(colors: string[], codes?: string[]): string 
 export function paletteCodes(colors: string[], codes?: string[]): string[] {
   return colors.map((_, i) => (codes?.[i] ?? '').trim() || `C${i + 1}`)
 }
+
+/**
+ * 按当前参数解析出"这次导出该用哪套号色"，**唯一出处**。
+ *
+ * 为什么要集中一处：导出链路上有 6 个地方要用号色（图纸 SVG、缺口清单 CSV、
+ * 用量报告、打印 PDF、`.hex`、页内 API 的三个导出方法），而它们原先各自写着
+ * `getPreset(params.presetPaletteId)?.codes`——那行只认**内建预置卡**，
+ * 于是用户导入自己的 `.hex`（带号色）后，号色在导入那一步就被丢掉了，
+ * 图纸上印的还是自动编号 C1/C2…（拼豆用户最在意的事）。
+ *
+ * 现在的规则，与 `resolvePalette()` 选色板的规则严格对应：
+ *  - `preset` 档 → 用预置卡自带的 codes
+ *  - `custom` 档 → 用参数里存的 customPaletteCodes（本次新增）
+ *  - 其余（auto）→ 无号色，交给 `paletteCodes()` 回退成 C1/C2…
+ */
+export function codesForParams(params: {
+  paletteMode: string
+  presetPaletteId: string
+  customPaletteCodes?: string[]
+}): string[] | undefined {
+  if (params.paletteMode === 'preset') return getPreset(params.presetPaletteId)?.codes
+  if (params.paletteMode === 'custom') return params.customPaletteCodes
+  return undefined
+}

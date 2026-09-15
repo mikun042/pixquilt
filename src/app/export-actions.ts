@@ -9,7 +9,7 @@
  */
 import { pixelJSONString, projectJSONString, safeFileBase } from '../core/export.ts'
 import { beadListCsv, beadReport, beadSvg } from '../core/bead.ts'
-import { getPreset, serializeHexPalette } from '../core/palettes.ts'
+import { codesForParams, serializeHexPalette } from '../core/palettes.ts'
 import { artToPngBlob } from './canvas-png.ts'
 import { beadPdfBrowser } from './pdf.ts'
 import type { ConvertParams, PixelArt } from '../core/types.ts'
@@ -60,11 +60,11 @@ export function createExportActions(deps: ExportDeps) {
     }
   }
 
-  /** 拼豆图纸 SVG + 缺口清单 CSV（号色取自当前预置色卡） */
+  /** 拼豆图纸 SVG + 缺口清单 CSV（号色按当前参数解析，见 codesForParams） */
   function exportBeadFiles(): void {
     const art = requireArt()
     if (!art) return
-    const codes = getPreset(deps.getParams().presetPaletteId)?.codes
+    const codes = codesForParams(deps.getParams())
     const base = safeFileBase(deps.getSourceName() || 'beads')
     download(new Blob([beadSvg(art, { codes, title: `${base} 拼豆图纸` })], { type: 'image/svg+xml' }), `${base}_图纸.svg`)
     download(new Blob([`\ufeff${beadListCsv(art, { codes })}`], { type: 'text/csv' }), `${base}_缺口清单.csv`)
@@ -87,7 +87,7 @@ export function createExportActions(deps: ExportDeps) {
       deps.toast('当前浏览器不支持 CompressionStream，无法生成 PDF。请用较新的 Chrome/Edge，或改用「图纸 SVG」。', 'error')
       return
     }
-    const codes = getPreset(deps.getParams().presetPaletteId)?.codes
+    const codes = codesForParams(deps.getParams())
     const base = safeFileBase(deps.getSourceName() || 'beads')
     try {
       const bytes = await beadPdfBrowser(art, { codes, title: `Bead Pattern ${art.width}x${art.height}` })
@@ -112,8 +112,7 @@ export function createExportActions(deps: ExportDeps) {
   function exportPaletteHex(): void {
     const art = deps.getArt()
     if (!art) return
-    const preset = getPreset(deps.getParams().presetPaletteId)
-    const text = serializeHexPalette(art.palette, preset?.codes)
+    const text = serializeHexPalette(art.palette, codesForParams(deps.getParams()))
     download(new Blob([text], { type: 'text/plain' }), `${safeFileBase(deps.getSourceName())}_色板.hex`)
     deps.toast(`已导出 ${art.palette.length} 色调色板`)
   }

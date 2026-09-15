@@ -9,8 +9,9 @@
  * 跟着工厂实例走即可。**上一轮拆不动，就是因为没先做这一步**（见 529f3b1 的提交说明）。
  */
 import { DEFAULT_PARAMS, coerceParams, type ConvertParams, type PixelArt } from '../../core/types.ts'
-import { PRESETS, getPreset, parseHexPalette, serializeHexPalette } from '../../core/palettes.ts'
+import { PRESETS, getPreset, paletteCodes, parseHexPalette, serializeHexPalette } from '../../core/palettes.ts'
 import { addCustomPreset, effectivePresets, removeCustomPreset, resetPreset, sameParams, updatePreset } from '../presets.ts'
+import { colorTextOn } from '../../core/color.ts'
 import { el } from '../store.ts'
 import type { MatteFieldApi } from '../matte-field.ts'
 
@@ -133,8 +134,21 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
             deps.toast('这个文件里没有解析出颜色（需要每行一个 #rrggbb，或「编号 #rrggbb」两列）', 'warn')
             return
           }
-          deps.patch({ paletteMode: 'custom', customPalette: parsed.colors })
-          deps.toast(`已载入 ${parsed.colors.length} 个颜色${parsed.truncated ? `（超出 256 的部分已截断）` : ''}${parsed.skipped ? `，跳过 ${parsed.skipped} 行无法解析的内容` : ''}`)
+          /*
+           * ⚠️ **号色必须一起存下来**（`customPaletteCodes`）。
+           * 原先这里只存 `parsed.colors`，`parsed.codes` 解析完就被丢掉——于是用户
+           * 导入自己的色卡后，图纸/清单上印的仍是自动编号 C1/C2…，
+           * 而"编号与我的色卡对不对得上"正是拼豆用户最在意的事。
+           */
+          deps.patch({
+            paletteMode: 'custom',
+            customPalette: parsed.colors,
+            customPaletteCodes: parsed.codes,
+          })
+          const codeNote = parsed.codes ? '，已带号色' : ''
+          deps.toast(
+            `已载入 ${parsed.colors.length} 个颜色${codeNote}${parsed.truncated ? `（超出 256 的部分已截断）` : ''}${parsed.skipped ? `，跳过 ${parsed.skipped} 行无法解析的内容` : ''}`,
+          )
         })
       },
     })
@@ -150,8 +164,9 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
           deps.toast('没有解析出颜色：每行一个 #rrggbb，或「编号 #rrggbb」两列', 'warn')
           return
         }
-        deps.patch({ customPalette: parsed.colors })
-        deps.toast(`自定义色板已更新为 ${parsed.colors.length} 色`)
+        // 同理：手打的两列格式也要把号色一起收下
+        deps.patch({ customPalette: parsed.colors, customPaletteCodes: parsed.codes })
+        deps.toast(`自定义色板已更新为 ${parsed.colors.length} 色${parsed.codes ? '（含号色）' : ''}`)
       },
     })
 
@@ -177,14 +192,14 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
         disabled: count === 0 ? true : false,
         onclick: () => {
           textarea.value = ''
-          deps.patch({ customPalette: [] })
+          deps.patch({ customPalette: [], customPaletteCodes: undefined })
         },
       }, ['清空']),
     )
 
-    textarea.value = count > 0 ? serializeHexPalette(p.customPalette).trim() : ''
+    textarea.value = count > 0 ? serializeHexPalette(p.customPalette, p.customPaletteCodes).trim() : ''
 
-    return el('div', { class: 'field-inner' }, [
+    const field = el('div', { class: 'field-inner' }, [
       el('span', { class: 'hint' }, [
         count > 0
           ? `当前自定义色板：${count} 色（超 256 截断，空色板会退回自动取色）`
@@ -195,7 +210,92 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
       el('span', { class: 'hint' }, ['每行一个 #rrggbb；也可用「编号 #rrggbb」两列（拼豆号色，图纸与清单会带上编号）']),
       fileInput,
     ])
+
+    // 有号色时才出这张表：没号色的话它只是把颜色重复列一遍，白占地方
+    if (count > 0 && p.customPaletteCodes?.some(Boolean)) field.append(renderCodesTable(p))
+    return field
   }
+
+  /**
+   * 号色表：逐色显示「号色 / 色块 / hex」，允许**改号**与**删色**。
+   *
+   * 为什么需要它（路线图 A3）：拼豆用户的色卡品牌各异，建内卡只是近似色。
+   * 光有"导入 .hex"还不够——真实使用的色卡常常是**有编号、需要微调**的：
+   * 某个号色写错了、或者手上没有那一色想整体删掉。没有这张表就只能回去改文件重导。
+   *
+   * 两条实现约定：
+   *  1. **改号走 `onchange`（失焦/回车才提交）**，不是每次按键都 patch——
+   *     每按键都 patch 会触发重转管线，输入 `S12` 的过程中要白跑三次转换。
+   *  2. **删色必须同步删号**：两条数组靠下标对齐，只删一边会让后面所有号色整体错位
+   *     （图纸上的编号集体串行，比没有编号更糟）。所以这里永远成对操作。
+   */
+  function renderCodesTable(p: ConvertParams): HTMLElement {
+    const colors = p.customPalette
+    // 号色一律取"解析后的最终值"（缺项显示成 C1/C2…），否则用户看到的编号与图纸不一致
+    const codes = paletteCodes(colors, p.customPaletteCodes)
+
+    const setCode = (index: number, value: string): void => {
+      const next = [...codes]
+      next[index] = value.trim()
+      deps.patch({ customPaletteCodes: next })
+    }
+    const removeColor = (index: number): void => {
+      // 颜色与号色**一起**删，保持下标对齐（见上面第 2 条约定）
+      const nextColors = colors.filter((_, i) => i !== index)
+      const nextCodes = codes.filter((_, i) => i !== index)
+      deps.patch({
+        customPalette: nextColors,
+        customPaletteCodes: nextCodes.some((c, i) => c !== `C${i + 1}`) ? nextCodes : undefined,
+      })
+      deps.toast(`已移除「${codes[index]}」${colors[index]}`)
+    }
+
+    const list = el('div', { class: 'codes-table', 'data-testid': 'codes-table' })
+    colors.forEach((hex, i) => {
+      const input = el('input', {
+        class: 'code-input',
+        type: 'text',
+        spellcheck: false,
+        value: codes[i],
+        title: '改号色后按回车（或点别处）生效；图纸与清单会用它标注',
+        'aria-label': `${hex} 的号色`,
+        onchange: (e: Event) => setCode(i, (e.target as HTMLInputElement).value),
+        /*
+         * 回车必须**显式接管**：`onchange` 只在"值变了且失焦"时触发，
+         * 单按回车**不会**触发它（Chrome/Edge 下实测确认）——而 tooltip 里写着"按回车生效"。
+         * 不补这一条就又是一句空头承诺（本项目最忌讳的那类：界面承诺了、代码没兑现）。
+         * 提交后主动 blur，让 DOM 与参数状态都落定，不留"看着改了其实没改"的中间态。
+         */
+        onkeydown: (e: KeyboardEvent) => {
+          if (e.key !== 'Enter') return
+          e.preventDefault()
+          const target = e.target as HTMLInputElement
+          setCode(i, target.value)
+          target.blur()
+        },
+      })
+      list.append(
+        el('div', { class: 'code-line', 'data-testid': `code-line-${i}` }, [
+          input,
+          el('span', { class: 'code-chip', style: { background: hex, color: colorTextOn(hex) } }),
+          el('span', { class: 'code-hex' }, [hex]),
+          el('button', {
+            class: 'btn tiny code-del',
+            type: 'button',
+            title: `从色板里移除这个颜色（${hex}）`,
+            'data-testid': `code-del-${i}`,
+            onclick: () => removeColor(i),
+          }, ['删']),
+        ]),
+      )
+    })
+
+    return el('div', { class: 'codes-wrap' }, [
+      el('span', { class: 'hint' }, ['号色表：可直接改编号，或删掉不需要的颜色（颜色与号色会一起删，避免编号错位）']),
+      list,
+    ])
+  }
+
 
   /** 预设「管理」区是否展开。工厂级持有：面板每次 render 都重建 DOM，状态不能放在渲染函数里 */
   let presetEditorOpen = false
@@ -215,7 +315,16 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
   /** 当前参数的快照（自定义色板要复制，否则存下来的预设会跟着后续编辑一起变） */
   function presetSnapshot(): ConvertParams {
     const cur = deps.getParams()
-    return { ...cur, customPalette: [...cur.customPalette] }
+    /*
+     * 两个数组都要**深拷一份**：预设会被长期存着，而参数里的数组是活的——
+     * 共享引用的话，之后用户在面板里改号色/删色会**连带改掉已保存的预设**
+     * （customPalette 原本就拷了，这轮加了 customPaletteCodes，同样要拷）。
+     */
+    return {
+      ...cur,
+      customPalette: [...cur.customPalette],
+      customPaletteCodes: cur.customPaletteCodes ? [...cur.customPaletteCodes] : undefined,
+    }
   }
 
   function saveCurrentAsPreset(): void {
@@ -241,12 +350,18 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
    * 「管理」默认收起——预设是"一次点一个"的控件，把更新/恢复出厂/删除全铺开会把面板压得很长。
    * 展开后每个预设一行：内置可「用当前参数更新」「恢复出厂」，自定义可「更新」「删除」。
    */
-  function renderPresetSection(): void {
+  /**
+   * 预设区的内容（chip 行 + 动作条 + 可选的「管理」列表）。
+   *
+   * **返回 body 元素数组、自己不往 host 上挂**——这样才能并进 `section()` 那套折叠机制里
+   * （与尺寸/色板等分组同一套标题栏、同一条 localStorage 折叠状态、同一批 data-testid）。
+   * 标题也交给分组头，这里不再自己画 `.panel-title`：两处都有标题会出现"预设 / 预设"两个标题。
+   */
+  function presetSectionBody(): HTMLElement[] {
     const presets = effectivePresets()
     // 当前参数正好等于某个预设时高亮它——不然用户看不出"我现在用的是哪套"
     const activeId = presets.find((ps) => sameParams(ps.params, deps.getParams()))?.id ?? ''
 
-    deps.host.append(el('div', { class: 'panel-title' }, ['预设']))
     const row = el('div', { class: 'row wrap preset-row' })
     for (const ps of presets) {
       row.append(
@@ -257,16 +372,16 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
         }, [ps.builtin ? ps.name : `★ ${ps.name}`]),
       )
     }
-    deps.host.append(row)
 
     const bar = el('div', { class: 'row wrap preset-bar' })
     bar.append(
       el('button', { class: 'btn tiny', title: '把当前面板里的参数存成一个新预设（可命名、可删除）', onclick: saveCurrentAsPreset }, ['＋ 存为预设']),
       el('button', { class: 'btn tiny', onclick: () => { presetEditorOpen = !presetEditorOpen; deps.rerender() } }, [presetEditorOpen ? '收起管理 ▴' : '管理预设 ▾']),
     )
-    deps.host.append(bar)
 
-    if (!presetEditorOpen) return
+    const body: HTMLElement[] = [row, bar]
+    if (!presetEditorOpen) return body
+
     const list = el('div', { class: 'preset-editor' })
     for (const ps of presets) {
       list.append(
@@ -304,7 +419,8 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
         ]),
       )
     }
-    deps.host.append(list)
+    body.push(list)
+    return body
   }
 
   /**
@@ -321,6 +437,9 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
 
   /**
    * 参数面板：预设区 → 转换参数（按用途分组，避免把 19 个参数堆成一个长列表）→ 显示开关。
+   *
+   * 全部 10 个分组统一走 `section()`（含预设）：同一套标题栏、同一条 localStorage 折叠状态。
+   * 只有**预设默认展开**（主入口 + 最高频动作），其余默认收起。
    */
   function renderParams(): void {
     // 只移除面板自己的子节点，**保留合成底色字段**（它含取色盘宿主，必须跨渲染存活，
@@ -329,8 +448,6 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
       if (child !== deps.matte.element) child.remove()
     }
     const p = deps.getParams()
-
-    renderPresetSection()
 
     /**
      * 字段工厂。
@@ -359,11 +476,13 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
      * 1. **收起用 `display:none`，绝不惰性渲染**。所有子节点始终在 DOM 里——
      *    页内 API 与 e2e 断言都靠 `querySelector` 找控件，把节点从 DOM 摘掉会让它们
      *    全部失效（"面板里找不到某控件"），而这类失败信息很难指向"分组被折叠了"。
-     * 2. **默认展开的分组承载着"真鼠标命中"断言**（预设 / 尺寸 / 合成底色 / 显示）。
-     *    这些断言要算元素屏幕坐标再 `elementFromPoint`，`display:none` 时 rect 全为 0，
-     *    必然失败。所以它们必须默认展开。
-     * 3. 折叠状态存 localStorage，但**读回来的值不能覆盖约束 2**：那四组若被用户折叠过，
-         */
+     * 2. **默认展开的分组承载着"真鼠标命中"断言**（尺寸 / 合成底色 / 显示；预设算半个——
+     *    它的 chip 断言走 `querySelector` + 程序化 `.click()`，折叠也不受影响，但它是面板
+     *    主入口，仍然默认展开）。那些"真鼠标命中"断言要算元素屏幕坐标再 `elementFromPoint`，
+     *    `display:none` 时 rect 全为 0，必然失败。所以它们必须默认展开。
+     * 3. 折叠状态存 localStorage，但**读回来的值不能覆盖约束 2**：那几组若被用户折叠过，
+     *    下一次打开也该是收起的（听用户的），约束 2 只约束"没有存过值时"的初值。
+     */
     const section = (id: string, title: string, body: HTMLElement[], defaultOpen: boolean) => {
       const open = isSectionOpen(id, defaultOpen)
       const head = el('button', {
@@ -384,6 +503,15 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
       if (!open) box.style.display = 'none'
       return el('div', { class: `panel-section${open ? '' : ' is-collapsed'}`, 'data-testid': `section-${id}` }, [head, box])
     }
+
+    /*
+     * 预设区也并进同一套折叠机制（与尺寸/色板等分组长得一样、共用 localStorage 折叠状态）。
+     *
+     * **默认展开**：它是这条面板的主入口（三种用途都靠它一键切换），
+     * 而且"点 chip 套用"是最高频动作——默认收起会让第一次用的人找不到怎么切用途。
+     * 其余转换参数分组保持默认收起（次要、按需展开）。
+     */
+    deps.host.append(section('preset', '预设', presetSectionBody(), true))
 
     // 尺寸：**一套控件管两种方式**。「精确尺寸」时写入 exactWidth/Height，「长边」时显式删除（见 clearExactSize）
     const exactW = p.exactWidth ?? 0

@@ -16,7 +16,7 @@ import { deflateSync, inflateSync } from 'node:zlib'
 import { runPipeline, computeCropRect, computeGridSize, medianCut, quantize } from '../core/pipeline.ts'
 import { applyOps, blankArt, brushCells, lineCells, rasterizeEllipse, rasterizeRect, anchorOffset, type EditOp } from '../core/ops.ts'
 import { DEFAULT_PARAMS, STYLE_PRESETS, coerceParams, sanitizeParams, sanitizePrefs } from '../core/types.ts'
-import { getPreset, parseHexPalette, serializeHexPalette, paletteCodes } from '../core/palettes.ts'
+import { codesForParams, getPreset, parseHexPalette, serializeHexPalette, paletteCodes } from '../core/palettes.ts'
 import { artHash, decodePixBin, encodePixBin, layoutSheet, parseProjectFile, pixelJSONString, projectJSONString } from '../core/export.ts'
 import { base64ToBytes, bytesToBase64 } from '../core/binary.ts'
 import { countTransparent, countUsage, hasRealAlpha } from '../core/stats.ts'
@@ -126,6 +126,35 @@ describe('参数 Schema', () => {
     const r = sanitizeParams({ longEdge: 'huge', customPalette: ['#zzzzzz', '#00ff00', 5] })
     assert.equal(r.params.longEdge, DEFAULT_PARAMS.longEdge)
     assert.deepEqual(r.params.customPalette, ['#00ff00'])
+  })
+
+  /*
+   * 号色（customPaletteCodes）：拼豆用户靠它让自己的色卡编号印在图纸上。
+   * 三条都是"错了会静默出问题"的地方，所以逐条钉住。
+   */
+  it('号色与颜色**按下标对齐**：中间的非字符串项要留空位，不能丢弃', () => {
+    // 丢掉中间项会让后面所有号色整体前移一格——图纸上编号集体串行，比没有编号更糟
+    const r = sanitizeParams({ customPalette: ['#ff0000', '#00ff00', '#0000ff'], customPaletteCodes: ['S1', 5, 'S3'] })
+    assert.deepEqual(r.params.customPaletteCodes, ['S1', '', 'S3'])
+  })
+
+  it('号色全是空时归一成 undefined（不在项目文件里留一堆空串）', () => {
+    const r = sanitizeParams({ customPaletteCodes: ['', '  ', ''] })
+    assert.equal(r.params.customPaletteCodes, undefined)
+    // 尾部空串也裁掉，但中间的空位要保留（同上，位置就是信息）
+    const r2 = sanitizeParams({ customPaletteCodes: ['S1', '', '', ''] })
+    assert.deepEqual(r2.params.customPaletteCodes, ['S1'])
+  })
+
+  it('号色长度与颜色无关地各自夹紧在 256 以内', () => {
+    const many = Array.from({ length: 300 }, (_, i) => `S${i}`)
+    const r = sanitizeParams({ customPaletteCodes: many })
+    assert.equal(r.params.customPaletteCodes?.length, 256)
+  })
+
+  it('号色不影响"没给就别多出字段"：不传时是 undefined，项目文件保持简洁', () => {
+    const r = sanitizeParams({ longEdge: 32 })
+    assert.equal(r.params.customPaletteCodes, undefined)
   })
 
   it('偏好旧字段 tool=eraser 迁移为「画笔 + 透明色」', () => {
@@ -908,6 +937,27 @@ describe('色板与 .hex', () => {
     const parsed = parseHexPalette('S12 #ff0000\nH05 #00ff00')
     assert.deepEqual(parsed.colors, ['#ff0000', '#00ff00'])
     assert.deepEqual(parsed.codes, ['S12', 'H05'])
+  })
+
+  /*
+   * codesForParams 是"这次导出该用哪套号色"的**唯一出处**
+   * （图纸 SVG / 缺口清单 CSV / 用量报告 / 打印 PDF / .hex / 页内 API 三处导出都走它）。
+   * 它存在的理由就是修掉"自定义色卡的号色被丢掉"——所以自定义那一档要重点钉住。
+   */
+  it('号色解析：按 paletteMode 分流，自定义色板用自己的号色（原先会被丢掉）', () => {
+    // 预置档 → 用预置卡自带的号色
+    assert.equal(codesForParams({ paletteMode: 'preset', presetPaletteId: 'beads16' })?.[0], 'B01')
+    // 自定义档 → 用参数里存的号色（这条以前恒为 undefined，图纸上只印 C1/C2…）
+    assert.deepEqual(
+      codesForParams({ paletteMode: 'custom', presetPaletteId: 'pico8', customPaletteCodes: ['S12', 'S31'] }),
+      ['S12', 'S31'],
+    )
+    // 自动取色 → 没有号色，交给 paletteCodes() 回退成 C1/C2…
+    assert.equal(codesForParams({ paletteMode: 'auto', presetPaletteId: 'pico8' }), undefined)
+  })
+
+  it('号色解析：自定义档但没给号色时返回 undefined（不是空数组，下游才好回退）', () => {
+    assert.equal(codesForParams({ paletteMode: 'custom', presetPaletteId: 'pico8' }), undefined)
   })
 
   it('序列化可往返（带号色时输出两列）', () => {

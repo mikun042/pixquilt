@@ -391,6 +391,23 @@ select, input[type="number"], input[type="text"], .num {
 .hint { color: var(--dim); font-size: 11px; line-height: 1.5; }
 .hint.lines { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
 
+/*
+ * 自定义色板的号色表（拼豆色卡向导）。
+ * 每行 = [号色输入][色块][hex][删]；号色输入框固定宽度，整张表才对得齐成列。
+ * 列表设 max-height 可滚：色卡最多 256 行，不限高会把参数面板撑得极长。
+ */
+.codes-wrap { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.codes-table {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 190px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 4px;
+}
+.code-line { display: flex; align-items: center; gap: 6px; }
+.code-input { width: 52px; flex: none; padding: 2px 4px; font-size: 11px; }
+.code-chip { width: 16px; height: 16px; flex: none; border-radius: var(--radius); border: 1px solid var(--line-strong); }
+.code-hex { flex: 1; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.code-del { flex: none; }
+
 /* ------------------------------------------------------------------ 工具栏 */
 
 .tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 8px; }
@@ -758,6 +775,30 @@ select, input[type="number"], input[type="text"], .num {
 }
 .toast.warn { border-color: var(--warn); }
 .toast.error { border-color: var(--error); }
+
+/*
+ * 草稿恢复提示条：顶部居中的一条横条（不是 toast）。
+ * 为什么不用 toast：toast 会自动消失、且在右下角，而这是一个**必须被决定**的问题——
+ * 用户不选就该一直留着。放顶部是因为它属于"页面级状态"，且不遮挡右下角的 toast 区。
+ */
+.draft-bar {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 110;                 /* 高于 toast(90)、低于模态(120) */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  background: var(--bg-3);
+  border: 1px solid var(--accent);
+  box-shadow: 0 4px 16px #0008;
+  font-size: 12px;
+  max-width: min(92vw, 620px);
+}
+.draft-bar .draft-text { color: var(--text); }
 
 .modal-mask {
   position: fixed;

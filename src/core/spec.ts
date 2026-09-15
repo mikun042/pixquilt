@@ -193,6 +193,15 @@ export const PARAM_SPECS: ParamSpec[] = [
   { key: 'paletteK', type: 'number', desc: '自动取色的目标颜色数', min: PALETTE_K_MIN, max: PALETTE_K_MAX, default: 24, when: 'paletteMode=auto' },
   { key: 'presetPaletteId', type: 'string', desc: `预置色卡 id（${PRESETS.map((p) => p.id).join(' / ')}）`, default: 'pico8', when: 'paletteMode=preset' },
   { key: 'customPalette', type: 'string', desc: '自定义色板（#rrggbb 数组，≤256）', default: [], when: 'paletteMode=custom' },
+  {
+    key: 'customPaletteCodes',
+    type: 'string',
+    desc:
+      '自定义色板的号色数组，与 customPalette 按下标一一对应（如 ["S12","S31"]）；' +
+      '缺项留空串，下游会自动编号 C1/C2…。**拼豆用户靠它让自己的色卡编号印在图纸上**',
+    default: [],
+    when: 'paletteMode=custom（与 customPalette 等长）',
+  },
   { key: 'dither', type: 'enum', desc: '抖动方式（开启时自动关闭杂色清理）', enum: ['none', 'floyd', 'bayer'], default: 'none' },
   { key: 'ditherStrength', type: 'number', desc: '抖动强度', min: 0, max: 100, default: 100, when: 'dither!=none' },
   {

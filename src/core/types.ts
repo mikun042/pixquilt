@@ -44,6 +44,19 @@ export interface ConvertParams {
   presetPaletteId: string
   /** 自定义色板（'#rrggbb' 数组），paletteMode === 'custom' 时生效；≤256 */
   customPalette: string[]
+  /**
+   * 自定义色板的**号色/编号**，与 `customPalette` 按下标一一对应（可缺省）。
+   *
+   * 为什么它必须进参数、而不能只当"导入时的临时值"：拼豆用户最在意的就是
+   * **图纸上的编号与自己的色卡对不对得上**。`.hex` 一直支持 `编号 #rrggbb` 两列，
+   * 但导入后号色**被直接丢掉**（只留 colors），于是图纸/清单/PDF 只能用自动编号 C1/C2…
+   * ——用户的 S12/R01 根本印不出来。把它放进参数，四个入口（页内 API / CLI / Node 直调 /
+   * 导出）就都能拿到，不必各自再想办法传。
+   *
+   * 约定：长度与 `customPalette` 对齐；缺项用空串（下游 `paletteCodes()` 会回退成 C1/C2…）。
+   * 全空数组会被归一成 undefined（省得项目文件里留一堆空串）。
+   */
+  customPaletteCodes?: string[]
   dither: DitherMode
   /** 抖动强度 0–100 */
   ditherStrength: number
@@ -210,6 +223,27 @@ function paletteField(v: unknown, max = 256): string[] {
   return out
 }
 
+/**
+ * 号色数组的校验：**只做"是不是短字符串"这一层**，不校验语义（号色格式各品牌不同，
+ * 有的是 `S12`、有的是 `B01`、有的带横线，收紧了反而挡住用户的真实色卡）。
+ *
+ * 三条关键处理：
+ *  1. 非字符串项一律当空串（而不是丢弃）——**保下标对齐**：号色靠下标与颜色对应，
+ *     中间丢一项会让后面全部错位（图纸上的编号整体串行，比没有编号更糟）。
+ *  2. 截断到 `max`，与 `customPalette` 同一个上限。
+ *  3. **全是空串时返回 undefined**：让"没有号色"和"号色都是空"是同一种形态，
+ *     项目文件里就不会留一堆空串（导出侧的 JSON 也不至于变长）。
+ */
+function paletteCodesField(v: unknown, max = 256): string[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  const out: string[] = []
+  for (const c of v.slice(0, max)) {
+    out.push(typeof c === 'string' ? c.trim() : '')
+  }
+  while (out.length && out[out.length - 1] === '') out.pop()
+  return out.some((c) => c !== '') ? out : undefined
+}
+
 export interface FixedField {
   key: string
   from: unknown
@@ -293,6 +327,7 @@ export function sanitizeParams(raw: unknown): SanitizeReport {
       return d.presetPaletteId
     })(),
     customPalette: paletteField(p.customPalette, 256),
+    customPaletteCodes: paletteCodesField(p.customPaletteCodes, 256),
     dither: enumP('dither', ['none', 'floyd', 'bayer'] as const, d.dither),
     ditherStrength: numP('ditherStrength', 0, 100, d.ditherStrength),
     cleanup: boolP('cleanup', d.cleanup),
