@@ -276,8 +276,20 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
      * `forId` 可选：给了就把标签关联到那个控件——`<label for>` 对 `<button>` 同样有效，
      * 于是"点标签也能触发"（用户点"合成底色"那四个字而没点色块是很常见的）。
      */
-    const field = (label: string, control: HTMLElement, hint?: string, forId?: string) =>
-      el('div', { class: 'field' }, [
+    /**
+     * 字段工厂。
+     *
+     * `forId` 可选：给了就把标签关联到那个控件——`<label for>` 对 `<button>` 同样有效，
+     * 于是"点标签也能触发"（用户点"合成底色"那四个字而没点色块是很常见的）。
+     *
+     * `testId` 可选：写到 `.field` 上作为 `data-testid`。**为什么需要它**：
+     * 面板断言原先靠结构耦合定位控件（"第一个 select 就是尺寸方式"、"`.field > label`
+     * 文本含尺寸方式"、"勾选框的下一个兄弟文本含网格线"）。这些写法一旦面板重排
+     * （例如本轮要做的折叠分组）就会静默指错元素，而失败信息往往指向别处。
+     * 用稳定的 data-testid 定位后，面板结构可以自由调整。
+     */
+    const field = (label: string, control: HTMLElement, hint?: string, forId?: string, testId?: string) =>
+      el('div', testId ? { class: 'field', 'data-testid': testId } : { class: 'field' }, [
         el('label', forId ? { for: forId } : {}, [label]),
         control,
         hint ? el('span', { class: 'hint' }, [hint]) : null,
@@ -306,6 +318,8 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
           },
         ),
         exact ? '帧尺寸恒等，引擎侧无需二次对齐' : '短边按原图宽高比取整',
+        undefined,
+        'size-mode',
       ),
     )
     if (exact) {
@@ -399,21 +413,27 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
       deps.matte.collapseForAlpha()
     }
     // 锁定色板对三种用途都成立（拼豆/资产批次），因此常显，不再按"模式"藏起来
-    deps.host.append(field('锁定色板', checkbox(!!p.lockPalette, (v) => deps.patch({ lockPalette: v })), '只用给定色板，绝不新增颜色（拼豆/资产批次必备）'))
+    deps.host.append(
+      field('锁定色板', checkbox(!!p.lockPalette, (v) => deps.patch({ lockPalette: v })), '只用给定色板，绝不新增颜色（拼豆/资产批次必备）', undefined, 'lock-palette'),
+    )
 
     deps.host.append(el('div', { class: 'panel-title' }, ['显示']))
     deps.host.append(
-      el('div', { class: 'field' }, [
+      el('div', { class: 'field', 'data-testid': 'display-toggles' }, [
         /*
          * 这两个开关必须**让画面跟上**（`setFlag` 的实现里含一次 `canvasApi.redraw()`）：
          * `store` 只通知关心该 key 的订阅者，而画布是在 `draw()` 里读它们的，
          * 少了这一跳就会"勾了没反应"，直到下一次无关重绘才突然生效。见 ARCHITECTURE §8.10 ④。
+         *
+         * ⚠️ 勾选框上挂 `data-testid` 是必需的：断言原先靠"勾选框的下一个兄弟元素文本含网格线"
+         * 定位（`nextElementSibling`），那是绑死在 DOM 顺序上的写法——把这两个勾选框
+         * 包进 `<label>`（更规范的无障碍写法）或调换顺序，断言就会找不到控件。
          */
-        checkbox(deps.getFlag('showGrid'), (v) => deps.setFlag('showGrid', v)),
+        checkbox(deps.getFlag('showGrid'), (v) => deps.setFlag('showGrid', v), 'toggle-grid'),
         el('span', {}, [' 网格线']),
         el('br'),
         // showMag 同时管"笔刷足迹预览"与放大镜两处显示
-        checkbox(deps.getFlag('showMag'), (v) => deps.setFlag('showMag', v)),
+        checkbox(deps.getFlag('showMag'), (v) => deps.setFlag('showMag', v), 'toggle-magnifier'),
         el('span', {}, [' 笔刷预览 / 放大镜']),
       ]),
     )
@@ -444,8 +464,15 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
     return sel
   }
 
-  function checkbox(checked: boolean, onChange: (v: boolean) => void): HTMLInputElement {
-    const input = el('input', { type: 'checkbox', onchange: (e: Event) => onChange((e.target as HTMLInputElement).checked) })
+  /**
+   * 勾选框。`testId` 可选——挂 `data-testid` 供断言稳定定位（见上面 display-toggles 的说明）。
+   */
+  function checkbox(checked: boolean, onChange: (v: boolean) => void, testId?: string): HTMLInputElement {
+    const input = el('input', {
+      type: 'checkbox',
+      onchange: (e: Event) => onChange((e.target as HTMLInputElement).checked),
+      ...(testId ? { 'data-testid': testId } : {}),
+    })
     if (checked) input.setAttribute('checked', '')
     input.checked = checked
     return input

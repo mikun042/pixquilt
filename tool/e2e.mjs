@@ -158,8 +158,9 @@ async function main() {
       hasDeadViewToolbar: !!document.querySelector('.view-toolbar, #view-fit, #view-100, #view-out, #view-in'),
       presetChips: document.querySelectorAll('#panel-params .preset-chip').length,
       hasSavePreset: [...document.querySelectorAll('#panel-params button')].some((b) => b.textContent.includes('存为预设')),
-      panelHasSizeMode: [...document.querySelectorAll('#panel-params .field > label')].some((e) => e.textContent.includes('尺寸方式')),
-      panelHasLock: [...document.querySelectorAll('#panel-params .field > label')].some((e) => e.textContent.includes('锁定色板')),
+      // 用 data-testid 定位：原先靠 .field > label 的文本匹配，面板一重排就会静默指错元素
+      panelHasSizeMode: !!document.querySelector('#panel-params [data-testid="size-mode"]'),
+      panelHasLock: !!document.querySelector('#panel-params [data-testid="lock-palette"]'),
       importInLeft: !!document.querySelector('.header-left #btn-import'),
       importInRight: !!document.querySelector('.header-right #btn-import'),
       exportInRight: !!document.querySelector('.header-right #btn-export'),
@@ -646,8 +647,11 @@ async function main() {
       ps.setParams({ exactWidth: 32, exactHeight: 32 })
       await new Promise((r) => setTimeout(r, 60))
       const before = ps.getParams()
-      const sel = document.querySelector('#panel-params select')   // 预设区没有 select，第一个就是「尺寸方式」
-      const label = (document.querySelector('#panel-params .field > label') || {}).textContent || ''
+      // 用 data-testid 定位，不要用"面板里第一个 select"——那个假设一旦在它前面插入任何 select 就失效
+      const field = document.querySelector('#panel-params [data-testid="size-mode"]')
+      const sel = field ? field.querySelector('select') : null
+      if (!sel) return JSON.stringify({ error: '找不到「尺寸方式」下拉（data-testid=size-mode）' })
+      const label = (field.querySelector('label') || {}).textContent || ''
       sel.value = 'long'
       sel.dispatchEvent(new Event('change'))
       await new Promise((r) => setTimeout(r, 80))
@@ -660,7 +664,9 @@ async function main() {
     })()`)
     check('尺寸方式：切回「长边」会清掉精确尺寸（否则长边控件静默失效）', () => {
       const s = JSON.parse(sizeMode)
-      assert(s.label === '尺寸方式', `面板第一个控件应是「尺寸方式」，实际「${s.label}」`)
+      assert(!s.error, s.error)
+      // 标签文本仍要核对，但不再要求它"是面板第一个控件"——那条排序假设已由 data-testid 取代
+      assert(s.label === '尺寸方式', `该字段的标签应为「尺寸方式」，实际「${s.label}」`)
       assert(s.beforeExact === 32, `前置条件不成立：exactWidth 应为 32，实际 ${s.beforeExact}`)
       assert(s.afterExact === null, `切回长边后 exactWidth 必须被删除，实际 ${s.afterExact}`)
       return `exact 32 → 已清除；长边 ${s.afterLong}`
@@ -868,10 +874,15 @@ async function main() {
     if (!(await cdp.eval(`!!document.querySelector('#panel-params .cp')`))) {
       const sw = JSON.parse(await cdp.eval(`(() => {
         const el = document.querySelector('[data-testid="matte-swatch"]')
+        // 必须判空：合成底色字段在「透明处理 = alpha」时会被整个移除（collapseForAlpha），
+        // 直接 el.scrollIntoView() 会在 cdp.eval 里抛异常——表现是"测试脚本崩了"，
+        // 而不是一条说明问题的断言失败，排查时容易被误导。
+        if (!el) return JSON.stringify({ error: '找不到合成底色色块（可能切到了「真 alpha」模式、该字段已被移除）' })
         el.scrollIntoView({ block: 'center' })
         const r = el.getBoundingClientRect()
         return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
       })()`))
+      if (sw.error) throw new Error(sw.error)
       await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: sw.x, y: sw.y, button: 'left', clickCount: 1 })
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: sw.x, y: sw.y, button: 'left', clickCount: 1 })
       await sleep(250)
@@ -962,6 +973,8 @@ async function main() {
         return s
       })()`))
     const gridBox = JSON.parse(await cdp.eval(`(() => {
+      // 用 data-testid 定位：原先靠"勾选框的下一个兄弟元素文本含网格线"，
+      // 一旦把勾选框包进 <label>（更规范的无障碍写法）或调整顺序，就会找不到控件
       const i = [...document.querySelectorAll('#panel-params input[type=checkbox]')].find((x) => (x.nextElementSibling?.textContent || '').includes('网格线'))
       if (!i) return JSON.stringify({ error: '找不到「网格线」勾选框' })
       i.scrollIntoView({ block: 'center' })
