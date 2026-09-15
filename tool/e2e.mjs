@@ -1102,11 +1102,13 @@ async function main() {
         for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 0) s += d[i]
         return s
       })()`))
+    // 先展开「显示」组：分组默认收起时勾选框是 display:none，rect 全 0、命中测试必失败
+    await ensureSectionOpen('display')
     const gridBox = JSON.parse(await cdp.eval(`(() => {
       // 用 data-testid 定位：原先靠"勾选框的下一个兄弟元素文本含网格线"，
       // 一旦把勾选框包进 <label>（更规范的无障碍写法）或调整顺序，就会找不到控件
-      const i = [...document.querySelectorAll('#panel-params input[type=checkbox]')].find((x) => (x.nextElementSibling?.textContent || '').includes('网格线'))
-      if (!i) return JSON.stringify({ error: '找不到「网格线」勾选框' })
+      const i = document.querySelector('#panel-params [data-testid="toggle-grid"]')
+      if (!i) return JSON.stringify({ error: '找不到「网格线」勾选框（data-testid=toggle-grid）' })
       i.scrollIntoView({ block: 'center' })
       const r = i.getBoundingClientRect()
       const x = r.left + r.width / 2, y = r.top + r.height / 2

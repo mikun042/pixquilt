@@ -110,6 +110,24 @@ async function main() {
       })()`),
     )
 
+  /*
+   * ① 初始状态必须是**全部收起**。
+   *
+   * 这条守的是"右栏不要有的展开有的收起"这个明确要求（用户提出）。
+   * 加它的理由：折叠功能本身早就有断言（下面的逐组展开/收起），但"初始状态"没有——
+   * 于是把某组默认值改回 true 不会让任何断言变红。
+   */
+  const initial = []
+  for (const id of IDS) initial.push({ id, ...(await probe(id)) })
+  const expandedAtStart = initial.filter((s) => s.expanded !== 'false' || s.bodyH !== 0)
+  console.log('初始状态检查：')
+  for (const s of initial) console.log(`  ${s.expanded === 'false' && s.bodyH === 0 ? '✔' : '✘'} ${s.id.padEnd(11)} aria-expanded=${s.expanded} 主体高度=${s.bodyH}`)
+  if (expandedAtStart.length) {
+    console.log(`\n✘ 以下分组默认是展开的（要求全部默认收起）：${expandedAtStart.map((s) => s.id).join(' ')}`)
+  } else {
+    console.log('✔ 全部分组默认收起\n')
+  }
+
   const rows = []
   for (const id of IDS) {
     // 先确保展开（幂等）
@@ -173,7 +191,10 @@ async function main() {
   const bad = rows.filter((r) => !r.ok)
   console.log(bad.length ? `\n✘ ${bad.length} 个分组异常：${bad.map((b) => b.id).join(' ')}` : `\n✔ ${rows.length} 个分组：展开可见 / 收起隐藏 / 再展开恢复 / 三角跟随，全部正常`)
   await close()
-  process.exit(bad.length ? 1 : 0)
+  // "初始状态全部收起"也计入失败：否则这条只打印、脚本仍以 0 退出，CI 里看不出问题
+  const failed = bad.length + expandedAtStart.length
+  if (expandedAtStart.length) console.log(`（另有 ${expandedAtStart.length} 个分组未按"默认收起"）`)
+  process.exit(failed ? 1 : 0)
 }
 
 main().catch((err) => {

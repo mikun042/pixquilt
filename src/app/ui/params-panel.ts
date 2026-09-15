@@ -44,22 +44,6 @@ export interface ParamsPanelApi {
 
 /* ------------------------------------------------------------------ 分组折叠状态 */
 
-/**
- * 首屏默认展开、且**用户折叠后不予记忆**的分组（每次渲染都回到展开）。
- *
- * ⚠️ 这里**不是**"用户不能折叠"——早期版本把它当成了后者，结果是用户点「透明处理」
- * 的标题栏毫无反应（`toggleSection` 直接 return）。那是把测试的便利凌驾在功能之上：
- * 断言需要某个控件可见，正确做法是**让断言自己先展开分组**，而不是把折叠能力锁死。
- * 现在这里的语义只剩"不记忆折叠态"，用户当场仍可自由折叠/展开。
- *
- * 保留"不记忆"的理由：这几组承载首屏最常用的操作（预设、尺寸、合成底色、画布显示），
- * 而且含"真鼠标命中"断言（要 `elementFromPoint`）。若记住了折叠，用户（或上一次测试）
- * 折过它们之后，下一次打开就是收起状态——对用户是"我的常用项怎么不见了"，
- * 对断言是"元素 rect 全 0、命中失败"，而失败信息只会说"被盖住了/点不到"，
- * 完全指不到"分组是收起的"。两边的代价都比"不记忆折叠态"大。
- */
-const COLLAPSE_STICKY_OPEN = new Set(['preset', 'size', 'matte', 'display'])
-
 const COLLAPSE_KEY = 'pixelstudio.params.collapsed'
 
 /**
@@ -92,11 +76,10 @@ function writeCollapsed(map: Record<string, boolean>): void {
 /**
  * 本次会话内用户**当场改过**的折叠状态：`{ 分组 id: 是否展开 }`。
  *
- * 为什么要与持久化分开：不可记忆的分组（`COLLAPSE_STICKY_OPEN`）不能把用户的当场选择
- * 写进 localStorage（否则下次打开"常用项默认收起"），但又必须让**这次点击立刻生效**。
- * 早先把"不落盘"实现成"从 map 里 delete"，结果 isSectionOpen 读不到值、回落到默认展开，
- * 表现就是**点了标题栏毫无反应**（用户报的 bug 的第二层原因）。所以分成两份状态：
- * `sessionOpen` 管"当场"，localStorage 管"跨会话"。
+ * 为什么要与持久化分开：必须让**这次点击立刻生效**，而持久化值可能来自上一次会话。
+ * 早先把状态只存在 localStorage、并用"从 map 里 delete"表示"不记忆"，
+ * 结果 isSectionOpen 读不到值、回落到默认值，表现就是**点了标题栏毫无反应**
+ * （用户报过的 bug）。所以分成两份状态：`sessionOpen` 管"当场"，localStorage 管"跨会话"。
  */
 const sessionOpen = new Map<string, boolean>()
 
@@ -104,22 +87,19 @@ const sessionOpen = new Map<string, boolean>()
  * 某分组当前是否展开。
  *
  * 取值优先级：
- *  1. 本次会话当场改过 → 听用户的（不管它是否可记忆）
- *  2. 不可记忆的分组（COLLAPSE_STICKY_OPEN）→ 用默认值
- *  3. 其余 → 用持久化值，没有则用默认值
+ *  1. 本次会话当场改过 → 听用户的（保证点击立即生效）
+ *  2. 其余 → 用持久化值；没有则用代码里的默认值（现在 8 组统一默认收起）
  */
 function isSectionOpen(id: string, defaultOpen: boolean): boolean {
   if (sessionOpen.has(id)) return sessionOpen.get(id) === true
-  if (COLLAPSE_STICKY_OPEN.has(id)) return defaultOpen
   const saved = readCollapsed()[id]
   return typeof saved === 'boolean' ? saved : defaultOpen
 }
 
 function toggleSection(id: string, open: boolean): void {
-  // 当场状态永远记在内存里：保证点击立即生效（包括不可持久化的分组）
+  // 当场状态记在内存里：保证点击立即生效
   sessionOpen.set(id, open)
-  // 可持久化的分组同时落盘；不可持久化的不动 localStorage
-  if (COLLAPSE_STICKY_OPEN.has(id)) return
+  // 同时落盘，刷新后保持用户的选择
   const map = readCollapsed()
   map[id] = open
   writeCollapsed(map)
@@ -383,8 +363,7 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
      *    这些断言要算元素屏幕坐标再 `elementFromPoint`，`display:none` 时 rect 全为 0，
      *    必然失败。所以它们必须默认展开。
      * 3. 折叠状态存 localStorage，但**读回来的值不能覆盖约束 2**：那四组若被用户折叠过，
-     *    刷新后仍是折叠态、断言就会红。折中做法见 `COLLAPSE_STICKY_OPEN`：当场可折叠，只是不跨会话记忆。
-     */
+         */
     const section = (id: string, title: string, body: HTMLElement[], defaultOpen: boolean) => {
       const open = isSectionOpen(id, defaultOpen)
       const head = el('button', {
@@ -459,7 +438,7 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
       }
       sizeFields.push(quick)
     }
-    deps.host.append(section('size', '尺寸', sizeFields, true))
+    deps.host.append(section('size', '尺寸', sizeFields, false))
 
     // 裁剪比例：core 与 CLI（--crop）一直支持，但参数面板此前没有入口——
     // 用户只能靠 CLI/API 设置（测试报告 B6）。这里补上四档选择。
@@ -480,7 +459,7 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
         '按所选比例从中心裁剪原图（拼豆常用 1:1，游戏资产常用 1:1）',
       ),
     )
-    deps.host.append(section('crop', '裁剪', cropFields, true))
+    deps.host.append(section('crop', '裁剪', cropFields, false))
 
     const paletteFields: HTMLElement[] = []
     paletteFields.push(
@@ -501,13 +480,13 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
     if (p.paletteMode === 'custom') {
       paletteFields.push(renderCustomPaletteField(p))
     }
-    deps.host.append(section('palette', '色板', paletteFields, true))
+    deps.host.append(section('palette', '色板', paletteFields, false))
 
     // 降采样 / 抖动 / 杂色清理 / 图像调整：各自成组，便于按需展开
     deps.host.append(
       section('downsample', '降采样', [
         field('降采样', selectInput(p.downsample, [['average', '区域平均（照片）'], ['nearest', '最近邻（硬边）']], (v) => deps.patch({ downsample: v as ConvertParams['downsample'] }))),
-      ], true),
+      ], false),
     )
     deps.host.append(
       section('dither', '抖动', [
@@ -558,8 +537,7 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
     transparentFields.push(
       field('锁定色板', checkbox(!!p.lockPalette, (v) => deps.patch({ lockPalette: v })), '只用给定色板，绝不新增颜色（拼豆/资产批次必备）', undefined, 'lock-palette'),
     )
-    // 「透明处理」组默认展开：它内含合成底色，而合成底色有真鼠标命中测试（见 COLLAPSE_STICKY_OPEN）
-    deps.host.append(section('matte', '透明处理', transparentFields, true))
+    deps.host.append(section('matte', '透明处理', transparentFields, false))
     // 挂进文档之后再让合成底色字段同步外观（其中的 scrollIntoView 需要它在文档里，见上）
     if (p.transparent !== 'alpha') deps.matte.render()
 
@@ -583,7 +561,7 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
         el('span', {}, [' 笔刷预览 / 放大镜']),
       ]),
     )
-    deps.host.append(section('display', '显示', displayFields, true))
+    deps.host.append(section('display', '显示', displayFields, false))
   }
 
   function numberInput(value: number, min: number, max: number, onCommit: (v: number) => void): HTMLInputElement {
