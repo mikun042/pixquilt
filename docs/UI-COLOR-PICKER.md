@@ -299,7 +299,7 @@ npm run typecheck      # 必须 0 错（tsc noUnusedLocals 开着，未用变量
 npm run build          # 产出单文件 HTML，并核对 dist 与根目录副本哈希一致
 npm run e2e:picker     # 取色器专项：17 项（几何/方位/标签/滑条填充/数值框隔离/防选词/零尺寸免疫）
 npm run e2e:slider     # 数值滑条专项：12 项（六行都能拖、拖动基准是轨道、零尺寸免疫）
-npm run verify         # 全套（9 段）：typecheck + 106 单测 + build + 40 自检 + 35 端到端 + 17 取色器 + 12 滑条 + 25 回归 + 10 PDF
+npm run verify         # 全套（9 段）：typecheck + 106 单测 + build + 40 自检 + 36 端到端 + 17 取色器 + 12 滑条 + 25 回归 + 10 PDF
 ```
 
 **只跑 `e2e:picker` 是不够的**：`npm run verify` 里还有"UI 装配/顶栏分组/导入导出"等断言，

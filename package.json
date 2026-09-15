@@ -25,7 +25,8 @@
     "verify": "npm run typecheck && npm run test && npm run build && node tool/artc.mjs --selftest && npm run e2e && npm run e2e:picker && npm run e2e:slider && npm run e2e:regressions && npm run e2e:pdf",
     "e2e:pdf": "node tool/e2e-pdf.mjs",
     "shot:el": "node tool/shot-el.mjs",
-    "probe": "node tool/probe.mjs"
+    "probe": "node tool/probe.mjs",
+    "verify:sections": "node tool/verify-sections.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.2",

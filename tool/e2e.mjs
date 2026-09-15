@@ -166,6 +166,54 @@ async function main() {
       exportInRight: !!document.querySelector('.header-right #btn-export'),
       leftText: document.querySelector('.header-left')?.textContent || ''
     })`)
+    /*
+     * 全部分组都要能折叠/展开。
+     *
+     * 为什么值得单独一条（而不是只测被报的那个「透明处理」）：那个 bug 的根因是
+     * "把分组写进了不可折叠名单"，而名单里当时还有别的分组——只测被报的一个是**没抓住病根**。
+     * 这条逐个点过全部折叠分组，把"任何分组被锁成只读"都挡在门外。
+     *
+     * 点击前先清 toast：它 position:fixed 且 z-index 高于面板，真实鼠标会点在 toast 上
+     * （本文件测勾选框时踩过同样的坑，见下方那段注释）。
+     */
+    {
+      const ids = ['size', 'crop', 'palette', 'downsample', 'dither', 'cleanup', 'adjust', 'matte', 'display']
+      const read = (id) => cdp.eval(`(() => {
+        const h = document.querySelector('[data-testid="section-head-${id}"]')
+        const b = document.querySelector('[data-testid="section-body-${id}"]')
+        if (!h || !b) return JSON.stringify({ missing: true })
+        return JSON.stringify({ expanded: h.getAttribute('aria-expanded'), h: Math.round(b.getBoundingClientRect().height) })
+      })()`)
+      const click = async (id) => {
+        await cdp.eval(`document.querySelectorAll('#toasts > *').forEach((n) => n.remove())`)
+        const pos = JSON.parse(await cdp.eval(`(() => {
+          const h = document.querySelector('[data-testid="section-head-${id}"]')
+          h.scrollIntoView({ block: 'center' })
+          const r = h.getBoundingClientRect()
+          return JSON.stringify({ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) })
+        })()`))
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pos.x, y: pos.y, button: 'left', clickCount: 1 })
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pos.x, y: pos.y, button: 'left', clickCount: 1 })
+        await sleep(180)
+      }
+      const out = []
+      for (const id of ids) {
+        let a = JSON.parse(await read(id))
+        if (a.expanded === 'false') { await click(id); a = JSON.parse(await read(id)) }
+        await click(id)
+        const b = JSON.parse(await read(id))
+        await click(id)
+        const c = JSON.parse(await read(id))
+        const ok = a.expanded === 'true' && b.expanded === 'false' && c.expanded === 'true'
+        out.push(`${ok ? '✔' : '✘'}${id}(${a.h}→${b.h}→${c.h})`)
+      }
+      check('参数面板：全部分组都能折叠/展开（防「某个分组被锁成只读」）', () => {
+        const bad = out.filter((x) => x.startsWith('✘'))
+        assert(bad.length === 0, `以下分组折叠异常：${bad.join(' ')}`)
+        return `${ids.length} 个分组：展开 → 收起 → 再展开 全部正常`
+      })
+    }
+
     check('UI 装配：工具/画布/参数/色板/状态栏 + 顶栏分组', () => {
       const u = JSON.parse(ui)
       assert(u.board, 'canvas 缺失')
