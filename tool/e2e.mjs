@@ -706,6 +706,33 @@ async function main() {
       return `${s.name}：更新→已改→恢复出厂；新增自定义预设 ${s.customCount} 个`
     })
 
+    /**
+     * 确保某个折叠分组处于展开状态（幂等）。
+     *
+     * 为什么断言要自己做这件事：用户有权折叠任何分组（包括「透明处理」），
+     * 而断言需要里面的控件可见才能做命中测试。早期版本把这个矛盾解决错了——
+     * 把分组加进"禁止折叠"名单，结果用户点标题栏毫无反应（真 bug）。
+     * 正确分工：**UI 保留完整折叠能力，断言自己保证前置条件**。
+     */
+    const ensureSectionOpen = async (id) => {
+      const open = await cdp.eval(`(() => {
+        const h = document.querySelector('[data-testid="section-head-${id}"]')
+        return h ? h.getAttribute('aria-expanded') === 'true' : null
+      })()`)
+      if (open === null) throw new Error(`找不到分组标题 data-testid=section-head-${id}`)
+      if (open) return
+      const pos = JSON.parse(await cdp.eval(`(() => {
+        const h = document.querySelector('[data-testid="section-head-${id}"]')
+        h.scrollIntoView({ block: 'center' })
+        const r = h.getBoundingClientRect()
+        return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
+      })()`))
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pos.x, y: pos.y, button: 'left', clickCount: 1 })
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pos.x, y: pos.y, button: 'left', clickCount: 1 })
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    await ensureSectionOpen('matte')
+
     /*
      * 合成底色必须用**自家取色盘**，不能用原生 `<input type="color">`
      * （原生控件会弹操作系统的调色板，外观与交互都跟主色/背景色不是一套）；
@@ -870,7 +897,9 @@ async function main() {
       return true
     })()`)
     await sleep(250)
-    // 前面的"收起 / 点标签"断言会改变取色盘开合状态，这里先确保它是打开的
+    // 前面的"收起 / 点标签"断言会改变取色盘开合状态；而且分组可能被折叠过，
+    // 所以先确保「透明处理」展开，再确保取色盘是打开的
+    await ensureSectionOpen('matte')
     if (!(await cdp.eval(`!!document.querySelector('#panel-params .cp')`))) {
       const sw = JSON.parse(await cdp.eval(`(() => {
         const el = document.querySelector('[data-testid="matte-swatch"]')
@@ -925,6 +954,59 @@ async function main() {
         `吸管取色应写进合成底色，实际 ${strawPick.matte}（提示语承诺了却没兑现）`,
       )
       return `合成底色 → ${strawPick.matte}；主色保持 ${strawPick.primary}；工具 ${strawPick.tool}`
+    })
+
+    /*
+     * 「透明处理」必须能被用户折叠。
+     *
+     * 这条是**用户报的 bug 的回归防线**：它原先被写进"禁止折叠"名单（为了迁就本节
+     * 那几条真鼠标命中断言），于是点标题栏毫无反应——用户反馈"透明处理点击不能收纳"。
+     * 把测试的便利凌驾在功能之上是错的：断言需要控件可见，就该自己先展开分组（见 ensureSectionOpen）。
+     */
+    await check('参数面板：「透明处理」能被用户折叠（不是只读的死组）', async () => {
+      const head = '[data-testid="section-head-matte"]'
+      const body = '[data-testid="section-body-matte"]'
+      const read = () => cdp.eval(`(() => {
+        const h = document.querySelector('${head}')
+        const b = document.querySelector('${body}')
+        return JSON.stringify({
+          expanded: h ? h.getAttribute('aria-expanded') : null,
+          h: b ? Math.round(b.getBoundingClientRect().height) : -1,
+        })
+      })()`)
+      const clickHead = async () => {
+        const pos = JSON.parse(await cdp.eval(`(() => {
+          const h = document.querySelector('${head}')
+          h.scrollIntoView({ block: 'center' })
+          const r = h.getBoundingClientRect()
+          return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
+        })()`))
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pos.x, y: pos.y, button: 'left', clickCount: 1 })
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pos.x, y: pos.y, button: 'left', clickCount: 1 })
+        await sleep(200)
+      }
+
+      /*
+       * 先清掉右下角的 toast 浮层：它是 position:fixed、z-index 高于面板，
+       * 而「透明处理」标题栏正好在它的覆盖范围内——真实鼠标会点在 toast 上而不是标题栏，
+       * 表现为"点了没反应"。本文件后面测勾选框时也踩过同一个坑（见那段注释）。
+       * 直接移除等价于"等它自己消失"，只是确定且不用干等 4 秒。
+       */
+      await cdp.eval(`document.querySelectorAll('#toasts > *').forEach((n) => n.remove())`)
+      await ensureSectionOpen('matte')
+      const before = JSON.parse(await read())
+      assert(before.expanded === 'true' && before.h > 0, `前置：应先展开，实际 ${JSON.stringify(before)}`)
+
+      await clickHead()
+      const closed = JSON.parse(await read())
+      assert(closed.expanded === 'false', `点「透明处理」标题栏应能收起，实际 aria-expanded=${closed.expanded}（曾是"点了没反应"的 bug）`)
+      assert(closed.h === 0, `收起后主体高度应为 0，实际 ${closed.h}`)
+
+      await clickHead()
+      const reopened = JSON.parse(await read())
+      assert(reopened.expanded === 'true' && reopened.h > 0, `应能再展开，实际 ${JSON.stringify(reopened)}`)
+
+      return `展开(h=${before.h}) → 收起(h=${closed.h}) → 再展开(h=${reopened.h})`
     })
 
     /*
