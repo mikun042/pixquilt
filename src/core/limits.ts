@@ -48,16 +48,16 @@ export const SVG_RASTER_MAX = 4096
 /** 编辑器偏好落盘防抖（localStorage 写入很便宜，但要避免每次拖色都写） */
 export const PREFS_DEBOUNCE_MS = 400
 /*
- * 下面两个是**给"自动草稿"预留的**（路线图 A2，尚未实现：目前刷新页面会丢失未导出的编辑）。
- * 先放在这里是因为草稿一旦实现，参数写得就是这两个数；留个说明免得下次审计把它们当死代码删掉。
- * **到期条件**：若路线图 A2（自动草稿）最终不做，就直接删掉这两个常量——它们唯一的意义就是那件事。
+ * 自动草稿的两个数（实现见 `src/app/storage.ts`，恢复提示在 `src/app/index.ts`）。
+ * 放在 core 是因为它们是"引擎级"的配额与节奏，且要被文档与自省引用；
+ * 真正的 IndexedDB 读写属于浏览器层，不在这里。
  */
 /** 自动草稿落盘防抖：编辑时每 800ms 存一次，兼顾"别丢"与"别卡" */
 export const DRAFT_DEBOUNCE_MS = 800
-/** 草稿格式版本：格式不兼容时直接丢弃重来，不做猜测式迁移 */
+/** 草稿格式版本：与草稿结构不兼容时直接丢弃重来，不做猜测式迁移（理由见 storage.ts） */
 export const DRAFT_VERSION = 1
 
-/** 参数与项目文件的 Schema 版本（v3：字段瘦身 + 透明单一开关） */
-export const SCHEMA_VERSION = 3
-/** 读取时接受的历史版本（v1 无 alpha；v2 无 transparent） */
-export const SUPPORTED_VERSIONS = [1, 2, 3] as const
+/** 参数与项目文件的 Schema 版本（v4：自定义色板可带号色） */
+export const SCHEMA_VERSION = 4
+/** 读取时接受的历史版本（v1 无 alpha；v2 无 transparent；v3 无 customPaletteCodes） */
+export const SUPPORTED_VERSIONS = [1, 2, 3, 4] as const

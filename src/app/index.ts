@@ -11,13 +11,14 @@
  */
 import { DEFAULT_PARAMS, DEFAULT_PREFS, TOOLS, sanitizePrefs, type ConvertParams, type EditorPrefs, type PixelArt } from '../core/types.ts'
 import { getPreset } from '../core/palettes.ts'
-import { PREFS_DEBOUNCE_MS } from '../core/limits.ts'
+import { DRAFT_DEBOUNCE_MS, DRAFT_VERSION, PREFS_DEBOUNCE_MS } from '../core/limits.ts'
 import { createExportActions } from './export-actions.ts'
 import { artToPngBlob, artToPngDataURL, artToPngDataURLSync } from './canvas-png.ts'
 import { runPipeline } from '../core/pipeline.ts'
 import { blankArt } from '../core/ops.ts'
 import { artStats } from '../core/stats.ts'
 import { colorTextOn } from '../core/color.ts'
+import { parseProjectFile, projectJSONString } from '../core/export.ts'
 import { clear, el, store } from './store.ts'
 import { decodeToRgba, imageFromClipboard, makeThumbnail, looksLikeImage } from './decode.ts'
 import { createCanvas } from './ui/canvas.ts'
@@ -27,6 +28,7 @@ import { createParamsPanel } from './ui/params-panel.ts'
 import { createHeader } from './ui/header.ts'
 import { iconEl, type IconName } from './ui/icons.ts'
 import { ArtHistory, normalizeAlphaMask } from './history.ts'
+import { clearDraft, createDraftWriter, draftSupported, isUsableDraft, isUsableSource, loadDraft, loadDraftSource } from './storage.ts'
 import { installAutomationApi } from './automation.ts'
 
 interface AppState {
@@ -54,6 +56,30 @@ const app: AppState = {
  */
 const history = new ArtHistory()
 
+/**
+ * 自动草稿写入器（防抖落盘 + 可取消）。
+ *
+ * 挂在**模型层的三个提交点之后**（`commitWithHistory` / `commitModelArt` / `replaceArt`），
+ * 不画布侧直接触发——`app.art` 是唯一真源，草稿必须存真源（见 storage.ts 的文件头说明）。
+ *
+ * `snapshot()` 每次现取：直接读 `app.art` 与 `app.source`，不缓存副本，
+ * 否则又会多出"副本与真源不一致"的机会（正是这个项目反复踩的那类问题）。
+ */
+const draftWriter = createDraftWriter({
+  debounceMs: DRAFT_DEBOUNCE_MS,
+  version: DRAFT_VERSION,
+  snapshot: () => {
+    if (!app.art) return null
+    return {
+      project: projectJSONString(app.art, app.params),
+      source: app.source && app.sourceName ? { name: app.sourceName, ...app.source } : null,
+    }
+  },
+  onError: () => {
+    /* 配额满 / 存储被禁用：静默降级为"没有草稿"，不影响正在进行的编辑 */
+  },
+})
+
 function resetHistory(): void {
   history.reset()
 }
@@ -74,6 +100,7 @@ function commitWithHistory(indices: Uint8Array, palette: string[], alphaMask: Ui
   // 常见手绘画布的单帧快照从 8MB 降到 4MB（见 history.ts 的 normalizeAlphaMask）
   app.art = { ...app.art, indices, palette, alphaMask: normalizeAlphaMask(alphaMask) }
   store.set('hasEdits', true)
+  draftWriter.schedule()
   renderAll()
 }
 
@@ -99,6 +126,7 @@ function commitModelArt(next: PixelArt): void {
   if (sizeChanged) canvasApi.setArt(app.art)
   else canvasApi.applyIndices(app.art.indices, app.art.palette, alphaMask)
   store.set('hasEdits', true)
+  draftWriter.schedule()
   renderAll()
 }
 
@@ -145,6 +173,37 @@ function replaceArt(art: PixelArt | null): void {
   canvasApi.setArt(art)
   resetHistory()
   store.set('hasEdits', false)
+  /*
+   * 「整体替换 = 新基线」：草稿要跟着换成新内容，**但不能靠"先清后写"**。
+   *
+   * ## 为什么不能先清草稿
+   *
+   * 早先的写法是"`clearDraft()` + 排一次防抖写"。实测有个**真实的丢数据窗口**：
+   * 用户还没有过任何草稿时（第一次新建/导入）执行"编辑 → 800ms 内刷新"，
+   * 盘上是空的（刚被清掉）、新的又还没到点，`pagehide` 里那次 flush 也来不及——
+   * 于是**什么都没剩下**。这恰恰是最常见的用法（导入图 → 调两下 → 刷新重来）。
+   * 实测：首编辑后等 0/100/300/600ms 再刷新，**四次全部丢失**。
+   *
+   * 所以改成：**有画布就立刻写一次（`flush`，不等防抖）**，只有 `art === null`
+   * （清空 / 重置 / 载入失败）才真的清盘。这样盘上任何时刻都是"最近一次真实基线"。
+   *
+   * ## 与路线图那个"顺序坑"的关系
+   *
+   * 坑是"清了草稿、却被排期中的定时器写回旧画布"。这里同时做两件事防它：
+   *  ① `cancel()` 先取消上一张画布排的定时器（防线是**这个顺序**，不是 snapshot 现读——
+   *     实测把 snapshot 在排期时固化，行为不变，说明起作用的是 cancel+重排）；
+   *  ② 此后要么立刻 `flush()`（新内容马上落盘、没有空窗），要么 `clearDraft()`（art 为 null）。
+   * 两个分支都不会留下"待写的东西还在飞"的状态。
+   */
+  draftWriter.cancel()
+  if (art) {
+    // 立刻落盘，不留"清空了但还没写"的空窗（见上面"为什么不能先清草稿"）
+    void draftWriter.flush()
+  } else {
+    void clearDraft().catch(() => {
+      /* 存储不可用（无痕/配额满）：草稿功能降级，不影响正常使用 */
+    })
+  }
   renderAll()
 }
 
@@ -894,6 +953,115 @@ window.addEventListener('keydown', (e) => {
   }
 })
 
+/* ------------------------------------------------------------------ 自动草稿的恢复提示 */
+
+/**
+ * 启动时检查草稿并（可选地）弹提示条。
+ *
+ * 恢复做的事**等同于载入一个项目文件**：解码草稿里的项目 JSON → `setParams` + `replaceArt`。
+ * 这样"恢复"与"导入项目"走的是同一条已经过校验的路径，不必另写一套像素装载逻辑。
+ *
+ * 三个必须处理的边界：
+ *  - **草稿损坏**：`parseProjectFile` 会抛（长度不符、色板非法、版本不支持…）。
+ *    这里**清掉坏草稿并静默继续**——留着它会让每次打开都弹一个点了会报错的提示。
+ *  - **存储不可用**（无痕 / 配额满）：整条路径静默跳过，与项目"存储不可用就降级"的既有约定一致。
+ *  - **原图缺失**：草稿分两条写，原图可能因超配额没写进去。此时画布照样恢复，
+ *    只是"重新转换"没有原图可用——要如实告知，不能让用户以为原图也回来了。
+ */
+async function maybeOfferDraftRestore(): Promise<void> {
+  if (!draftSupported()) return
+
+  let record: Awaited<ReturnType<typeof loadDraft>> = null
+  try {
+    record = await loadDraft()
+  } catch {
+    return // 读不出来（被禁用/被占用）：当作没有草稿
+  }
+  if (!record) return
+
+  if (!isUsableDraft(record, DRAFT_VERSION)) {
+    // 版本不符或结构不对：直接丢弃，不做猜测式迁移（理由见 storage.ts）
+    void clearDraft().catch(() => {})
+    return
+  }
+
+  let parsed: ReturnType<typeof parseProjectFile>
+  try {
+    parsed = parseProjectFile(record.project)
+  } catch {
+    // 坏草稿：清掉，别让它每次启动都弹一个点了会报错的提示
+    void clearDraft().catch(() => {})
+    return
+  }
+
+  const { art, params } = parsed
+  const when = new Date(record.savedAt)
+  const stamp = Number.isNaN(when.getTime())
+    ? ''
+    : `${when.getMonth() + 1}-${String(when.getDate()).padStart(2, '0')} ${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`
+
+  const bar = el('div', { class: 'draft-bar', 'data-testid': 'draft-bar' }, [
+    el('span', { class: 'draft-text' }, [
+      `发现上次未导出的编辑（${art.width}×${art.height}${stamp ? ` · ${stamp}` : ''}）`,
+    ]),
+    el('button', {
+      class: 'btn tiny primary',
+      type: 'button',
+      'data-testid': 'draft-restore',
+      onclick: () => {
+        void (async () => {
+          /*
+           * 先摘掉提示条再做恢复。
+           *
+           * `renderAll()` 不会碰这条浮层（它是 `document.body` 下的独立节点，
+           * 不属于任何被重绘的区域），所以必须**显式移除**——否则恢复完它一直赖在屏幕上，
+           * 用户会以为"还没生效"而反复点（本次 e2e 就抓到了这个：画布恢复了、提示条还在）。
+           */
+          bar.remove()
+          app.params = params
+          replaceArt(art)
+          // 原图尽力恢复（可能因超配额没存进去）
+          let restoredSource = false
+          try {
+            const src = await loadDraftSource()
+            if (isUsableSource(src, DRAFT_VERSION)) {
+              const data = new Uint8ClampedArray(src.data)
+              app.source = { width: src.width, height: src.height, data }
+              app.sourceName = src.name
+              app.refImage = await rgbaToImageElement(app.source)
+              canvasApi.setReference(app.refImage, false)
+              restoredSource = true
+            }
+          } catch {
+            /* 原图没恢复出来：只影响"重新转换"，画布与编辑都在 */
+          }
+          renderAll()
+          toast(
+            restoredSource
+              ? `已恢复上次编辑（${art.width}×${art.height}）`
+              : `已恢复画布（${art.width}×${art.height}）；原图未能恢复，右侧参数改动不会再重转（可用「导出 ▾ → 项目 JSON」留档）`,
+            restoredSource ? 'info' : 'warn',
+          )
+        })()
+      },
+    }, ['恢复']),
+    el('button', {
+      class: 'btn tiny',
+      type: 'button',
+      'data-testid': 'draft-discard',
+      onclick: () => {
+        bar.remove()
+        // 用户明确不要：先取消待写（虽然此刻不该有），再清盘
+        draftWriter.cancel()
+        void clearDraft().catch(() => {})
+        toast('已丢弃上次的草稿')
+      },
+    }, ['放弃']),
+  ])
+
+  document.body.append(bar)
+}
+
 /* ------------------------------------------------------------------ 启动 */
 
 function boot(): void {
@@ -911,6 +1079,20 @@ function boot(): void {
 
   header.build()
   renderAll()
+
+  /*
+   * 自动草稿：启动时若有可用草稿，出**一条可关闭的提示条**让用户决定是否恢复。
+   *
+   * 为什么不静默恢复（这是用户拍板的形态）：静默恢复会让"打开工具想从头开始"的人
+   * 莫名看到上次的旧画布，比丢失更困惑。所以这里只提示，恢复与否由用户点。
+   *
+   * 两个顺序要点：
+   *  1. **在 `renderAll()` 之后**再弹：否则提示条会被随后的整屏渲染冲掉。
+   *  2. **不自动写入**草稿（不 `schedule()`）：用户还没做任何操作，
+   *     此时写盘只会在"用户选了放弃、我们又写回去"之间制造竞态。
+   *     真正开始写入是从第一次提交（画/改参）起。
+   */
+  void maybeOfferDraftRestore()
 
   // 拖拽导入
   window.addEventListener('dragover', (e) => e.preventDefault())
@@ -930,6 +1112,21 @@ function boot(): void {
   store.subscribe(['tool', 'primary', 'bg', 'brushSize', 'showGrid', 'showMag', 'showPicker', 'transparent'], (s) => {
     clearTimeout(timer)
     timer = window.setTimeout(() => writePrefs(s), PREFS_DEBOUNCE_MS)
+  })
+
+  /**
+   * 页面要关了：**把待写的草稿立刻落盘**，别等那 800ms 防抖。
+   *
+   * 这一条是草稿能不能救命的关键：用户"画完最后一笔就关标签页/刷新"是最常见的丢数据场景，
+   * 而那一笔的防抖定时器多半还没到点。`visibilitychange → hidden` 比 `beforeunload` 可靠
+   * （移动端与部分浏览器不一定触发 beforeunload），两个都挂上，`flush()` 内部幂等。
+   */
+  const flushDraft = (): void => {
+    void draftWriter.flush()
+  }
+  window.addEventListener('pagehide', flushDraft)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushDraft()
   })
 
   /**
