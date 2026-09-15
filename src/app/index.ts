@@ -611,7 +611,17 @@ function renderPickerPanel(): void {
       picker.dispose()
       picker = null
     }
+    /*
+     * ⚠️ 摘掉宿主之后**必须把变量也置空**。
+     *
+     * 原先只写 `pickerHost?.remove()`，变量仍指向那个已脱离文档的元素，
+     * 于是重新打开时 `if (!pickerHost)` 判为假、走 else 分支，
+     * `ensurePicker()` 把取色器渲染进一个**不在页面里的**容器——
+     * 屏幕上什么都不出现（而 `showPicker` 已是 true），用户表现为
+     * "点收起后左侧调色板再也打不开了"（用户报的 bug）。
+     */
     pickerHost?.remove()
+    pickerHost = null
     return
   }
   if (!pickerHost) {

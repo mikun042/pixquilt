@@ -297,9 +297,9 @@ npm run ref:analyze -- "C:\Users\<用户名>\Pictures\Screenshots\屏幕截图 2
 cd F:/<项目目录>
 npm run typecheck      # 必须 0 错（tsc noUnusedLocals 开着，未用变量会直接报错）
 npm run build          # 产出单文件 HTML，并核对 dist 与根目录副本哈希一致
-npm run e2e:picker     # 取色器专项：17 项（几何/方位/标签/滑条填充/数值框隔离/防选词/零尺寸免疫）
+npm run e2e:picker     # 取色器专项：18 项（几何/方位/标签/滑条填充/数值框隔离/防选词/零尺寸免疫）
 npm run e2e:slider     # 数值滑条专项：12 项（六行都能拖、拖动基准是轨道、零尺寸免疫）
-npm run verify         # 全套（9 段）：typecheck + 106 单测 + build + 40 自检 + 36 端到端 + 17 取色器 + 12 滑条 + 25 回归 + 10 PDF
+npm run verify         # 全套（9 段）：typecheck + 106 单测 + build + 40 自检 + 36 端到端 + 18 取色器 + 12 滑条 + 25 回归 + 10 PDF
 ```
 
 **只跑 `e2e:picker` 是不够的**：`npm run verify` 里还有"UI 装配/顶栏分组/导入导出"等断言，
@@ -336,7 +336,7 @@ npm run verify         # 全套（9 段）：typecheck + 106 单测 + build + 40
 
 ## 5. 现有断言覆盖了什么（避免重复造轮子）
 
-`tool/e2e-picker.mjs` 当前 17 项：
+`tool/e2e-picker.mjs` 当前 18 项：
 
 1. 结构：色轮存在且 `wheelSize === 156`、明度条、透明度行、RGB/HSV 两段、行标签 红/绿/蓝/透明度、Hex 行常驻、色板行数 ≥ 2
 2. 布局：色轮 + 明度条**不溢出** `.cp` 内容盒（旧版溢出 38px 的回归守卫）

@@ -179,7 +179,7 @@ npm run verify     # 七步全绿才算通过；每一步的说明见 docs/DEVEL
 拖拽选中文字）全部要用 CDP 的真实输入（`Input.dispatchMouseEvent`）复现——
 `tool/e2e-picker.mjs` 里的"拖动滑条不会选中沿途文字"就是这么测的。
 
-取色器专项验证在 `tool/e2e-picker.mjs`（17 项）、数值滑条专项在 `tool/e2e-slider.mjs`（12 项），
+取色器专项验证在 `tool/e2e-picker.mjs`（18 项）、数值滑条专项在 `tool/e2e-slider.mjs`（12 项），
 两者都已并入 `npm run verify`。
 
 ### 8.4 数值滑条"划不动"——两个叠在一起的原因

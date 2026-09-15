@@ -394,5 +394,66 @@ check('色板/取色不影响画布内容（取色只改主色）', () => {
   return '画布未变'
 })
 
+/* -------------------------------- 收起 → 重新打开 */
+
+/*
+ * 用户报的 bug 的回归防线：「收起」之后必须还能把取色器打开。
+ *
+ * 根因回顾：`renderPickerPanel()` 收起时只写 `pickerHost?.remove()`，**没把变量置空**，
+ * 于是重开时 `if (!pickerHost)` 判为假、走 else 分支，把取色器渲染进一个
+ * **已脱离文档的容器**——`showPicker` 为 true、`querySelector('.cp')` 也查得到，
+ * 但屏幕上什么都没有。所以这条断言**不看状态、不看 DOM，只看真实可见性**。
+ */
+{
+  const clickSel = async (jsExpr) => {
+    const pos = JSON.parse(
+      await cdp.eval(`(() => {
+        const e = ${jsExpr}
+        if (!e) return JSON.stringify({ error: '找不到目标元素' })
+        e.scrollIntoView({ block: 'center' })
+        const r = e.getBoundingClientRect()
+        return JSON.stringify({ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) })
+      })()`),
+    )
+    if (pos.error) throw new Error(pos.error)
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pos.x, y: pos.y, button: 'left', clickCount: 1 })
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pos.x, y: pos.y, button: 'left', clickCount: 1 })
+    await new Promise((r) => setTimeout(r, 450))
+  }
+
+  /** 真实可见性：既有尺寸、又确实挂在色板列里 */
+  const pickerState = () =>
+    cdp.eval(`(() => {
+      const cp = document.querySelector('#panel-palette .cp')
+      const r = cp ? cp.getBoundingClientRect() : null
+      return JSON.stringify({
+        inDom: !!cp,
+        visible: r ? r.width > 0 && r.height > 0 : false,
+        inPalettePanel: cp ? !!cp.closest('#panel-palette') : false,
+      })
+    })()`)
+
+  // ① 打开（点主色块）
+  await clickSel("document.querySelectorAll('.color-slot')[0]")
+  const opened = JSON.parse(await pickerState())
+  // ② 收起
+  await clickSel("[...document.querySelectorAll('#panel-palette .btn')].find((b) => b.textContent.includes('收起'))")
+  const closed = JSON.parse(await pickerState())
+  // ③ 再打开 —— 这一步在 bug 存在时会「状态对但看不见」
+  await clickSel("document.querySelectorAll('.color-slot')[0]")
+  const reopened = JSON.parse(await pickerState())
+
+  check('「收起」之后必须还能重新打开取色器（收起→重开循环）', () => {
+    assert(opened.visible, `前置：点主色块应能打开取色器，实际 ${JSON.stringify(opened)}`)
+    assert(!closed.inDom, `收起后取色器应从 DOM 移除，实际 ${JSON.stringify(closed)}`)
+    assert(
+      reopened.visible && reopened.inPalettePanel,
+      `收起后再点主色块，取色器必须重新可见（曾是"状态置上了、DOM 里也有，但渲染进了已脱离文档的容器"→ 看不到）` +
+        `；实际 ${JSON.stringify(reopened)}`,
+    )
+    return `打开(可见) → 收起(移除) → 重开(可见且挂回色板列)`
+  })
+}
+
 await session.close()
 report()
