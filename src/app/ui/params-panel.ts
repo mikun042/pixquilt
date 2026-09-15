@@ -42,6 +42,73 @@ export interface ParamsPanelApi {
   render: () => void
 }
 
+/* ------------------------------------------------------------------ 分组折叠状态 */
+
+/**
+ * 承载"真鼠标命中"断言的分组，**始终强制展开**。
+ *
+ * 为什么：这些分组的控件会被断言取屏幕坐标再 `elementFromPoint` 命中测试
+ * （合成底色色块、网格线勾选框、尺寸方式下拉、预设 chip）。元素一旦 `display:none`，
+ * `getBoundingClientRect()` 全为 0，命中测试必然失败——而且失败信息会说"被盖住了/点不到"，
+ * 完全指不到"分组被折叠了"这个真实原因。
+ *
+ * 所以即使 localStorage 里记着用户折过它们，这里也要覆盖回来。代价是这几组不能记住折叠态，
+ * 换来的是断言与"面板可见"这条不变量的确定性。
+ */
+const COLLAPSE_FORCE_OPEN = new Set(['preset', 'size', 'matte', 'display'])
+
+const COLLAPSE_KEY = 'pixelstudio.params.collapsed'
+
+/**
+ * 读取"用户显式改过的折叠状态"：`{ 分组 id: 是否展开 }`。
+ * localStorage 不可用（无痕 / 禁用存储）时静默返回空对象，不报错——与项目对
+ * "存储不可用就静默降级"的既有约定一致（见 TESTING-GUIDE 的 H3 边界项）。
+ */
+function readCollapsed(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(COLLAPSE_KEY)
+    if (!raw) return {}
+    const obj = JSON.parse(raw)
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {}
+    const out: Record<string, boolean> = {}
+    for (const [k, v] of Object.entries(obj)) if (typeof v === 'boolean') out[k] = v
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function writeCollapsed(map: Record<string, boolean>): void {
+  try {
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify(map))
+  } catch {
+    /* 存储不可用：折叠态不持久化而已，不影响功能 */
+  }
+}
+
+/**
+ * 某分组当前是否展开。
+ *
+ * 状态语义：localStorage 里存的是"用户**显式改过**的分组 → 展开/收起"，而不是"收起的集合"。
+ * 这样声明式的 `defaultOpen` 才有意义——没被用户动过的分组按代码里的默认值走
+ * （重要参数默认展开、次要/高级默认折叠），动过的按用户的选择走。
+ *
+ * 强制展开的分组恒为 true（见 COLLAPSE_FORCE_OPEN）。
+ */
+function isSectionOpen(id: string, defaultOpen: boolean): boolean {
+  if (COLLAPSE_FORCE_OPEN.has(id)) return true
+  const map = readCollapsed()
+  const saved = map[id]
+  return typeof saved === 'boolean' ? saved : defaultOpen
+}
+
+function toggleSection(id: string, open: boolean): void {
+  if (COLLAPSE_FORCE_OPEN.has(id)) return
+  const map = readCollapsed()
+  map[id] = open
+  writeCollapsed(map)
+}
+
 export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
   /**
    * 自定义 / .hex 色板编辑区。
@@ -269,13 +336,6 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
 
     renderPresetSection()
 
-    deps.host.append(el('div', { class: 'panel-title' }, ['转换参数']))
-
-    /**
-     * 一行参数：标签 + 控件 + 提示。
-     * `forId` 可选：给了就把标签关联到那个控件——`<label for>` 对 `<button>` 同样有效，
-     * 于是"点标签也能触发"（用户点"合成底色"那四个字而没点色块是很常见的）。
-     */
     /**
      * 字段工厂。
      *
@@ -283,9 +343,9 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
      * 于是"点标签也能触发"（用户点"合成底色"那四个字而没点色块是很常见的）。
      *
      * `testId` 可选：写到 `.field` 上作为 `data-testid`。**为什么需要它**：
-     * 面板断言原先靠结构耦合定位控件（"第一个 select 就是尺寸方式"、"`.field > label`
-     * 文本含尺寸方式"、"勾选框的下一个兄弟文本含网格线"）。这些写法一旦面板重排
-     * （例如本轮要做的折叠分组）就会静默指错元素，而失败信息往往指向别处。
+     * 面板断言原先靠结构耦合定位控件（"第一个 select 就是尺寸方式"、`.field > label`
+     * 文本含尺寸方式、"勾选框的下一个兄弟文本含网格线"）。这些写法一旦面板重排
+     * （例如折叠分组）就会静默指错元素，而失败信息往往指向别处。
      * 用稳定的 data-testid 定位后，面板结构可以自由调整。
      */
     const field = (label: string, control: HTMLElement, hint?: string, forId?: string, testId?: string) =>
@@ -295,11 +355,47 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
         hint ? el('span', { class: 'hint' }, [hint]) : null,
       ])
 
+    /**
+     * 创建一个可折叠分组。
+     *
+     * 三条设计约束（都是踩过或推演出来的，动它前先读）：
+     *
+     * 1. **收起用 `display:none`，绝不惰性渲染**。所有子节点始终在 DOM 里——
+     *    页内 API 与 e2e 断言都靠 `querySelector` 找控件，把节点从 DOM 摘掉会让它们
+     *    全部失效（"面板里找不到某控件"），而这类失败信息很难指向"分组被折叠了"。
+     * 2. **默认展开的分组承载着"真鼠标命中"断言**（预设 / 尺寸 / 合成底色 / 显示）。
+     *    这些断言要算元素屏幕坐标再 `elementFromPoint`，`display:none` 时 rect 全为 0，
+     *    必然失败。所以它们必须默认展开。
+     * 3. 折叠状态存 localStorage，但**读回来的值不能覆盖约束 2**：那四组若被用户折叠过，
+     *    刷新后仍是折叠态、断言就会红。折中做法见 `COLLAPSE_FORCE_OPEN`。
+     */
+    const section = (id: string, title: string, body: HTMLElement[], defaultOpen: boolean) => {
+      const open = isSectionOpen(id, defaultOpen)
+      const head = el('button', {
+        class: `panel-head${open ? '' : ' collapsed'}`,
+        type: 'button',
+        'aria-expanded': open ? 'true' : 'false',
+        'data-testid': `section-head-${id}`,
+        onclick: () => {
+          toggleSection(id, !isSectionOpen(id, defaultOpen))
+          renderParams()
+        },
+      }, [el('span', { class: 'panel-caret' }, [open ? '▾' : '▸']), el('span', { class: 'panel-head-title' }, [title])])
+      const box = el('div', {
+        class: 'panel-body',
+        'data-testid': `section-body-${id}`,
+      }, body)
+      // 收起态：直接给内联 display:none（不靠 CSS 类，避免样式表加载顺序影响）
+      if (!open) box.style.display = 'none'
+      return el('div', { class: `panel-section${open ? '' : ' is-collapsed'}`, 'data-testid': `section-${id}` }, [head, box])
+    }
+
     // 尺寸：**一套控件管两种方式**。「精确尺寸」时写入 exactWidth/Height，「长边」时显式删除（见 clearExactSize）
     const exactW = p.exactWidth ?? 0
     const exactH = p.exactHeight ?? 0
     const exact = exactW > 0 && exactH > 0
-    deps.host.append(
+    const sizeFields: HTMLElement[] = []
+    sizeFields.push(
       field(
         '尺寸方式',
         selectInput(
@@ -323,7 +419,7 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
       ),
     )
     if (exact) {
-      deps.host.append(
+      sizeFields.push(
         field(
           '画布尺寸（格）',
           el('div', { class: 'row' }, [
@@ -338,19 +434,21 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
       for (const n of [16, 24, 32, 48, 58, 64, 96, 128]) {
         quick.append(el('button', { class: `btn tiny${exactW === n && exactH === n ? ' active' : ''}`, onclick: () => deps.patch({ exactWidth: n, exactHeight: n }) }, [`${n}²`]))
       }
-      deps.host.append(quick)
+      sizeFields.push(quick)
     } else {
-      deps.host.append(field('长边格数', numberInput(p.longEdge, 8, 2048, (v) => deps.patch({ longEdge: v })), `${p.longEdge} 格`))
+      sizeFields.push(field('长边格数', numberInput(p.longEdge, 8, 2048, (v) => deps.patch({ longEdge: v })), `${p.longEdge} 格`))
       const quick = el('div', { class: 'row wrap' })
       for (const n of [16, 32, 48, 64, 96, 128, 256, 512]) {
         quick.append(el('button', { class: `btn tiny${p.longEdge === n ? ' active' : ''}`, onclick: () => deps.patch({ longEdge: n }) }, [String(n)]))
       }
-      deps.host.append(quick)
+      sizeFields.push(quick)
     }
+    deps.host.append(section('size', '尺寸', sizeFields, true))
 
     // 裁剪比例：core 与 CLI（--crop）一直支持，但参数面板此前没有入口——
     // 用户只能靠 CLI/API 设置（测试报告 B6）。这里补上四档选择。
-    deps.host.append(
+    const cropFields: HTMLElement[] = []
+    cropFields.push(
       field(
         '裁剪比例',
         selectInput(
@@ -366,13 +464,15 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
         '按所选比例从中心裁剪原图（拼豆常用 1:1，游戏资产常用 1:1）',
       ),
     )
+    deps.host.append(section('crop', '裁剪', cropFields, true))
 
-    deps.host.append(
+    const paletteFields: HTMLElement[] = []
+    paletteFields.push(
       field('色板', selectInput(p.paletteMode, [['auto', '自动提取'], ['preset', '预置色卡'], ['custom', '自定义 / .hex']], (v) => deps.patch({ paletteMode: v as ConvertParams['paletteMode'] }))),
     )
     if (p.paletteMode === 'preset') {
       const colors = PRESETS.map((x) => [x.id, `${x.name}`] as [string, string])
-      deps.host.append(
+      paletteFields.push(
         el('div', { class: 'field-inner' }, [
           selectInput(p.presetPaletteId, colors, (v) => deps.patch({ presetPaletteId: v })),
           el('span', { class: 'hint' }, [getPreset(p.presetPaletteId)?.desc ?? '']),
@@ -380,23 +480,41 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
       )
     }
     if (p.paletteMode === 'auto') {
-      deps.host.append(field('颜色数', numberInput(p.paletteK, 2, 64, (v) => deps.patch({ paletteK: v }))))
+      paletteFields.push(field('颜色数', numberInput(p.paletteK, 2, 64, (v) => deps.patch({ paletteK: v }))))
     }
     if (p.paletteMode === 'custom') {
-      deps.host.append(renderCustomPaletteField(p))
+      paletteFields.push(renderCustomPaletteField(p))
     }
+    deps.host.append(section('palette', '色板', paletteFields, true))
 
+    // 降采样 / 抖动 / 杂色清理 / 图像调整：各自成组，便于按需展开
     deps.host.append(
-      field('降采样', selectInput(p.downsample, [['average', '区域平均（照片）'], ['nearest', '最近邻（硬边）']], (v) => deps.patch({ downsample: v as ConvertParams['downsample'] }))),
-      field('抖动', selectInput(p.dither, [['none', '关闭'], ['floyd', 'Floyd–Steinberg'], ['bayer', 'Bayer']], (v) => deps.patch({ dither: v as ConvertParams['dither'] }))),
-      field('杂色清理', checkbox(p.cleanup, (v) => deps.patch({ cleanup: v })), '开启抖动时自动关闭（抖动的点就是杂色）'),
-      field('亮度 / 对比度 / 饱和度', el('div', { class: 'row' }, [
-        numberInput(p.brightness, -100, 100, (v) => deps.patch({ brightness: v })),
-        numberInput(p.contrast, -100, 100, (v) => deps.patch({ contrast: v })),
-        numberInput(p.saturation, -100, 100, (v) => deps.patch({ saturation: v })),
-      ])),
-      field('透明处理', selectInput(p.transparent, [['none', '不透明（合成到底色）'], ['key', '单色键控（导出透明）'], ['alpha', '真 alpha（保留原图透明）']], (v) => deps.patch({ transparent: v as ConvertParams['transparent'] }))),
+      section('downsample', '降采样', [
+        field('降采样', selectInput(p.downsample, [['average', '区域平均（照片）'], ['nearest', '最近邻（硬边）']], (v) => deps.patch({ downsample: v as ConvertParams['downsample'] }))),
+      ], true),
     )
+    deps.host.append(
+      section('dither', '抖动', [
+        field('抖动', selectInput(p.dither, [['none', '关闭'], ['floyd', 'Floyd–Steinberg'], ['bayer', 'Bayer']], (v) => deps.patch({ dither: v as ConvertParams['dither'] }))),
+      ], false),
+    )
+    deps.host.append(
+      section('cleanup', '杂色清理', [
+        field('杂色清理', checkbox(p.cleanup, (v) => deps.patch({ cleanup: v })), '开启抖动时自动关闭（抖动的点就是杂色）'),
+      ], false),
+    )
+    deps.host.append(
+      section('adjust', '图像调整', [
+        field('亮度 / 对比度 / 饱和度', el('div', { class: 'row' }, [
+          numberInput(p.brightness, -100, 100, (v) => deps.patch({ brightness: v })),
+          numberInput(p.contrast, -100, 100, (v) => deps.patch({ contrast: v })),
+          numberInput(p.saturation, -100, 100, (v) => deps.patch({ saturation: v })),
+        ])),
+      ], false),
+    )
+    const transparentFields: HTMLElement[] = [
+      field('透明处理', selectInput(p.transparent, [['none', '不透明（合成到底色）'], ['key', '单色键控（导出透明）'], ['alpha', '真 alpha（保留原图透明）']], (v) => deps.patch({ transparent: v as ConvertParams['transparent'] }))),
+    ]
     if (p.transparent !== 'alpha') {
       /*
        * 合成底色用**自家取色盘**，不用原生 `<input type="color">`：原生控件会弹出操作系统的调色板
@@ -406,19 +524,31 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
        * 存活的状态。这里只做两件事——**把稳定的 `element` 放回序列中的位置**，再让它同步一次外观。
        * `element` 是同一个节点（只创建一次），所以拖动中的指针捕获不会因为重渲染而断。
        */
-      deps.host.append(deps.matte.element)
-      deps.matte.render()
+      transparentFields.push(deps.matte.element)
+      /*
+       * ⚠️ 顺序要求：`matte.render()` 必须在**整个分组挂进文档之后**再调。
+       *
+       * 为什么：`render()` 里在"刚展开"时会 `host.scrollIntoView()` 把取色盘滚进视野。
+       * 如果此时 element 还在一个尚未 append 的游离容器里，`scrollIntoView` 什么都做不了
+       * **且不报错**——表现为"点了色块，取色盘在视口外，用户以为没反应"。
+       * 重构前 element 是直接 append 到已经在文档里的 host，所以没暴露；改成先收集进数组、
+       * 最后统一 append 之后，这个顺序就变成必须显式保证的了（下方 `matte.render()` 的调用点）。
+       */
     } else {
       // 切到「真 alpha」后这个字段会消失，把就地的取色器一起收掉，别留下孤儿宿主
       deps.matte.collapseForAlpha()
     }
     // 锁定色板对三种用途都成立（拼豆/资产批次），因此常显，不再按"模式"藏起来
-    deps.host.append(
+    transparentFields.push(
       field('锁定色板', checkbox(!!p.lockPalette, (v) => deps.patch({ lockPalette: v })), '只用给定色板，绝不新增颜色（拼豆/资产批次必备）', undefined, 'lock-palette'),
     )
+    // 「透明处理」组默认展开：它内含合成底色，而合成底色有真鼠标命中测试（见 COLLAPSE_FORCE_OPEN）
+    deps.host.append(section('matte', '透明处理', transparentFields, true))
+    // 挂进文档之后再让合成底色字段同步外观（其中的 scrollIntoView 需要它在文档里，见上）
+    if (p.transparent !== 'alpha') deps.matte.render()
 
-    deps.host.append(el('div', { class: 'panel-title' }, ['显示']))
-    deps.host.append(
+    const displayFields: HTMLElement[] = []
+    displayFields.push(
       el('div', { class: 'field', 'data-testid': 'display-toggles' }, [
         /*
          * 这两个开关必须**让画面跟上**（`setFlag` 的实现里含一次 `canvasApi.redraw()`）：
@@ -437,6 +567,7 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
         el('span', {}, [' 笔刷预览 / 放大镜']),
       ]),
     )
+    deps.host.append(section('display', '显示', displayFields, true))
   }
 
   function numberInput(value: number, min: number, max: number, onCommit: (v: number) => void): HTMLInputElement {

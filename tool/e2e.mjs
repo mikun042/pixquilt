@@ -763,7 +763,7 @@ async function main() {
       const s = mattePicker
       assert(s.native === 0, `参数面板里不应再有原生 input[type=color]，实际 ${s.native} 个`)
       assert(s.inParamsPanel, '取色盘必须展开在参数面板里（就地）——出现在左侧列会让人以为"点了没反应"')
-      assert(s.topVisible, '取色盘展开后应能直接在视口里看到（顶边在视口内）')
+      assert(s.topVisible, `取色盘展开后应能直接在视口里看到（顶边在视口内）；实测 ${JSON.stringify(s)}`)
       assert(!s.alphaVisible, '编辑合成底色时不应显示「透明度」行')
       assert(!s.transparentSwatch, '编辑合成底色时不应显示「透明」色块')
       assert(matteBox.chipBg === matteBox.chipWant, `色块里的色片应显示当前合成底色（期望 ${matteBox.chipWant}），实际 ${matteBox.chipBg}`)
