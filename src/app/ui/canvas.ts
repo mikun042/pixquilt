@@ -200,9 +200,9 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
       ctx.beginPath()
       ctx.rect(view.ox, view.oy, w, h)
       ctx.clip()
-      ctx.fillStyle = '#2b2e37'
+      ctx.fillStyle = '#2e2e2e'
       ctx.fillRect(view.ox, view.oy, w, h)
-      ctx.fillStyle = '#343844'
+      ctx.fillStyle = '#3a3a3a'
       for (let y = 0; y * CHECKER < h; y++) {
         for (let x = 0; x * CHECKER < w; x++) {
           if ((x + y) % 2 === 0) ctx.fillRect(view.ox + x * CHECKER, view.oy + y * CHECKER, CHECKER, CHECKER)
@@ -263,8 +263,8 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
 
     // 选区：每个选中格描边 + 整块外框（逐格描边在几千格时也够快，且视觉最清楚）
     if (selection.size > 0) {
-      ctx.fillStyle = 'rgba(96,165,250,0.22)'
-      ctx.strokeStyle = 'rgba(96,165,250,0.9)'
+      ctx.fillStyle = 'rgba(71,114,179,0.28)'
+      ctx.strokeStyle = 'rgba(90,134,201,0.95)'
       for (const p of selection) {
         const x = p % art.width
         const y = (p / art.width) | 0

@@ -1,20 +1,35 @@
 /*
- * 工作台样式：深色界面 + 中性灰画布底。
- * 取色原则：界面颜色必须比画布内容"退后一步"——像素画的颜色判断不能被界面染色干扰，
- * 因此除了少量强调色，其余全部用中性灰阶，且不引入任何外部字体/图片（离线可用）。
+ * 工作台样式：Blender 风格深灰工作台 + 像素化图标。
+ *
+ * 取色原则（未变）：界面颜色必须比画布内容"退后一步"——像素画的颜色判断不能被界面染色干扰。
+ * 因此用**中性灰阶**（不带蓝味），强调色只出现在"激活/焦点"上，不大面积铺蓝。
+ *
+ * 色值来源：这组灰不是拍脑袋定的，是取色器（`.cp`）早就照 **Blender 截图实测**量出来的那套
+ * （`#181818` 底 / `#545454` 控件 / `#4772b3` 强调蓝 / `#e6e6e6` 主文字 / `#a7a7a7` 次文字）。
+ * 本次重构把它从"取色器局部覆盖"提升为**全站变量**——原先只有取色器是中性灰、
+ * 界面其余部分是偏蓝的板岩色（`#14161c` 那一族），两套配色并存看着是两个软件。
  */
 :root {
-  --bg: #14161c;
-  --bg-2: #1b1e26;
-  --bg-3: #232733;
-  --line: #2f3442;
-  --text: #e8eaf0;
-  --dim: #99a0b0;
-  --accent: #6ea8fe;
-  --accent-2: #4d7fd6;
+  /* 灰阶：越靠后越亮。面板 < 控件 < 悬停 */
+  --bg: #181818;      /* 应用底（Blender 最暗层） */
+  --bg-2: #242424;    /* 面板：顶栏 / 侧栏 / 状态栏 */
+  --bg-3: #303030;    /* 控件底：按钮 / 输入框 / 工具按钮 */
+  --bg-4: #3a3a3a;    /* 悬停：比控件再亮一档 */
+  --line: #3a3a3a;    /* 分隔线（低对比，不抢视线） */
+  --line-strong: #545454; /* 控件描边（需要看得出边界处） */
+  --text: #e6e6e6;
+  --dim: #a7a7a7;
+  /* 强调：低饱和蓝，只用在与"当前状态"有关的地方（激活/焦点/选中） */
+  --accent: #4772b3;
+  --accent-2: #5a86c9;
   --warn: #f0b232;
   --error: #f26d6d;
-  --radius: 6px;
+  /*
+   * 圆角刻意收小到 2–3px：像素化图标是方块边缘，嵌在大圆角控件里会"打架"
+   * （像素方图标 + 6px 圆角按钮 = 两种视觉语言）。Blender 本身也是接近直角的。
+   */
+  --radius: 2px;
+  --radius-lg: 3px;
   /*
    * 三栏宽度。折叠态要保留"另一侧"的原宽，所以用变量而不是把像素重复写死
    * （1200px 断点只改这两个值，收敛在一处）。
@@ -109,8 +124,8 @@ html, body {
   min-width: 268px;
   padding: 6px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #1e222c;
+  border-radius: var(--radius-lg);
+  background: var(--bg-3);
   box-shadow: 0 12px 32px #000a;
 }
 .dropdown[hidden] { display: none; }
@@ -134,10 +149,10 @@ html, body {
   color: var(--text);
   background: none;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
 }
-.dropdown-item:hover:not(:disabled) { background: #2a3040; }
+.dropdown-item:hover:not(:disabled) { background: var(--bg-4); }
 .dropdown-item:disabled { opacity: 0.4; cursor: not-allowed; }
 .dropdown-item .di-label { font-size: 13px; }
 .dropdown-item .di-hint { font-size: 11px; color: var(--dim); }
@@ -199,7 +214,7 @@ html, body {
   min-height: 0;
   overflow: hidden;
   background:
-    radial-gradient(circle at 50% 40%, #1c2029 0%, #15171d 100%);
+    radial-gradient(circle at 50% 40%, #222222 0%, #161616 100%);
 }
 
 #board { display: block; cursor: crosshair; touch-action: none; }
@@ -233,7 +248,7 @@ html, body {
   display: none;
   padding: 4px;
   border-radius: var(--radius);
-  background: rgba(20, 22, 28, 0.92);
+  background: rgba(24, 24, 24, 0.94);
   border: 1px solid var(--line);
   pointer-events: none;
 }
@@ -266,9 +281,12 @@ html, body {
   cursor: pointer;
   white-space: nowrap;
 }
-.btn:hover { border-color: #3d4356; background: #282d3a; }
+.btn:hover { border-color: var(--line-strong); background: var(--bg-4); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.active { border-color: var(--accent); color: var(--accent); }
+/* 按压反馈：全站此前没有 :active 样式（只有 hover），点下去没有"按到了"的手感。
+   不位移、不做动画，只压暗一档背景——与这套"无动效"的工具风格一致。 */
+.btn:active:not(:disabled) { background: var(--bg-2); border-color: var(--accent); }
 .btn.small { padding: 4px 8px; font-size: 12px; }
 .btn.tiny { padding: 3px 7px; font-size: 11px; font-family: var(--mono); }
 
@@ -312,7 +330,7 @@ select, input[type="number"], input[type="text"], .num {
   color: var(--text);
   background: var(--bg-3);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius);
   padding: 3px 6px;
 }
 .num { width: 68px; }
@@ -350,8 +368,9 @@ select, input[type="number"], input[type="text"], .num {
   border-radius: var(--radius);
   cursor: pointer;
 }
-.tool-btn:hover { border-color: #3d4356; }
-.tool-btn.active { border-color: var(--accent); background: #22304a; color: var(--accent); }
+.tool-btn:hover { border-color: var(--line-strong); background: var(--bg-4); }
+.tool-btn:active { background: var(--bg-2); }
+.tool-btn.active { border-color: var(--accent); background: var(--bg-4); color: #e6e6e6; }
 
 .color-row { display: flex; align-items: center; gap: 6px; margin: 8px 0; }
 .color-slot {
@@ -404,8 +423,8 @@ select, input[type="number"], input[type="text"], .num {
   text-shadow: 0 0 2px #000;
 }
 .swatch.transparent {
-  background: repeating-conic-gradient(#3a3d47 0 25%, #2c2f38 0 50%) 0 0 / 8px 8px;
-  color: #d8dbe4;
+  background: repeating-conic-gradient(#4a4a4a 0 25%, #383838 0 50%) 0 0 / 8px 8px;
+  color: #e6e6e6;
 }
 
 .picker-wrap { margin-top: 8px; }
@@ -419,7 +438,12 @@ select, input[type="number"], input[type="text"], .num {
 
 /*
  * 参考图实测配色：#181818 底 / #545454 控件底 / #4772b3 强调蓝 / #e6e6e6 主文字 / #a7a7a7 次文字。
- * 这些只在本作用域内覆盖变量（下面 .cp 里的 --line/--text/--dim），不会外溢到界面其它区域。
+ *
+ * 2026-09-15 起这套灰**已提升为全站变量**（见文件顶部 `:root`）——原先它只在本作用域覆盖
+ * （`--line/--text/--dim`），于是"取色器是中性灰、界面其余是偏蓝板岩色"两套配色并存。
+ * 现在这里只留取色器**独有**的 `--cp-*`（滑条槽/填充/输入框底这些概念只它用得上），
+ * `--line/--text/--dim` 不再重复声明、直接继承 `:root`——少一处重复就少一次"改一半"的机会。
+ *
  * 尺寸：.cp 内容宽 176 = 色轮 156 + 间隙 6 + 明度条 14 —— 正好填满，不溢出。
  */
 .cp {
@@ -427,15 +451,12 @@ select, input[type="number"], input[type="text"], .num {
   --cp-slot: #545454;    /* 滑条未填充槽 / 未激活标签 */
   --cp-fill: #4772b3;    /* 滑条填充 / 激活标签 */
   --cp-field: #1d1d1d;   /* Hex 输入框底 */
-  --line: #545454;
-  --text: #e6e6e6;
-  --dim: #a7a7a7;
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 9px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--cp-bg);
   /*
    * 拖滑条时不要选中沿途文字：鼠标按住扫过色轮/滑条会让浏览器把经过的标签、数字
@@ -449,7 +470,7 @@ select, input[type="number"], input[type="text"], .num {
 .cp-tabs {
   display: flex;
   height: 26px;
-  border-radius: 4px;
+  border-radius: var(--radius);
   overflow: hidden;
   background: var(--cp-slot);
 }
@@ -551,7 +572,7 @@ select, input[type="number"], input[type="text"], .num {
  * 0.000 时能一眼看出是透明；1.000 时填充全蓝，与参考图一致。
  */
 .cp-alpha .cp-row-track {
-  background: repeating-conic-gradient(#3a3d47 0 25%, #2c2f38 0 50%) 0 0 / 8px 8px;
+  background: repeating-conic-gradient(#4a4a4a 0 25%, #383838 0 50%) 0 0 / 8px 8px;
 }
 
 /*
@@ -657,8 +678,8 @@ select, input[type="number"], input[type="text"], .num {
 .cp-swatch:hover { outline: 2px solid var(--accent); outline-offset: -1px; }
 .cp-swatch.transparent {
   width: 24px;
-  background: repeating-conic-gradient(#3a3d47 0 25%, #2c2f38 0 50%) 0 0 / 8px 8px;
-  color: #d8dbe4;
+  background: repeating-conic-gradient(#4a4a4a 0 25%, #383838 0 50%) 0 0 / 8px 8px;
+  color: #e6e6e6;
   font-size: 11px;
   line-height: 14px;
 }
@@ -680,7 +701,7 @@ select, input[type="number"], input[type="text"], .num {
 .toast {
   padding: 7px 11px;
   border-radius: var(--radius);
-  background: #262b36;
+  background: var(--bg-3);
   border: 1px solid var(--line);
   box-shadow: 0 4px 16px #0008;
   max-width: 340px;
@@ -701,7 +722,7 @@ select, input[type="number"], input[type="text"], .num {
 .modal {
   background: var(--bg-2);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   padding: 14px 16px;
   max-width: 620px;
   max-height: 80vh;
@@ -794,7 +815,7 @@ select, input[type="number"], input[type="text"], .num {
   font-size: 10px;
   line-height: 1;
   color: var(--dim);
-  background: rgba(20, 22, 28, 0.72);
+  background: rgba(24, 24, 24, 0.78);
   border: 1px solid var(--line);
   border-radius: 3px;
   cursor: pointer;
@@ -802,6 +823,7 @@ select, input[type="number"], input[type="text"], .num {
 #btn-drawer-tools { left: 6px; }
 #btn-drawer-panel { right: 6px; }
 .rail-toggle:hover { color: var(--text); background: var(--bg-3); border-color: var(--accent-2); }
+.rail-toggle:active { background: var(--bg-2); }
 
 /* 窄屏抽屉遮罩（桌面宽度下不产生可见效果） */
 .drawer-scrim {
