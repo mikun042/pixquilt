@@ -597,10 +597,23 @@ select, input[type="number"], input[type="text"], .num {
  * （用默认的 baseline 对齐会让图标明显偏高）。
  */
 .tool-btn .icon-svg {
-  width: 14px;
-  height: 14px;
+  /*
+   * 16px（原 14px）：像素图标是方块边缘，**偶数尺寸**才能让像素格落在整数边界上。
+   * 14px 时 32 格图标每格 0.44px、16 格每格 0.875px，边缘都会糊出灰边。
+   * 注意 e2e-pdf 有一条"图标尺寸 > 8px"的断言，改小会红。
+   */
+  width: 16px;
+  height: 16px;
   display: inline-block;
   vertical-align: middle;
+}
+
+/* 顶栏动作图标：与文字并排，尺寸与工具图标一致（避免同一界面出现两种像素密度） */
+.act .icon-svg {
+  width: 16px;
+  height: 16px;
+  display: inline-block;
+  vertical-align: -3px;
 }
 
 /*

@@ -25,7 +25,7 @@ import { createColorPicker, type ColorPickerApi, type ColorPickerCallbacks } fro
 import { createMatteField } from './matte-field.ts'
 import { createParamsPanel } from './ui/params-panel.ts'
 import { createHeader } from './ui/header.ts'
-import { iconEl } from './ui/icons.ts'
+import { iconEl, type IconName } from './ui/icons.ts'
 import { ArtHistory, normalizeAlphaMask } from './history.ts'
 import { installAutomationApi } from './automation.ts'
 
@@ -308,16 +308,24 @@ const statusbar = document.getElementById('statusbar') as HTMLElement
 /**
  * 工具按钮的图标。`icon` 是字符兜底，`svg` 指定时优先用内联 SVG。
  *
+ * 现状（2026-09-15）：**部分工具已换成像素图标**（矩形/椭圆/选区），
+ * 画笔与填充仍是字符——它们的像素版还在 `output/UI素材32/` 里调（形状读不出语义）。
+ * 所以这一排目前是"像素图标 + 吸管 + 字符"三种并存，属**过渡状态**：
+ * 待那 8 个图标达标后会统一成图标。不要把这当最终形态。
+ *
  * 取色用 SVG 吸管：Unicode 里没有吸管符号，原先用 `⌖`（准星）——
  * 用户反馈"看上去不像吸管"。图标语义错了会让人根本找不到这个工具。
+ *
+ * ⚠️ **`picker.name` 不要改**：`e2e-pdf.mjs` 靠 `title.includes('取色')` 定位这个按钮，
+ * 而 title 由 `name` 拼出。改成"吸管"会让那条断言报"工具条里找不到取色工具"。
  */
-const TOOL_META: Record<string, { icon: string; svg?: 'eyedropper'; name: string; key: string }> = {
+const TOOL_META: Record<string, { icon: string; svg?: IconName; name: string; key: string }> = {
   pencil: { icon: '✎', name: '画笔', key: 'B' },
-  selection: { icon: '⬚', name: '选区', key: 'M' },
+  selection: { icon: '⬚', svg: 'selection', name: '选区', key: 'M' },
   bucket: { icon: '▨', name: '填充', key: 'G' },
   picker: { icon: '⌖', svg: 'eyedropper', name: '取色', key: 'I' },
-  rect: { icon: '▭', name: '矩形', key: 'U' },
-  ellipse: { icon: '◯', name: '椭圆', key: 'O' },
+  rect: { icon: '▭', svg: 'rect', name: '矩形', key: 'U' },
+  ellipse: { icon: '◯', svg: 'ellipse', name: '椭圆', key: 'O' },
 }
 
 function renderTools(): void {

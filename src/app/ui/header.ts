@@ -11,6 +11,7 @@
  */
 import { EXPORT_SCALES } from '../../core/limits.ts'
 import { clear, el } from '../store.ts'
+import { iconEl } from './icons.ts'
 import type { ExportActions } from '../export-actions.ts'
 
 export interface HeaderDeps {
@@ -47,6 +48,22 @@ export interface HeaderApi {
   updateState: () => void
   /** 打开常驻的隐藏文件选择器（空状态的「导入图片…」按钮复用它） */
   openFilePicker: () => void
+}
+
+
+/**
+ * 顶栏动作图标：优先用像素 SVG，外面仍套 `.act-icon`（CSS 靠这个类控制尺寸与对齐）。
+ * `iconEl` 返回 null 时回退成字符——**不要静默产出空按钮**（见 icons.ts 的约定）。
+ *
+ * 现状：只有「新建」已换成像素图标，撤销/重做/重新转换/帮助仍是字符
+ * （它们的像素版还在 output/UI素材32/ 里调）。属过渡状态。
+ */
+function iconSpan(name: Parameters<typeof iconEl>[0], fallback = ''): HTMLElement {
+  const svg = iconEl(name)
+  const span = el('span', { class: 'act-icon' })
+  if (svg) span.append(svg)
+  else span.append(document.createTextNode(fallback))
+  return span
 }
 
 export function createHeader(deps: HeaderDeps): HeaderApi {
@@ -135,7 +152,7 @@ export function createHeader(deps: HeaderDeps): HeaderApi {
           deps.newBlankOrClear()
         },
       },
-      [el('span', { class: 'act-icon' }, ['✚']), el('span', { class: 'act-label' }, ['新建'])],
+      [iconSpan('new', '✚'), el('span', { class: 'act-label' }, ['新建'])],
     )
     const helpBtn = document.getElementById('btn-help') as HTMLButtonElement | null
     if (helpBtn) {
