@@ -68,8 +68,14 @@ export interface ColorPickerCallbacks {
 }
 
 export interface ColorPickerState {
-  /** 正在编辑哪一路颜色（仅信息用途；实际写回由调用方的回调决定） */
-  target: 'primary' | 'bg' | 'matte'
+  /**
+   * 正在编辑哪一路颜色。
+   *
+   * **仅信息用途**（`targetChanged` 判断与状态记录）；真正的写回完全由调用方的回调决定，
+   * 所以这个值不同不会改变取色器行为，它只回答"这个面板现在在改谁"。
+   *  `'palette'` = 工作色板里某个条目（彩色微调），见 `src/app/ui/swatch-editor.ts`。
+   */
+  target: 'primary' | 'bg' | 'matte' | 'palette'
   value: string
   /** 色板（工作色板 + 预置卡；分组显示） */
   groups: { name: string; colors: string[] }[]

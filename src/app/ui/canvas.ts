@@ -42,6 +42,17 @@ export interface CanvasApi {
    * 见 docs/ARCHITECTURE.md §2.1 的三条同步路径。
    */
   applyIndices: (indices: Uint8Array, palette?: string[], alphaMask?: Uint8Array | null) => void
+  /**
+   * **只换色板、不动像素**：色板条目改值时用。
+   *
+   * 像素存的是色板下标（`indices[p]`），颜色只在 `palette` 里，所以改色板第 i 项
+   * 就等于改掉图上所有用该色的格子——不必碰 `indices`。比 `applyIndices` 便宜：
+   * 后者每次都 `indices.slice()`，2048² 是 4MB，拖动预览按帧调会卡。
+   * 语义也更准：这次确实没动像素，不该让"像素变了"的错觉进入任何判断。
+   *
+   * ⚠️ 只改画布**内部副本**，绝不写回 `art.palette`（见 `commit()` 上方关于 P2-05 的说明）。
+   */
+  setPalette: (palette: string[]) => void
   redraw: () => void
   /**
    * 适配窗口 / 按倍数缩放。
@@ -853,6 +864,11 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
       scheduleDraw()
     },
     redraw: scheduleDraw,
+    setPalette: (nextPalette) => {
+      palette = [...nextPalette]
+      artDirty = true
+      scheduleDraw()
+    },
     fitView,
     zoomBy,
     /** 参考图层（半透明叠原图"照着描"）：`show=false` 时不叠，但放大镜仍用这张图 */

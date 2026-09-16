@@ -20,6 +20,8 @@ import { codesForParams, getPreset, parseHexPalette, serializeHexPalette, palett
 import { artHash, decodePixBin, encodePixBin, layoutSheet, parseProjectFile, pixelJSONString, projectJSONString } from '../core/export.ts'
 import { base64ToBytes, bytesToBase64 } from '../core/binary.ts'
 import { countTransparent, countUsage, hasRealAlpha } from '../core/stats.ts'
+import { PALETTE_MAX } from '../core/limits.ts'
+import { replacePaletteEntry } from '../core/palette-edit.ts'
 import { hardenAlpha } from '../core/png.ts'
 import { decodePngNode, encodePngNode } from '../io/node-png.ts'
 import { artToPngBytesNode } from '../io/node-export.ts'
@@ -380,6 +382,43 @@ describe('编辑算子', () => {
     const r = applyOps(art, [{ op: 'replaceAny', color: '#ffffff', to: '#ff0000' }])
     assert.equal(r.changes[0].cells, 9)
     assert.equal(r.art.palette[r.art.indices[0]], '#ff0000')
+  })
+
+  /*
+   * replaceAny 的边界。此前只有上面那一条"正常路径"断言，四条边界全裸——
+   * 而 UI 的「替换为…」正是把这些错误**当作面向用户的提示**抛出去的
+   * （见 src/app/index.ts 的 commitReplaced），措辞变了就说明契约变了，所以逐条钉住。
+   */
+  it('replaceAny 边界：源色不在色板要报错并指出原因（不静默空操作）', () => {
+    const art = blankArt(2, 2, '#ffffff', false)
+    assert.throws(() => applyOps(art, [{ op: 'replaceAny', color: '#123456', to: '#000000' }]), /色板中没有/)
+  })
+
+  it('replaceAny 边界：非法目标色要报错，不产出坏色板', () => {
+    const art = blankArt(2, 2, '#ffffff', false)
+    assert.throws(() => applyOps(art, [{ op: 'replaceAny', color: '#ffffff', to: 'not-a-color' }]), /目标色不合法/)
+    assert.equal(art.palette.length, 1, '报错后不得留下被污染的色板')
+  })
+
+  it('replaceAny 边界：色板满且锁定色板时报错（拼豆不能悄悄换成买不到的颜色）', () => {
+    // 造一个满色板：用 PALETTE_MAX 常量而不是抄 256，上限变了这条跟着变
+    const full = Array.from({ length: PALETTE_MAX }, (_, i) => `#${(i * 257 + 1).toString(16).padStart(6, '0').slice(-6)}`)
+    const art = { width: 1, height: 1, indices: new Uint8Array([0]), palette: [...full] }
+    assert.throws(
+      () => applyOps(art, [{ op: 'replaceAny', color: full[0], to: '#ff00ff' }], { allowApproxColor: false }),
+      /色板已满/,
+    )
+    // 自由模式（默认 allowApproxColor: true）则退化为最近色并把这一点写进 note，而不是报错
+    const r = applyOps(art, [{ op: 'replaceAny', color: full[0], to: '#ff00ff' }], { allowApproxColor: true })
+    assert.equal(r.changes[0].note, '色板已满：退化为最近色')
+  })
+
+  it('replaceAny 边界：同色替换不污染色板（空操作不该改颜色表）', () => {
+    // 与 spec.ts 对 outline 的既有约定一致：没有实际改动就不该往色板里塞东西
+    const art = blankArt(2, 2, '#ffffff', false)
+    const r = applyOps(art, [{ op: 'replaceAny', color: '#ffffff', to: '#ffffff' }])
+    assert.equal(r.art.palette.length, 1)
+    assert.equal(r.applied, false)
   })
 
   it('fill：透明格之间一律连通（洞下残留索引不同也只算一片）', () => {
@@ -923,6 +962,102 @@ describe('键控（透明底导出）', () => {
     assert.equal(img.width, 16)
     assert.equal(countTransparentPx(img), 48 * 4, '16×16 下背景 48 格 × 4 像素')
     assert.equal(img.data[(6 * 16 + 6) * 4 + 3], 255, '(3,3) 高光在 2 倍下仍不透明')
+  })
+})
+
+describe('色板条目编辑（core/palette-edit.ts）', () => {
+  /*
+   * 这一组的价值全在**合并时的下标重映射**上：删掉色板第 i 项之后，
+   * 所有大于 i 的下标都要前移 1。写错不会抛错、不会让任何东西变红，
+   * 只会让整张图的颜色**静默错位**——所以这里逐格断言映射结果，
+   * 而不是只断言"色板长度少了一个"。
+   */
+
+  /** 造一幅"每个色板项各占一格"的图，便于逐格核对映射 */
+  function artOf(palette: string[]): { palette: string[]; indices: Uint8Array } {
+    return { palette: [...palette], indices: new Uint8Array(palette.map((_, i) => i)) }
+  }
+
+  it('普通改值：只换那一项，indices 为 null（不必重映射，也别白拷一次）', () => {
+    const a = artOf(['#ff0000', '#00ff00', '#0000ff'])
+    const r = replacePaletteEntry(a.palette, a.indices, 1, '#123456')
+    assert.deepEqual(r.palette, ['#ff0000', '#123456', '#0000ff'])
+    assert.equal(r.indices, null, '未合并时不该产出新的 indices')
+    assert.equal(r.mergedInto, null)
+  })
+
+  it('改出的颜色与**后面**一项重复：合并到它，并把更后的下标整体前移 1', () => {
+    // 源 = 下标1，目标 = 下标3。删掉 1 之后，原下标 3 → 2
+    const a = artOf(['#ff0000', '#00ff00', '#0000ff', '#ffff00'])
+    a.indices = new Uint8Array([0, 1, 2, 3, 1, 3])
+    const r = replacePaletteEntry(a.palette, a.indices, 1, '#ffff00')
+    assert.deepEqual(r.palette, ['#ff0000', '#0000ff', '#ffff00'], '被合并的那一项应当被移除')
+    assert.equal(r.mergedInto, 2, '目标项删除后落在下标 2')
+    assert.deepEqual([...r.indices!], [0, 2, 1, 2, 2, 2], '指向源色的改指目标项，>源下标的全部前移 1')
+  })
+
+  it('改出的颜色与**前面**一项重复：合并到它，前面的下标不受影响', () => {
+    // 源 = 下标 2，目标 = 下标 0（在源之前，删除后下标不变）
+    const a = artOf(['#ff0000', '#00ff00', '#0000ff', '#ffff00'])
+    a.indices = new Uint8Array([0, 2, 3, 2])
+    const r = replacePaletteEntry(a.palette, a.indices, 2, '#ff0000')
+    assert.deepEqual(r.palette, ['#ff0000', '#00ff00', '#ffff00'])
+    assert.equal(r.mergedInto, 0)
+    assert.deepEqual([...r.indices!], [0, 0, 2, 0], '源色的格子改指 0；原下标 3 前移到 2')
+  })
+
+  it('合并后每一格的**颜色**必须与合并前指向的颜色一致（错位就红）', () => {
+    // 上一条测的是下标数字，这一条按"颜色"再核一遍——下标对了但语义错了照样能被这里抓住
+    const before = ['#111111', '#222222', '#333333', '#444444', '#555555']
+    const indices = new Uint8Array([0, 1, 2, 3, 4, 1, 4, 2])
+    const colorBefore = [...indices].map((i) => before[i])
+    const r = replacePaletteEntry(before, indices, 1, '#444444')
+    const colorAfter = [...r.indices!].map((i) => r.palette[i])
+    // 源色 #222222 的格子应当变成 #444444，其余格子的颜色一个都不能变
+    assert.deepEqual(colorAfter, colorBefore.map((c) => (c === '#222222' ? '#444444' : c)))
+  })
+
+  it('大小写不敏感：改成 #FF0000 也能认出已存在的 #ff0000 并合并', () => {
+    const a = artOf(['#ff0000', '#00ff00'])
+    const r = replacePaletteEntry(a.palette, a.indices, 1, '#FF0000')
+    assert.deepEqual(r.palette, ['#ff0000'], '归一化后与已有项相同 → 合并')
+    assert.equal(r.mergedInto, 0)
+  })
+
+  it('归一化：合法但带大写/缺 # 的输入会被规范成小写 6 位再写入', () => {
+    const a = artOf(['#ff0000', '#00ff00'])
+    const r = replacePaletteEntry(a.palette, a.indices, 1, 'AABBCC')
+    assert.deepEqual(r.palette, ['#ff0000', '#aabbcc'])
+  })
+
+  it('非法输入一律原样返回、不抛错（UI 据此静默不动，不弹错给用户）', () => {
+    const a = artOf(['#ff0000', '#00ff00'])
+    for (const bad of ['', 'nope', '#12345', '#1234567', 'rgb(1,2,3)']) {
+      const r = replacePaletteEntry(a.palette, a.indices, 0, bad)
+      assert.equal(r.palette, a.palette, `非法色 ${bad} 不该改动画板`)
+      assert.equal(r.indices, null)
+      assert.equal(r.mergedInto, null)
+    }
+  })
+
+  it('下标越界一律原样返回', () => {
+    const a = artOf(['#ff0000'])
+    for (const bad of [-1, 1, 99, 1.5, Number.NaN]) {
+      const r = replacePaletteEntry(a.palette, a.indices, bad, '#00ff00')
+      assert.equal(r.palette, a.palette, `越界下标 ${bad} 不该改动画板`)
+      assert.equal(r.indices, null)
+    }
+  })
+
+  it('不就地修改入参（history.undo 存引用，就地改会污染历史帧）', () => {
+    const palette = ['#ff0000', '#00ff00', '#0000ff']
+    const indices = new Uint8Array([0, 1, 2])
+    const snapPalette = [...palette]
+    const snapIndices = [...indices]
+    replacePaletteEntry(palette, indices, 1, '#0000ff') // 走合并分支
+    replacePaletteEntry(palette, indices, 1, '#123456') // 走普通分支
+    assert.deepEqual(palette, snapPalette, '入参色板必须保持不变')
+    assert.deepEqual([...indices], snapIndices, '入参 indices 必须保持不变')
   })
 })
 

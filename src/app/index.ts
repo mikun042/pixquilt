@@ -15,7 +15,8 @@ import { DRAFT_DEBOUNCE_MS, DRAFT_VERSION, PREFS_DEBOUNCE_MS } from '../core/lim
 import { createExportActions } from './export-actions.ts'
 import { artToPngBlob, artToPngDataURL, artToPngDataURLSync } from './canvas-png.ts'
 import { runPipeline } from '../core/pipeline.ts'
-import { blankArt } from '../core/ops.ts'
+import { applyOps, blankArt } from '../core/ops.ts'
+import { replacePaletteEntry } from '../core/palette-edit.ts'
 import { artStats } from '../core/stats.ts'
 import { colorTextOn } from '../core/color.ts'
 import { parseProjectFile, projectJSONString } from '../core/export.ts'
@@ -24,6 +25,8 @@ import { decodeToRgba, imageFromClipboard, makeThumbnail, looksLikeImage } from 
 import { createCanvas } from './ui/canvas.ts'
 import { createColorPicker, type ColorPickerApi, type ColorPickerCallbacks } from './ui/colorpicker.ts'
 import { createMatteField } from './matte-field.ts'
+import { createSwatchEditor } from './ui/swatch-editor.ts'
+import { createContextMenu } from './ui/context-menu.ts'
 import { createParamsPanel } from './ui/params-panel.ts'
 import { createHeader } from './ui/header.ts'
 import { iconEl, type IconName } from './ui/icons.ts'
@@ -598,6 +601,84 @@ const matteField = createMatteField({
 })
 
 /**
+ * 工作色板的色块编辑器（微调 / 替换）+ 它的右键菜单。
+ *
+ * 两个提交出口都走 `commitModelArt`（模型发起路径）——它会 `history.commit` → `applyIndices`
+ * （同尺寸，保留选区与视图）→ `hasEdits` → 草稿落盘 → `renderAll`。
+ * 色板改动属于"模型侧算出来的新画布"，**不能**走 `commitWithHistory`（那条要求像素已在画布副本里改完）。
+ */
+const swatchMenu = createContextMenu()
+
+const swatchEditor = createSwatchEditor({
+  getArt: () => app.art,
+  /**
+   * 拖动预览：只改画布**内部副本**的颜色表，模型与撤销栈都不动。
+   *
+   * 用 `setPalette` 而不是 `applyIndices`：像素存的是下标，改色板就等于改全图显示，
+   * 一个 `indices` 都不用碰；而拖动是按帧回调的，`applyIndices` 每帧复制一次 indices
+   * （2048² 是 4MB）会卡。`null` 表示回到模型真值（放弃时用）。
+   */
+  previewPalette: (palette) => {
+    canvasApi.setPalette(palette ?? app.art?.palette ?? [])
+  },
+  commitTuned: (index, hex) => {
+    const art = app.art
+    if (!art) return
+    const r = replacePaletteEntry(art.palette, art.indices, index, hex)
+    // 合并（与已有色重复）时 indices 一起交出去；普通改值只换色板，像素不动
+    commitModelArt({ ...art, palette: r.palette, indices: r.indices ?? art.indices })
+    addRecent(hex)
+    toast(
+      r.mergedInto === null
+        ? `已把色板第 ${index + 1} 项改为 ${hex}`
+        : `${hex} 与色板里已有的一项合并（原色已移除）`,
+    )
+  },
+  commitReplaced: (index, hex) => {
+    const art = app.art
+    if (!art) return
+    // 源色必须取**模型里**的那一项：预览期间画布显示的是目标色，从显示读会读成目标色自身
+    const from = art.palette[index]
+    if (from === undefined) return
+    try {
+      const r = applyOps(art, [{ op: 'replaceAny', color: from, to: hex }], {
+        // 拼豆/资产批次（lockPalette）下色板满要**报错**而不是退化为近似色——买不到的颜色不能静默替换
+        allowApproxColor: !app.params.lockPalette,
+      })
+      if (!r.applied) {
+        toast(`${from} 没有可替换的格子（或目标色与它相同）`, 'warn')
+        renderAll()
+        return
+      }
+      commitModelArt(r.art)
+      addRecent(hex)
+      toast(`已把 ${from} 全部替换为 ${hex}`)
+    } catch (err) {
+      // 不静默：源色不在色板、色板满且不允许近似色等都要如实告诉用户
+      toast(`替换失败：${(err as Error).message}`, 'error')
+      renderAll()
+    }
+  },
+  groups: () => pickerGroups(),
+  rerender: () => renderAll(),
+  toast,
+})
+
+/*
+ * 编辑器开着时，用户若直接到画布上落笔，画布会拿**内部的预览色板**去 `onCommit`，
+ * 等于把预览静默并入那一笔提交上去（画布副本与模型的色板不是同一份）。
+ * 在捕获阶段先提交并关闭编辑器，这一笔随后照常进行——用户不会发现中间发生过一次提交，
+ * 但"预览色意外混进笔触"这条静默路径就此堵死。
+ */
+canvasHost.addEventListener(
+  'pointerdown',
+  () => {
+    if (swatchEditor.isOpen()) swatchEditor.commit()
+  },
+  true,
+)
+
+/**
  * 参数面板（预设区 + 转换参数 + 显示开关），实现在 `src/app/ui/params-panel.ts`。
  * 那边只做渲染，所有状态读写经下面这个 deps 走回来——方向单向：这里 → 那边。
  */
@@ -739,9 +820,17 @@ function renderPickerPanel(): void {
 }
 
 function renderPalette(): void {
-  // 只移除色板自己的子节点，**保留取色器宿主**（宿主必须跨渲染存活，见上面注释）
+  /*
+   * 只移除色板自己的子节点，**保留两个取色器宿主**。
+   *
+   * 宿主必须跨渲染存活：拖动中若把它摘出文档，指针捕获会丢，表现为"一拖就断"
+   * （`matte-field.ts` 文件头第 2 条坑）。这里曾经只豁免 `pickerHost`，
+   * 加色块编辑器时漏豁免就会让"微调颜色"一拖就断——所以两个都列在条件里，
+   * 而不是靠"记得也加一个"。
+   */
+  const keep = new Set<Element | null>([pickerHost, swatchEditor.host])
   for (const child of [...palettePanel.children]) {
-    if (child !== pickerHost) child.remove()
+    if (!keep.has(child)) child.remove()
   }
   renderPickerPanel()
 
@@ -749,40 +838,99 @@ function renderPalette(): void {
   palettePanel.append(el('div', { class: 'panel-title' }, ['工作色板']))
   if (!art || art.palette.length === 0) {
     palettePanel.append(el('p', { class: 'hint' }, ['导入图片后显示；现在也可以用上方取色器手选颜色']))
+    swatchEditor.render()
     return
   }
 
-  const usage = artStats(art).usage
+  const stats = artStats(art)
+  const usage = stats.usage
   const grid = el('div', { class: 'swatch-grid' })
   const transparent = store.get('transparent')
   // 透明色是第一格：不进 palette 数组（索引/上限/.hex 导出都基于该数组）
   grid.append(
     el('button', {
       class: `swatch transparent${transparent ? ' selected' : ''}`,
-      title: `透明色（E）· 共 ${artStats(art).transparent} 格`,
+      title: `透明色（E）· 共 ${stats.transparent} 格`,
       onclick: () => {
         store.set('transparent', true)
         renderAll()
       },
-    }, [el('span', { class: 'count' }, [String(artStats(art).transparent)])]),
+    }, [el('span', { class: 'count' }, [String(stats.transparent)])]),
   )
-  for (const hex of art.palette) {
-    const count = usage[hex] ?? 0
-    grid.append(
-      el('button', {
-        class: `swatch${hex === store.get('primary').toLowerCase() && !transparent ? ' selected' : ''}${count === 0 ? ' unused' : ''}`,
-        style: { background: hex, color: colorTextOn(hex) },
-        title: `${hex} · 用量 ${count} 格 · 左键选为主色`,
-        onclick: () => {
-          store.setMany({ primary: hex, transparent: false })
-          renderAll()
-        },
-      }, [el('span', { class: 'count' }, [count > 999 ? '1k' : String(count)])]),
-    )
+  /*
+   * **按下标遍历**，不再 `for (const hex of art.palette)`。
+   * 两个理由：① 色块编辑器要按**下标**定位（色板允许重复 hex，只有下标唯一）；
+   * ② 预览时底色要取"预览中的色板"，按下标才不会拿错项。
+   */
+  const shown = swatchEditor.displayPalette() ?? art.palette
+  const editing = swatchEditor.editingIndex()
+  const primary = store.get('primary').toLowerCase()
+  for (let i = 0; i < art.palette.length; i++) {
+    const hex = shown[i] ?? art.palette[i]
+    // 用量按**原色**统计：预览只是换显示，别让色块上的数字跟着跳（那会误导"格数变了"）
+    const count = usage[art.palette[i]] ?? 0
+    const cls = [
+      'swatch',
+      hex === primary && !transparent ? 'selected' : '',
+      count === 0 ? 'unused' : '',
+      editing === i ? 'editing' : '',
+    ].filter(Boolean).join(' ')
+    const btn = el('button', {
+      class: cls,
+      type: 'button',
+      style: { background: hex, color: colorTextOn(hex) },
+      // tooltip 必须写明右键：没有视觉痕迹的手势不写就完全不可发现（tooltip 是这里唯一的发现渠道）
+      title: `${art.palette[i]} · 用量 ${count} 格 · 左键选为主色 · 右键：微调 / 替换`,
+      'data-testid': `swatch-${i}`,
+      onclick: () => {
+        store.setMany({ primary: art.palette[i], transparent: false })
+        renderAll()
+      },
+      oncontextmenu: (e: Event) => {
+        e.preventDefault()
+        openSwatchMenu(i, e as MouseEvent)
+      },
+    }, [el('span', { class: 'count' }, [count > 999 ? '1k' : String(count)])])
+    grid.append(btn)
   }
   palettePanel.append(grid)
-  // 取色器宿主永远排在面板末尾：保证"色板在上、调色器在下"的稳定阅读顺序
+  /*
+   * 顺序有讲究：**先挂进文档再 render**。
+   * `render()` 在"刚展开"时会 `scrollIntoView`——宿主还在游离状态时它什么都做不了
+   * **且不报错**，表现为"点了色块、编辑器在视口外，用户以为没反应"（matte-field 记过同一条坑）。
+   * 排在色板网格之后、主色取色器之前，保证"色板 → 编辑器 → 调色器"的稳定阅读顺序。
+   */
+  if (swatchEditor.isOpen()) palettePanel.append(swatchEditor.host)
+  swatchEditor.render()
   if (pickerHost) palettePanel.append(pickerHost)
+}
+
+/**
+ * 色块右键菜单：**微调此颜色**（改色板条目的值）与**替换为…**（把该色的格子全换成另一色）。
+ *
+ * 为什么不给色块加左键以外的点击区（如角落小图标）：色板最多 256 格，每格多一个子节点
+ * 既撑 DOM 又挤坏 26px 的格子；右键是桌面软件的既有约定，成本为零。
+ * 两项都**只打开编辑器、不当场改色**——真正的动作在编辑器里（那里能实时预览）。
+ */
+function openSwatchMenu(index: number, e: MouseEvent): void {
+  const art = app.art
+  if (!art) return
+  const hex = art.palette[index]
+  if (hex === undefined) return
+  swatchMenu.open(e.clientX, e.clientY, [
+    {
+      label: '微调此颜色…',
+      hint: '改这个颜色本身，全图同步变',
+      testId: 'swatch-menu-tune',
+      onSelect: () => swatchEditor.open(index, 'tune'),
+    },
+    {
+      label: '替换为…',
+      hint: '把用到它的格子换成另一个颜色',
+      testId: 'swatch-menu-replace',
+      onSelect: () => swatchEditor.open(index, 'replace'),
+    },
+  ])
 }
 
 function renderStatusbar(): void {
@@ -906,6 +1054,8 @@ function showHelp(): void {
     ['Ctrl+S', '导出 PNG（1 倍）'],
     ['?', '打开这张速查表'],
     ['点主色/背景色块', '打开取色器（Blender 结构：色轮 + 明度条 + RGB/HSV 两段 + 红/绿/蓝、Alpha 滑条 + Hex 行）'],
+    ['右键工作色板色块', '微调此颜色（改色板条目，全图实时变色）/ 替换为…（把该色的格子换成另一色）'],
+    ['Esc', '放弃正在进行的色板微调（还原成改之前的样子，不占用撤销）'],
     ['右上角「导出 ▾」', 'PNG 各倍数 / 拼豆图纸 / 像素与项目 JSON'],
   ]
   const table = el('table')
@@ -954,6 +1104,17 @@ window.addEventListener('keydown', (e) => {
     return
   }
   if (e.ctrlKey || e.metaKey || e.altKey) return
+  /*
+   * Esc 的**第一优先级**给色块编辑器：它是当前最"模态"的临时状态
+   * （画布上正显示着未提交的预览色），必须先收掉它，否则后面那些分支
+   * （退出吸管工具等）会先把别的东西改掉，用户想要的"取消"就落空了。
+   * 走 `abandon()` 而不是 `commit()`——Esc 在本项目里一律是"取消"。
+   * 色板编辑器的取消入口**只有 Esc**（右键取消已移除，见 ui/swatch-editor.ts 的说明）。
+   */
+  if (k === 'escape' && swatchEditor.isOpen()) {
+    swatchEditor.abandon()
+    return
+  }
   /*
    * 吸管提示语里承诺了「Esc 取消」，这里必须兑现（否则又是一句空头承诺）：
    * 退出取色、还原进吸管前的工具，并清掉"取到的颜色写进合成底色"的待办标记。

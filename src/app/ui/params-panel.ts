@@ -13,6 +13,7 @@ import { PRESETS, getPreset, paletteCodes, parseHexPalette, serializeHexPalette 
 import { addCustomPreset, effectivePresets, removeCustomPreset, resetPreset, sameParams, updatePreset } from '../presets.ts'
 import { colorTextOn } from '../../core/color.ts'
 import { el } from '../store.ts'
+import { createNumSlider, type NumSliderApi } from './num-slider.ts'
 import type { MatteFieldApi } from '../matte-field.ts'
 
 export interface ParamsPanelDeps {
@@ -299,6 +300,16 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
 
   /** 预设「管理」区是否展开。工厂级持有：面板每次 render 都重建 DOM，状态不能放在渲染函数里 */
   let presetEditorOpen = false
+
+  /**
+   * 图像调整的三个滑条（亮度 / 对比度 / 饱和度）。
+   *
+   * 与 `presetEditorOpen` 同一个理由留在工厂级：**面板每次 render 都重建 DOM**。
+   * 但比它更进一步——滑条连**节点本身**都必须跨渲染存活（拖动中的指针捕获在节点上，
+   * 重建即断，表现为"一拖就断"）。所以这里是惰性建一次、之后只复用，
+   * 见 `renderParams` 里那段注释。
+   */
+  let adjustSliders: NumSliderApi[] | null = null
 
   /**
    * 套用预设 = **替换**，不是合并。
@@ -626,15 +637,56 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
         field('杂色清理', checkbox(p.cleanup, (v) => deps.patch({ cleanup: v })), '开启抖动时自动关闭（抖动的点就是杂色）'),
       ], false),
     )
-    deps.host.append(
-      section('adjust', '图像调整', [
-        field('亮度 / 对比度 / 饱和度', el('div', { class: 'row' }, [
-          numberInput(p.brightness, -100, 100, (v) => deps.patch({ brightness: v })),
-          numberInput(p.contrast, -100, 100, (v) => deps.patch({ contrast: v })),
-          numberInput(p.saturation, -100, 100, (v) => deps.patch({ saturation: v })),
-        ])),
-      ], false),
-    )
+    /*
+     * 图像调整：三个值各占一行，**结构一次性建好、跨渲染复用**。
+     *
+     * 为什么不能像别的字段那样每次 `renderParams()` 现建：
+     * 拖动滑条会连续改参数 → 每次都触发重跑管线 → `renderAll()` → 面板重建 DOM。
+     * 若滑条节点跟着重建，"正在拖哪一个 / 指针捕获在谁身上"第一帧就被冲掉，表现为**一拖就断**。
+     * 这与合成底色那块的处境相同（见 matte-field.ts 文件头第 2 条），因此同样收进
+     * `createNumSlider()` 的闭包里，这里只持有实例、每次渲染把 `element` 放回原位。
+     *
+     * 三个都铺开而不是塞进一个 `.row`：亮度/对比度/饱和度是**要来回比着调**的一组参数
+     * （调完对比度往往要回补亮度），并排三个数字输入框既看不清当前档位、也没法拖。
+     */
+    const adjustFields: HTMLElement[] = []
+    if (!adjustSliders) {
+      adjustSliders = [
+        createNumSlider({
+          label: '亮度',
+          min: -100,
+          max: 100,
+          neutral: 0,
+          title: '亮度 -100…100：0 为中位。拖动滑条时画面实时更新，松手即成一次编辑',
+          get: () => deps.getParams().brightness,
+          apply: (v) => deps.patch({ brightness: v }),
+        }),
+        createNumSlider({
+          label: '对比度',
+          min: -100,
+          max: 100,
+          neutral: 0,
+          title: '对比度 -100…100：0 为中位，照片发灰先加这一项',
+          get: () => deps.getParams().contrast,
+          apply: (v) => deps.patch({ contrast: v }),
+        }),
+        createNumSlider({
+          label: '饱和度',
+          min: -100,
+          max: 100,
+          neutral: 0,
+          title: '饱和度 -100…100：0 为中位，-100 为完全去色（灰度）',
+          get: () => deps.getParams().saturation,
+          apply: (v) => deps.patch({ saturation: v }),
+        }),
+      ]
+    }
+    for (const s of adjustSliders) {
+      // 每次渲染都同步一次：值可能被预设、页内 API 或项目文件改掉，界面得跟上
+      s.sync()
+      adjustFields.push(s.element)
+    }
+    deps.host.append(section('adjust', '图像调整', adjustFields, false))
     const transparentFields: HTMLElement[] = [
       field('透明处理', selectInput(p.transparent, [['none', '不透明（合成到底色）'], ['key', '单色键控（导出透明）'], ['alpha', '真 alpha（保留原图透明）']], (v) => deps.patch({ transparent: v as ConvertParams['transparent'] }))),
     ]

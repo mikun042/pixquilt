@@ -392,6 +392,101 @@ select, input[type="number"], input[type="text"], .num {
 .hint.lines { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
 
 /*
+ * 数值滑条行（`.num-slider`）：参数面板里用于亮度 / 对比度 / 饱和度。
+ *
+ * 结构 = [标签 + 数值框] 一行，下面是**整行宽的滑条轨道**（与参考图一致：标签与数值同排、
+ * 滑条独占一行，因此滑条能顶到面板两侧，行程最长、调参最细）。
+ *
+ * 为什么不用原生 `<input type=range>`：
+ *  1. 原生控件在 Chrome 上**拖到轨道外仍会持续响应**（按轨道比例 clamp，靠指针捕获），
+ *     于是"拖到数值框那一列还想接着调"就再也调不动了——而参考图正是那个布局，冲突是必然的；
+ *  2. 原生滑块尺寸受浏览器默认样式影响，本项目圆角只有 2–3px（见 `:root` 注释），
+ *     要对齐得写一堆 `::-webkit-slider-thumb` 覆盖，换浏览器还会变。
+ * 这里用 **[轨道][填充][手柄]** 三块绝对定位的 div 自己实现，命中判定与取色器
+ * `.cp-row-track` 同一套语义（`pointerdown` 按位置取比例、`setPointerCapture` 捕获、
+ * 不可见时 `rect.width === 0` 直接返回，不产生 NaN），行为与外观都可控。
+ *
+ * 轨道 6px / 手柄 14px：手柄比轨道大一圈，压在上面像参考图那样"跨在轨道上"。
+ * 手柄尺寸必须与 TS 里的 `THUMB_SIZE` 一致（定位要减掉半个手柄宽）。
+ */
+.num-slider { margin-bottom: 10px; }
+.num-slider-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.num-slider-head > label { color: var(--dim); font-size: 12px; }
+.num-slider-head .num-slider-num {
+  flex: none;
+  width: 58px;
+  padding: 1px 6px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+/*
+ * 轨道外层的**命中区**（`.num-slider-hit`）：视觉上轨道只有 6px，但真正接收指针事件的是
+ * 它外面这一层 24px 高的透明壳（负外边距把多出来的高度上下各分一半，不改变排布）。
+ *
+ * 为什么必须有它：只有 6px 的话，真实鼠标拖动时手一抖指针就离开轨道——
+ * 靠指针捕获本可以继续收事件，但**光标形状会跟着变**（`cursor` 只在轨道上声明），
+ * 用户看到的就是"鼠标变回箭头、拖不动了"。命中区给足余量，配合拖动期的全局光标（见下），
+ * 才谈得上"拖出去也不断"。
+ */
+.num-slider-hit {
+  position: relative;
+  height: 24px;
+  margin: -9px 0;
+  display: flex;
+  align-items: center;
+  cursor: ew-resize;
+  /* 触摸下必须显式关掉手势，否则横向拖动会被当成页面滚动 */
+  touch-action: none;
+}
+.num-slider-track {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line-strong);
+}
+/*
+ * 填充层：**从中点向左右两侧生长**。
+ * 亮度/对比度/饱和度是双向参数（-100…100，0 在中位），所以填充是
+ * `width: |v|%` + `left: 50%`（正值向右）/ `right: 50%`（负值向左），由 TS 写内联样式。
+ * 这正是它不复用取色器 `.cp-row-fill`（左端固定 0、只能向右长）的原因。
+ */
+.num-slider-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 3px;
+  background: var(--accent);
+}
+/* 手柄不接收指针事件（命中区是整条轨道），否则手柄边缘会出现一圈"拖不动"的死区 */
+.num-slider-thumb {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  border: 1px solid #00000055;
+  pointer-events: none;
+}
+
+/*
+ * 拖动期接管**全局**光标与选区。
+ *
+ * 为什么必须挂到 body 而不是轨道上：拖动一旦开始，指针经常会跑到轨道外（乃至面板外、
+ * 窗口外）。此时浏览器看到的是"指针底下那个元素"的光标——于是拖到画布上光标变成十字、
+ * 拖到文字上变成文本光标并**开始选中沿途内容**，用户的感受就是"拖着拖着鼠标变回去了、
+ * 滑条不动了"。拖动期给 body 挂这个类，光标与选区就由我们说了算，拖到哪都不变。
+ *
+ * `user-select: none` 那条尤其重要：它挡住的是"拖滑条顺手把面板文字涂蓝"
+ * 这个副作用（取色器那边也有一条断言专门守同样的行为）。
+ */
+body.is-dragging-num,
+body.is-dragging-num * { cursor: ew-resize !important; user-select: none !important; }
+
+/*
  * 自定义色板的号色表（拼豆色卡向导）。
  * 每行 = [号色输入][色块][hex][删]；号色输入框固定宽度，整张表才对得齐成列。
  * 列表设 max-height 可滚：色卡最多 256 行，不限高会把参数面板撑得极长。
@@ -466,6 +561,12 @@ select, input[type="number"], input[type="text"], .num {
 }
 .swatch.selected { outline: 2px solid var(--accent); outline-offset: -1px; }
 .swatch.unused { opacity: 0.35; }
+/*
+ * 正在被色块编辑器编辑的那一格。
+ * 与 `.selected` 一样用 `outline`（不参与布局，`outline-offset:-1px` 压在内侧），
+ * 避免改 `border` 让色块尺寸与网格对齐发生变化；虚线是为了和"选中为主色"区分开。
+ */
+.swatch.editing { outline: 2px dashed var(--accent-2); outline-offset: -1px; }
 .swatch .count {
   position: absolute;
   right: 1px;
@@ -486,6 +587,45 @@ select, input[type="number"], input[type="text"], .num {
  * 只额外要一点上边距把"字段 → 调色盘"分开；宽度跟着面板走（`.cp` 自己是定宽的）。
  */
 .picker-wrap.inline { margin: 6px 0 10px 8px; }
+
+/*
+ * 工作色板的色块编辑器（`src/app/ui/swatch-editor.ts`）。
+ * 结构与合成底色那块同构（取色器 + 说明），但**操作头排在取色器上方**——
+ * 取色器本体近 900px，左栏是滚动容器，按钮放底下要滚一屏才看得到。
+ * 挂左栏 `.rail-body`（宽 212px）里，取色器自己定宽 176 + 内边距，所以这里只给左缩进。
+ */
+.swatch-editor { margin: 8px 0 10px 2px; }
+.swatch-editor-slot:empty { display: none; }
+.swatch-editor-info { display: flex; flex-direction: column; gap: 5px; margin-bottom: 6px; }
+/* 标题与「完成」同一行：标题可长（`微调 #ff8800`），让它占满剩余宽度 */
+.swatch-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.swatch-editor-title { font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
+.swatch-editor-done { flex: none; }
+
+/*
+ * 右键菜单（`src/app/ui/context-menu.ts`）。
+ *
+ * 与顶栏的 `.dropdown` 共用条目外观（`.dropdown-item` / `.di-label` / `.di-hint`），
+ * 所以这里只管"浮在任意坐标上"这件事：`position:fixed` + 高 z-index。
+ * 用 `fixed` 而不是 `absolute`：定位基准就是 `clientX/clientY`（视口坐标），
+ * 用 absolute 还得减掉滚动偏移，多一处容易忘的换算。
+ *
+ * z-index 取 100：**必须高于窄屏抽屉遮罩（`.drawer-scrim` 70）**，否则窄屏下抽屉打开时
+ * 右键菜单会被那层遮罩压住、看得见点不着；也要高于顶栏下拉与浮层开关（各 80）。
+ * 低于草稿提示条（110）与模态（120）——那两者是可覆盖一切的层级。
+ */
+.ctx-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 168px;
+  max-width: 260px;
+  padding: 3px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 6px 20px #00000099;
+}
+.ctx-item { width: 100%; text-align: left; }
 
 /* ------------------------------------------------------------------ 取色器（Blender 结构） */
 
