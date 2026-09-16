@@ -99,7 +99,6 @@ node tool/icons/ascii16.mjs .tmp-shots/t16.png 0                  # 再看第 0 
 | `preview-svg.mjs` | 多尺寸预览写真值 PNG |
 | `preview-16.mjs` | 实机 16px 真值图（最近邻 ×8） |
 | `ascii16.mjs` | 真值图里某个图标的像素 → ASCII |
-| `history/` | **一次性历史脚本，不维护**（见下） |
 
 ## 四条硬规则
 
@@ -112,10 +111,3 @@ node tool/icons/ascii16.mjs .tmp-shots/t16.png 0                  # 再看第 0 
    让人去怀疑数据——其实数据是对的，是预览工具没画对。
 4. **校验不过就报错，不要静默跳过。** 几何不达标的图标进 `failures` 并以非零码退出。
 
-## `history/` 说明
-
-那些是**当时的改法记录**，不是可重跑的管线：它们大多靠"就地改写 `icons.mjs` /
-`shapes-svg.mjs` 的字符串"来改形状，改完的结果**已经固化进现在的形状定义**了；
-还有几个（`wire-*.mjs`）依赖早已删除的 `output/_work/*.json`，现在跑必然报错。
-留着是因为它们记录了"为什么最终画成这样"的诊断过程（尤其是 `redraw-*.mjs` 与
-`fix-*.mjs` 的文件头注释）。**不要照着它们改形状**——改 `*-shapes.mjs`。
