@@ -7,7 +7,7 @@ dist/
 # 本地试跑产物
 out/
 samples-out/
-# 试跑/实验产出的图片与中间文件（文档不在这里——历史记录已归档到 docs/history/）
+# 试跑/实验产出的图片与中间文件（文档不放这里——本仓库只留结论，不分发过程材料）
 output/
 # 图标管线的审图产物（SVG / PNG 预览 / 生成的清单）：可再生，不入库。
 # 进库的是"形状定义"（pixel-shapes.mjs / svg-shapes.mjs）与接线结果（src/app/ui/icons.ts）
