@@ -2,7 +2,7 @@
  * 零依赖字节工具：CRC32 与 base64。
  *
  * 刻意不依赖 `Buffer` / `btoa`：这两个在 Node 与浏览器里互不相同，
- * 而本项目要求**同一份实现**同时服务页内 UI 与命令行 CLI（见 docs/DEVELOPMENT.md §4.1 的 L3）。
+ * 而本项目要求**同一份实现**同时服务页内 UI 与命令行 CLI（见 docs/开发.md §4.1 的 L3）。
  * 只依赖 `Uint8Array`，两边都能跑。
  */
 

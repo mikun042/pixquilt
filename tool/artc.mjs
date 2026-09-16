@@ -2,7 +2,7 @@
 /**
  * artc —— 像素画批处理 CLI（agent 的主要入口）
  *
- * 设计目标（见 docs/DEVELOPMENT.md §4.1 的 L2）：**agent 不需要浏览器就能产出像素图**。
+ * 设计目标（见 docs/开发.md §4.1 的 L2）：**agent 不需要浏览器就能产出像素图**。
  * 本工具直接 import `src/core/*`（Node 22.6+ 的类型剥离），因此：
  *   - 不起浏览器、不走 CDP、不做 base64 往返；
  *   - 与页内 UI 走**同一份算法实现**，不会出现两套逻辑漂移。
@@ -405,7 +405,7 @@ export function sanitizeName(s) {
  * （core/raster.ts 的 keyed 判定），管线里根本不建 alphaMask。
  * 早先汇总里的 transparent 读的是 alphaMask，于是 key 模式下恒为 0，
  * 而屏幕上的产物明明有 60% 透明格——agent 按这个字段判断会得出"键控没生效"的错误结论
- * （实测被这条坑过一轮，见 docs/ARCHITECTURE.md §8.10 第 ⑦ 类）。
+ * （实测被这条坑过一轮，见 docs/架构.md §8.10 第 ⑦ 类）。
  */
 /**
  * 把透明参数翻译成 core/raster 的 RasterOptions。
@@ -494,7 +494,7 @@ function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wa
 
 /**
  * `--selftest`：不读任何外部素材，用进程内生成的合成数据把"引擎 → 算子 → 导出 → 拼豆"整条链路走一遍。
- * 每项断言都必须能因为一个真实缺陷而失败（见 docs/DEVELOPMENT.md §3.1：测试有效性看"故意改坏会不会红"）。
+ * 每项断言都必须能因为一个真实缺陷而失败（见 docs/开发.md §3.1：测试有效性看"故意改坏会不会红"）。
  */
 async function selftest() {
   const checks = []

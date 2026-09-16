@@ -51,7 +51,7 @@ const COLLAPSE_KEY = 'pixelstudio.params.collapsed'
 /**
  * 读取"用户显式改过的折叠状态"：`{ 分组 id: 是否展开 }`。
  * localStorage 不可用（无痕 / 禁用存储）时静默返回空对象，不报错——与项目对
- * "存储不可用就静默降级"的既有约定一致（见 TESTING-GUIDE 的 H3 边界项）。
+ * "存储不可用就静默降级"的既有约定一致（存储不可用即静默降级、不弹提示、不报错）。
  */
 function readCollapsed(): Record<string, boolean> {
   try {

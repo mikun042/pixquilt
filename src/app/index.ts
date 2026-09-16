@@ -7,7 +7,7 @@
  * 三种用途（图片→像素 / 拼豆图纸 / 游戏资产）**不再是独立的"工作模式"**，而是右侧的预设：
  * 它们本来就只是"一组合适的参数"，与「风格预设」职责重叠且内容不一致（旧模式漏设
  * cleanup、photo 模式是空对象，切换还会互相残留参数）。现在统一由 `src/app/presets.ts`
- * 管理：出厂预设只读、用户可更新/恢复出厂/另存为自定义预设。见 docs/USAGE.md。
+ * 管理：出厂预设只读、用户可更新/恢复出厂/另存为自定义预设。见 docs/使用手册.md。
  */
 import { DEFAULT_PARAMS, DEFAULT_PREFS, TOOLS, sanitizePrefs, type ConvertParams, type EditorPrefs, type PixelArt } from '../core/types.ts'
 import { getPreset } from '../core/palettes.ts'
@@ -114,7 +114,7 @@ function commitWithHistory(indices: Uint8Array, palette: string[], alphaMask: Ui
  * （`ui/canvas.ts` 的 `indices`/`palette`/`alpha`）。画布自绘那条路里副本本来就是新的，
  * 所以不必回灌；这条路里副本还是**旧的**，不回灌就会：屏幕不显示这次编辑、画布侧取色
  * （`pickAt`）读到旧像素、并且**下一次画笔把旧副本提交上去，把这次编辑静默覆盖掉**。
- * 详见 docs/ARCHITECTURE.md §8.10 ⑥。
+ * 详见 docs/架构.md §8.10 ⑥。
  *
  * 同步用 `applyIndices` 而不是 `setArt`：前者只换像素副本，**保留选区与视图**；后者会清空选区
  * （`ui/canvas.ts` 的 `setArt` 里有 `selection = new Set()`）。只有尺寸真的变了
@@ -165,7 +165,7 @@ function resetCanvasTo(art: PixelArt): void {
  * 为什么必须清空：撤销栈里存的是**上一张画布**的帧。若不重置，"撤销"会把上一张画布搬回来
  * ——尺寸、内容都可能完全不同，用户看到的是一次莫名其妙的换图（`regenerate` 早就这么做，
  * 注释写着"重新转换 = 新的基线"；`newCanvas` 的注释也写着"新画布 = 新基线"，
- * 但此前只重置了 `hasEdits`，撤销栈漏了——见 docs/ARCHITECTURE.md §8.10 ⑥ 那一族）。
+ * 但此前只重置了 `hasEdits`，撤销栈漏了——见 docs/架构.md §8.10 ⑥ 那一族）。
  *
  * 调用方：导入/重转（`regenerate`）、新建空白（`makeBlank`）、清空（`newBlankOrClear`）、
  * 以及页内 API 的 `newCanvas` / `loadProject` / `importPixBin` / `reset`。

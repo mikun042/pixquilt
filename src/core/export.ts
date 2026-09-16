@@ -2,7 +2,7 @@
  * 导出：PNG（整数倍放大）/ 像素数据 JSON / 项目 JSON / 图集拼合 / 画布指纹。
  *
  * 分层约束：这里**不做下载**（`document`/`Blob` 只属于浏览器层），只把画布变成字节或字符串。
- * 这样 Node CLI 与浏览器 UI 能共用同一套导出实现（docs/DEVELOPMENT.md §4.1 的 L3 就是靠这条成立）。
+ * 这样 Node CLI 与浏览器 UI 能共用同一套导出实现（docs/开发.md §4.1 的 L3 就是靠这条成立）。
  */
 import { ALPHA_THRESHOLD, PALETTE_MAX, SCHEMA_VERSION, SUPPORTED_VERSIONS } from './limits.ts'
 import { base64ToBytes, bytesToBase64, safeFileBase } from './binary.ts'

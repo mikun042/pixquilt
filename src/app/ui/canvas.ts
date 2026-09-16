@@ -1,7 +1,7 @@
 /**
  * 画布编辑器：视口（缩放/平移）、绘制（画笔/填充/形状）、选区、快捷键。
  *
- * 设计取舍（见 docs/USAGE.md 与 docs/ARCHITECTURE.md）：
+ * 设计取舍（见 docs/使用手册.md 与 docs/架构.md）：
  *  - **绝不整树重渲染**：绘制、悬停、缩放都只重画画布本身；只有结构性变化（工具/颜色/选区计数）
  *    才通过 store 通知面板。
  *  - **工作副本**：笔画期间改的是本地 `indices/alpha` 副本，抬笔才 commit 一次（= 一条撤销）。
@@ -39,7 +39,7 @@ export interface CanvasApi {
    * 模型 → 画布的**同尺寸**同步原语（只换像素副本，保留选区与视图）。
    *
    * 为什么不用 `setArt` 代替：`setArt` 会清空选区，而"算子编辑后选区还在"是有用的行为。
-   * 见 docs/ARCHITECTURE.md §2.1 的三条同步路径。
+   * 见 docs/架构.md §2.1 的三条同步路径。
    */
   applyIndices: (indices: Uint8Array, palette?: string[], alphaMask?: Uint8Array | null) => void
   /**

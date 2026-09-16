@@ -3,7 +3,7 @@
  *
  * 从 `ops.ts` 拆出：这两个函数纯粹按几何产出格索引，不涉及色板解析与状态提交，
  * 却是 `ops.ts` 里最长的两段（各带一段"为什么分两步而不是边搜边写"的推导注释，
- * 见 `docs/ARCHITECTURE.md` 的缺陷复盘）。
+ * 见 `docs/架构.md` 的缺陷复盘）。
  */
 import { ALPHA_THRESHOLD } from './limits.ts'
 

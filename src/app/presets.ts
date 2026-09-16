@@ -14,7 +14,7 @@
  *
  * 之前的「工作模式」（图片→像素 / 拼豆图纸 / 游戏资产）就是另一套并行的参数打包机制，
  * 与预设职责重叠且内容不一致（模式漏设 cleanup、photo 模式是空对象）。现已合并到预设，
- * 三者的差异由 preset 内容表达（见 docs/USAGE.md）。
+ * 三者的差异由 preset 内容表达（见 docs/使用手册.md）。
  */
 import { DEFAULT_PARAMS, STYLE_PRESETS, coerceParams, type ConvertParams } from '../core/types.ts'
 

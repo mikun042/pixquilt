@@ -53,7 +53,7 @@ export interface AutomationDeps {
    *
    * 必须是整份 `PixelArt` 而不是"只有像素"的三个数组：算子里的 `transform`/`trim` 会改尺寸，
    * 而且画布层需要被回灌一次（它自己那份像素副本是旧的）。见 `edit()` 的注释与
-   * docs/ARCHITECTURE.md §8.10 ⑥。
+   * docs/架构.md §8.10 ⑥。
    */
   commitArt: (art: PixelArt) => void
   undo: () => void

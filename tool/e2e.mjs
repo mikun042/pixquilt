@@ -50,7 +50,7 @@ async function main() {
 
     /*
      * **整条 suite 都用桌面视口**。无头默认是 800×600，而 ≤980px 时 CSS 会把两侧栏隐藏、
-     * 参数面板拿到 0×0 的矩形——那时任何侧栏的几何/命中断言都会失真（docs/DEVELOPMENT.md §3.2 第 1 条）。
+     * 参数面板拿到 0×0 的矩形——那时任何侧栏的几何/命中断言都会失真（docs/开发.md §3.2 第 1 条）。
      * 原先只有"合成底色"那一条自己临时设过视口，等于把坑留给下一条新断言；
      * 这里统一设一次，后面谁加断言都不用再想这件事。
      */
@@ -225,7 +225,7 @@ async function main() {
       assert(u.importBtn.includes('导入'), `右上角缺「导入图片」按钮：${u.importBtn}`)
       assert(u.exportBtn.includes('导出'), `右上角缺「导出」按钮：${u.exportBtn}`)
       // 工作模式选择器已移除：图片→像素 / 拼豆图纸 / 游戏资产 三个用途并入右侧预设
-      assert(!u.hasModeSelect, '工作模式选择器应已移除（用途并入预设，见 docs/USAGE.md）')
+      assert(!u.hasModeSelect, '工作模式选择器应已移除（用途并入预设，见 docs/使用手册.md）')
       assert(!u.hasDeadViewToolbar, '画布右下角的视图工具栏已删除（曾是无绑定的死按钮）；缩放请走快捷键')
       assert(u.presetChips >= 6, `预设 chip 至少应有 6 个出厂预设，实际 ${u.presetChips}`)
       assert(u.hasSavePreset, '预设区应提供「＋ 存为预设」入口')
@@ -508,7 +508,7 @@ async function main() {
      * 为什么原有断言全都没抓到：模型侧（artHash/getUsage）与画布侧（真实鼠标）**各自都被测过，
      * 但从未交叉**。所以这里刻意两条腿都用上——先用**像素采样**看屏幕（不看模型），
      * 再叠一次真实鼠标笔触看算子编辑是否还在。
-     * 见 docs/ARCHITECTURE.md §8.10 ⑥。
+     * 见 docs/架构.md §8.10 ⑥。
      */
     const syncPixel = async (cx, cy) =>
       await cdp.eval(`(() => {

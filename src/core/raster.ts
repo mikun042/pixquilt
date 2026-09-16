@@ -3,7 +3,7 @@
  *
  * 与 `export.ts` 的分工：这里只管**像素**，`export.ts` 管**序列化**（JSON / 项目文件 / 图集 / 指纹）。
  * 分开的原因很实际：浏览器与 Node 都需要"画布 → RGBA"，但只有 Node 需要把 RGBA 压成 PNG 字节，
- * 混在一起会让浏览器包被迫依赖 zlib（分层缺陷，见 docs/DEVELOPMENT.md §6 第 1 条）。
+ * 混在一起会让浏览器包被迫依赖 zlib（分层缺陷，见 docs/开发.md §6 第 1 条）。
  */
 import { ALPHA_THRESHOLD, MAX_EXPORT_PIXELS, MAX_EXPORT_SIDE } from './limits.ts'
 import { hexToRgb } from './color.ts'
@@ -21,7 +21,7 @@ export interface RasterOptions {
    *
    * 为什么要 `border`：像素画主体内部常有与底色同色的像素（白底 + 白色高光/眼白），
    * `global` 会把它们一起挖穿成洞（实测：主体内 4×4 的白高光被打成 16 像素空洞）。
-   * 生图去背（见 docs/DEVELOPMENT.md A1）要的正是 `border`。
+   * 生图去背（见 docs/开发.md A1）要的正是 `border`。
    */
   keyMode?: 'global' | 'border'
   /**

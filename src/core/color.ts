@@ -1,6 +1,6 @@
 /**
  * 颜色工具：sRGB ⇄ OKLab（感知均匀，用于最近色匹配）、HSV（取色器）、渐变与文字色。
- * 全部是纯函数，不依赖 DOM —— core 层的硬约束（见 docs/DEVELOPMENT.md §4 的 R1）。
+ * 全部是纯函数，不依赖 DOM —— core 层的硬约束（见 docs/开发.md §4 的 R1）。
  */
 import { normalizeHex } from './types.ts'
 

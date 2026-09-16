@@ -55,7 +55,7 @@ export interface MatteFieldApi {
    *
    * 返回 true 表示"这一格颜色属于合成底色"；调用方据此改写 `matteColor` 而不是主色。
    * 置位点在 `armPick` 触发的吸管回调里，消费点只有这一处——标志位必须成对，见
-   * `docs/ARCHITECTURE.md` §8.10（只写不读的标志会连带提示语一起撒谎）。
+   * `docs/架构.md` §8.10（只写不读的标志会连带提示语一起撒谎）。
    */
   takePendingPick: () => boolean
   /** 放弃待办取色（Esc / 关闭取色盘）：返回是否**原本**有待办 */

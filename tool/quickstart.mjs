@@ -283,6 +283,6 @@ ${'═'.repeat(64)}
     --ops '[{"op":"rect","x0":2,"y0":2,"x1":29,"y1":29,"color":"#1d2b53"},{"op":"trim"}]'
 
 完整契约：docs/AGENT_API.md（由 src/core/spec.ts 生成）
-测试方法：docs/TESTING-GUIDE.md
+测试方法：见 docs/开发.md 的「验证链」与「测试容易踩的五个坑」
 本次产物：${OUT.replace(ROOT + '\\', '')}${'  '}（已被 .gitignore 忽略）
 ${'═'.repeat(64)}`)

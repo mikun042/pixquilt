@@ -94,7 +94,7 @@ async function main() {
  * 只在**直接被当命令行跑**时执行 main()。
  * 否则任何 `import './svg-sync.mjs'`（例如单测想复用 replaceSvgPathsBlock）
  * 都会顺带改写 icons.ts —— 这个坑本项目在 artc.mjs 上真实踩过一次
- * （见 docs/ARCHITECTURE.md §8.7）。
+ * （见 docs/架构.md §8.7）。
  */
 const invokedDirectly =
   process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)

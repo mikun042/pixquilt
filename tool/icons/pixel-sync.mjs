@@ -99,7 +99,7 @@ async function main() {
  * 没有这个守卫时，任何 `import './pixel-sync.mjs'`（例如单测想复用
  * `replacePixelPathsBlock` 判断"接线是否最新"）都会顺带跑一遍 main() ——
  * 它会**直接改写 icons.ts**，甚至 `process.exit(1)` 把导入方一起带走。
- * 这个坑本项目在 artc.mjs 上真实踩过一次（见 docs/ARCHITECTURE.md §8.7）。
+ * 这个坑本项目在 artc.mjs 上真实踩过一次（见 docs/架构.md §8.7）。
  */
 const invokedDirectly =
   process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)

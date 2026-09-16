@@ -1,7 +1,7 @@
 /**
  * 算子与参数的**元数据单一真源**。
  *
- * 这个文件同时驱动四件事（这是"文档永不漂移"的机制，见 docs/DEVELOPMENT.md §5）：
+ * 这个文件同时驱动四件事（这是"文档永不漂移"的机制，见 docs/开发.md §5）：
  *   1. 页内 API 的 `describeOps()` / `describeParams()` / `describe()`
  *   2. CLI 的 `--describe` 与 `--help`
  *   3. `docs/AGENT_API.md` 的算子表与参数表（由 tool/describe.mjs 生成）
@@ -262,7 +262,7 @@ export interface Capabilities {
    * 只能去读 CLI 源码。列在这里，冷启动即可见。
    */
   programmaticApi: { module: string; exports: string[]; desc: string }[]
-  /** 多帧动画：字段已预留，尚未实现（见 docs/DEVELOPMENT.md §8 的 B1） */
+  /** 多帧动画：字段已预留，尚未实现（见 docs/开发.md §8 的 B1） */
   animation: false
   /** 是否支持只用已有色板（拼豆/资产批次） */
   lockPalette: true

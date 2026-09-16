@@ -128,6 +128,6 @@ test('R1 分层：src/core 里不许出现 node: 或 DOM 绑定', () => {
     violations.length,
     0,
     `core 必须是纯逻辑层（Node 能直接 import、浏览器包也打得出）。违规：\n  ${violations.join('\n  ')}\n` +
-      `→ 平台相关的部分请放到 src/io（Node）或 src/app（浏览器），见 docs/DEVELOPMENT.md §4 的 R1`,
+      `→ 平台相关的部分请放到 src/io（Node）或 src/app（浏览器），见 docs/开发.md §4 的 R1`,
   )
 })
