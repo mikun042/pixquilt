@@ -121,7 +121,6 @@ docs/                    ← 见下方「文档导航」
 | [docs/TESTING-GUIDE.md](docs/TESTING-GUIDE.md) | 外部测试 agent：测试清单与报告格式 |
 | [docs/UI-COLOR-PICKER.md](docs/UI-COLOR-PICKER.md) | 做取色器视觉改造的模型 |
 | [tool/icons/README.md](tool/icons/README.md) | 改工具条/顶栏图标：坐标契约、预览工具、四条硬规则 |
-| [docs/history/](docs/history/) | 想追溯决策与修复过程的人（**归档，不维护**） |
 
 ---
 

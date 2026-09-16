@@ -6,7 +6,7 @@
 > 先跑一条命令确认环境，再照抄下面的配方。
 
 ```bash
-cd F:/<项目目录>
+cd <项目根目录>
 node tool/quickstart.mjs        # 一条命令跑通全链路，产出落在 .quickstart/
 ```
 

@@ -1,6 +1,6 @@
 # 给 AI agent 的入口
 
-> 项目根目录：`F:/<项目目录>`
+> 项目根目录：本仓库根（下文命令一律在该目录下执行）
 > 本文件是**给 agent 的交接单**。人类用户看 [`README.md`](README.md)。
 
 ## 先确认你要做什么，再选入口
@@ -35,7 +35,7 @@ node tool/artc.mjs --in 素材目录 --out 输出 ...   # 直接批量出图
 再查 `PATH`；装在别处就传 `--browser <路径>`（或设 `PIXEL_BROWSER=<路径>`）。
 **纯出图不需要其中任何一项。**
 
-## 三条最容易踩的坑
+## 四条最容易踩的坑
 
 1. **`--size` 不是 `--exact`**。未知参数会**报错**（不会静默忽略），报错信息会指出正确写法。
    不要把"命令成功退出"当成"参数生效了"。
@@ -72,7 +72,7 @@ src/io/              Node 侧平台绑定（PNG 编解码、文件读取）
 src/app/             浏览器侧：UI、画布、页内 API
 tool/artc.mjs        批处理 CLI（你的主入口）
 tool/icons/          UI 图标管线（形状定义 → src/app/ui/icons.ts 的 path 表；见其 README）
-docs/                现行文档；docs/history/ 是历史归档（不维护，数字已过期）
+docs/                现行文档（用户手册 / agent 契约 / 开发者与测试指南）
 ```
 
 改代码前必读 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) 的「铁律」：

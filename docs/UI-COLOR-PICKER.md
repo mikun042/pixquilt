@@ -25,7 +25,7 @@
 项目自带零依赖的无头浏览器工具，可以稳定产出截图与像素数据：
 
 ```bash
-cd F:/<项目目录>
+cd <项目根目录>
 npm run build                        # 先确保产物是最新代码
 npm run shoot                        # .tmp-shots/picker-full.png（整页）+ picker-crop.png（取色器区域）
 npm run shoot -- --color E7E7E7      # 先把主色设成参考图那个灰再截（同色才有可比性）
@@ -286,7 +286,7 @@ npm run ref:analyze -- "C:\Users\<用户名>\Pictures\Screenshots\屏幕截图 2
 
 | 项 | 值 |
 |---|---|
-| 项目根 | `F:\像素画build` |
+| 项目根 | 本仓库根 |
 | Node | v24.18.1（`node --test` 可直接跑 `.ts`） |
 | 浏览器 | Edge `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`；Chrome `C:\Program Files\Google\Chrome\Application\chrome.exe` |
 | 依赖 | 3 个 devDependency，运行期 0 依赖；写盘前无需联网 |
@@ -294,7 +294,7 @@ npm run ref:analyze -- "C:\Users\<用户名>\Pictures\Screenshots\屏幕截图 2
 ### 4.2 构建与验证命令
 
 ```bash
-cd F:/<项目目录>
+cd <项目根目录>
 npm run typecheck      # 必须 0 错（tsc noUnusedLocals 开着，未用变量会直接报错）
 npm run build          # 产出单文件 HTML，并核对 dist 与根目录副本哈希一致
 npm run e2e:picker     # 取色器专项：18 项（几何/方位/标签/滑条填充/数值框隔离/防选词/零尺寸免疫）
