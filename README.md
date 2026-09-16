@@ -166,4 +166,4 @@ npm run verify     # 一次跑完全部，全绿才算通过
 
 ## 许可
 
-MIT。
+MIT，全文见 [LICENSE](LICENSE)。
