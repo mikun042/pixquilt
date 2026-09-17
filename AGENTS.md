@@ -62,7 +62,8 @@ node tool/quickstart.mjs        # 产出落在 .quickstart/，看完可以直接
 | **产出像素素材**（精灵图 / 拼豆图纸 / 图标 / 图集） | `node tool/artc.mjs --help`，或先 `node tool/quickstart.mjs` |
 | **要可打印的拼豆图纸** | 加 `--bead --pdf` → A4 分页、每块板一页 |
 | **想用真实品牌色号** | `--palette hama_midi` / `perler` / `artkal_c` …（13 张品牌卡，见 `--describe` 的 `presets[].source`）。这些是**社区整理**数据，**与实物可能有偏差，以实物为准** |
-| **想知道"图纸好不好" / 让工具自己找参数** | `--quality` 出质量报告（保真误差 / 色号数 / 珠子数 / 抖动代价）；`--auto-tune <n>` 在"色号数 ≤ n"约束下自动搜参。**判断抖动要看块平均误差，不是逐格误差**（见 `docs/架构.md` §8.15） |
+| **想知道"图纸好不好" / 让工具自己找参数** | `--quality` 出质量报告（保真误差 / 色号数 / 珠子数 / 抖动代价）；`--auto-tune <n>` 在"色号数 ≤ n"约束下自动搜参，**只搜抖动/清理，不改尺寸**（尺寸由 `--long-edge` 定）。**判断抖动要看块平均误差，不是逐格误差**（见 `docs/架构.md` §8.15） |
+| **要判断参数到底生效没有** | `--json` 里 `params` 是**你要的值**、`paramsEffective` 是**实际用的值**（逐图另看 `results[].paramsEffective`）；调参决策在 `autoTune` 字段。两者不一致就说明有东西没生效 |
 | **输入是 JPG / WebP / GIF / BMP / AVIF / ICO / SVG** | 加 `--browser-decode`（借无头浏览器解码成 PNG；**需本机有浏览器**）。不加会被**跳过并如实报告**，不会静默忽略 |
 | **图集元数据要喂给引擎** | `--sheet --engine godot\|unity\|tiled`（Unity 需 `--texture-guid`）。页内 API 是 `ps.exportSheetMeta()` |
 | **自己的拼豆色卡要印上图纸** | 导入 `编号 #rrggbb` 两列的 `.hex`，号色会进参数并出现在图纸/清单/PDF 上 |

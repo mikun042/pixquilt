@@ -249,6 +249,75 @@ async function selftest() {
     return '无解(2→' + infeasible.best.usedColors + ') / 有解(12→' + feasible.best.usedColors + ')'
   })
 
+  check('CLI：--auto-tune 的数值校验，且与 --blank 同用要报错（不能静默无效）', () => {
+    /*
+     * 这一层是**接线层**——原先没有任何断言（core 测了 autoTune 函数本身，但"参数怎么进来"没人管），
+     * 于是下面这类的缺陷一个个漏到用户手上。用 buildParams 直测（in-process，与其它 CLI 断言一致）。
+     *
+     * 两类：
+     *  ① 数值非法 → 必须报错（`--auto-tune abc` 原先会被静默忽略）；
+     *  ② 用在 `--blank` 下 → 明确报错。--blank 没有素材可搜参，这个组合本身无效，
+     *     而原先的校验藏在 `--in` 的逐图循环里，`--blank ... --auto-tune 14` 会**什么都不做还成功退出**。
+     */
+    for (const bad of ['abc', '1', '0', '-3']) {
+      let msg = ''
+      try {
+        buildParams(parseArgs(['--in', 'x.png', '--auto-tune', bad]))
+      } catch (err) {
+        msg = err?.message ?? String(err)
+      }
+      assert(msg.includes('--auto-tune'), `--auto-tune ${bad} 应报错并点出开关名，实际：${msg || '（没报错）'}`)
+    }
+    let blankMsg = ''
+    try {
+      buildParams(parseArgs(['--blank', '8x8', '--auto-tune', '14']))
+    } catch (err) {
+      blankMsg = err?.message ?? String(err)
+    }
+    assert(blankMsg.includes('--auto-tune'), '--auto-tune 与 --blank 同用应报错，实际：' + (blankMsg || '（没报错）'))
+    // 合法值应照常通过（别把校验写成过严）
+    const ok = buildParams(parseArgs(['--in', 'x.png', '--auto-tune', '14']))
+    assert(ok && ok.params, '合法 --auto-tune 14 应照常通过')
+    return '非法值/与 --blank 同用均报错；合法值不受影响'
+  })
+
+  check('CLI：--auto-tune 不得改写 --long-edge（参数被静默丢弃是最糟的一类）', () => {
+    /*
+     * 真实缺陷（外部 agent 报告 + 实测复现）：`--long-edge 58 --auto-tune 14` 的产物是 24×18，
+     * 而 `--json` 的 `params.longEdge` 还写着 58 —— 参数被丢弃、报告回显**输入值**。
+     * 这条把它钉死：搜参之后，请求的 longEdge 必须原样保留。
+     * 变异验证：让尺寸重新进搜索空间，本段立刻红。
+     */
+    const src = makeFixture()
+    for (const le of [24, 58, 96]) {
+      const { params } = buildParams(parseArgs(['--in', 'x.png', '--long-edge', String(le), '--auto-tune', '12']))
+      const r = autoTune({ width: src.width, height: src.height, data: src.data }, params, { maxColors: 12 })
+      assert(
+        r.best.params.longEdge === le,
+        `请求 --long-edge ${le}，搜参后却变成 ${r.best.params.longEdge}——用户会拿到与图纸不符的产物`,
+      )
+    }
+    return 'longEdge 24/58/96 均原样保留'
+  })
+
+  check('CLI：--auto-tune 的决策结果必须对机器可见（不能只写 stderr）', () => {
+    /*
+     * 原先 `TuneResult`（搜了多少组/最优哪组/有没有解/备选）只经 `progress()` 进 stderr，
+     * `--quiet` 下更是完全没有——而 agent 恰恰靠 `--json` 写下游逻辑，于是"调参决策"对它不可见。
+     * 这条守住 `autoTune` 字段的契约形状：四要素齐全、且与 best 自洽。
+     */
+    const src = makeFixture()
+    const { params } = buildParams(parseArgs(['--in', 'x.png', '--long-edge', '32', '--auto-tune', '12']))
+    const r = autoTune({ width: src.width, height: src.height, data: src.data }, params, { maxColors: 12 })
+    // 这四项就是 --json 的 autoTune.files[i] 里逐项对应的内容
+    assert(typeof r.feasible === 'boolean', 'feasible 必须是布尔')
+    assert(Number.isInteger(r.evaluated) && r.evaluated > 0, 'evaluated 必须是正整数')
+    assert(r.best && r.best.params, 'best 必须存在且带 params')
+    assert(Array.isArray(r.top) && r.top.length > 0, 'top 必须非空（备选对决策有用）')
+    assert(r.top[0].params.longEdge === r.best.params.longEdge, 'top[0] 应与 best 一致（同一套排序）')
+    return `feasible=${r.feasible} / evaluated=${r.evaluated} / best=longEdge=${r.best.params.longEdge},${r.best.params.dither} / top=${r.top.length}`
+  })
+
   check('管线：抖动开启时杂色清理被自动关闭（互斥约束）', () => {
     const { params } = sanitizeParams({ dither: 'floyd', cleanup: true, longEdge: 24, paletteMode: 'auto', paletteK: 8 })
     const { art } = runPipeline(makeFixture(), params)

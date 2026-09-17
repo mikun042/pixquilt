@@ -1045,14 +1045,50 @@ describe('自动调参（core/auto-tune.ts）', () => {
   it('preset 档下不搜 paletteK（它不影响任何结果，搜它只会产生重复候选）', () => {
     /*
      * paletteK 只在 paletteMode='auto' 时生效。preset 档下把它放进搜索空间，
-     * 会让候选数凭空 ×5 而结果完全一样（实测 200 → 40 组，且 top3 全是同一行）。
+     * 会让候选数凭空 ×5 而结果完全一样（且 top3 全是同一行）。
      */
     const preset = autoTune(src(), base(), { maxColors: 12 })
     const auto = autoTune(src(), sanitizeParams({ paletteMode: 'auto', paletteK: 16, longEdge: 32 }).params, { maxColors: 12 })
-    // preset 档：5 长边 × 1 paletteK × 4 抖动 × 2 清理 = 40
-    assert.equal(preset.evaluated, 40, `preset 档应只评估 40 组，实测 ${preset.evaluated}`)
-    // auto 档：5 × 5 × 4 × 2 = 200
-    assert.equal(auto.evaluated, 200, `auto 档应评估 200 组，实测 ${auto.evaluated}`)
+    // preset 档：1 长边（尺寸不入搜索）× 1 paletteK × 4 抖动 × 2 清理 = 8
+    assert.equal(preset.evaluated, 8, `preset 档应只评估 8 组，实测 ${preset.evaluated}`)
+    // auto 档：1 × 5 × 4 × 2 = 40
+    assert.equal(auto.evaluated, 40, `auto 档应评估 40 组，实测 ${auto.evaluated}`)
+  })
+
+  it('尺寸不被搜索改写：`--long-edge N` 就是要 N 格，绝不能被候选档位盖掉', () => {
+    /*
+     * 这是本轮修的真实缺陷（外部 agent 报告 + 实测复现）：
+     *   `--long-edge 58 --auto-tune 14` 的产物是 **24×18**，而 `--json` 里
+     *   `params.longEdge` 还写着 58——参数被静默丢弃、报告回显**输入值**。
+     *   拼豆用户按板数算好 58 格，拿到 24 格等于图白做；agent 还会照 58 写下游逻辑。
+     *   正好撞在 AGENTS.md 那条"别把命令成功当成参数生效"上。
+     *
+     * 变异验证：让尺寸重新进搜索（把 `DEFAULT_TUNE_SPACE.longEdge` 填回档位数组），本段立刻红。
+     */
+    for (const le of [24, 58, 96]) {
+      const p = sanitizeParams({ paletteMode: 'preset', presetPaletteId: 'beads24', longEdge: le }).params
+      const r = autoTune(src(), p, { maxColors: 12 })
+      assert.equal(r.best.params.longEdge, le, `请求 longEdge=${le}，搜索却改成了 ${r.best.params.longEdge}`)
+    }
+  })
+
+  it('尺寸维度不进搜索：候选数只由 抖动×清理 决定（也顺带更快）', () => {
+    // 尺寸已定，搜索空间就该只剩"抖动 4 档 × 清理 2 档 = 8 组"。
+    // 这条同时守住"别哪天又把尺寸维度悄悄加回来"。
+    const r = autoTune(src(), base(), { maxColors: 12 })
+    assert.equal(r.evaluated, 8, `尺寸不入搜索时应评估 8 组，实测 ${r.evaluated}`)
+  })
+
+  it('searchLongEdge 是显式开关：打开才会搜尺寸（此时结果不可靠，仅供实验）', () => {
+    /*
+     * 保留出口但**默认关闭**，因为跨尺寸没有可靠判据：
+     * `blockError` 与 `usedColors` 都随画布变小而变小（实测块平均 24→0.0356 对 96→0.0570；
+     * 色号 24→87 色对 96→102 色），拿它们跨尺寸排序必然坍缩到最小档——
+     * 用户要"像"，拿到"糊"，报告还写着"观感最好的组合"。
+     * 这里只断言"开关有效"，不断言选出的尺寸（那个结果本身就不可信）。
+     */
+    const r = autoTune(src(), base(), { maxColors: 12, searchLongEdge: true })
+    assert.equal(r.evaluated, 40, `打开 searchLongEdge 应评估 5 尺寸 × 4 抖动 × 2 清理 = 40 组，实测 ${r.evaluated}`)
   })
 })
 

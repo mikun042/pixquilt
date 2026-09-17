@@ -200,7 +200,16 @@ export function qualityReport(
           const p = y * art.width + x
           if (art.alphaMask && art.alphaMask[p] < ALPHA_THRESHOLD) continue
           anyOpaque = true
-          const c = hexToRgb(art.palette[art.indices[p]])
+          /*
+           * 与上面的逐格循环**同一口径**：索引越界（或色板项缺失）时跳过这一格。
+           *
+           * 逐格那边一直有这条 `if (!got) continue`，这里原先没有——同一个不变量两处写法不一致，
+           * 结果是越界索引在这里直接抛 `TypeError`（`hexToRgb(undefined)`），
+           * 而"度量工具自身崩掉"会让人以为是产物有问题。两处守卫必须一起看。
+           */
+          const hex = art.palette[art.indices[p]]
+          if (!hex) continue
+          const c = hexToRgb(hex)
           ar += c.r
           ag += c.g
           ab += c.b

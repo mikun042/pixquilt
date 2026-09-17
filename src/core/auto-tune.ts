@@ -43,9 +43,27 @@ export interface TuneSpace {
   cleanup: boolean[]
 }
 
-/** 默认搜索空间：覆盖拼豆与游戏资产的常见档位 */
+/**
+ * 默认搜索空间。
+ *
+ * ⚠️ **`longEdge` 这一维默认是空数组**，即"不搜尺寸"。
+ *
+ * 为什么默认不搜（这是实测教训，不是保守）：**"块平均误差"与"色号数"都随画布变小而变小**——
+ * `blockSize` 是画布格数，画布越小每块覆盖的原图面积越大、两边被平均得越狠，误差自然趋小
+ * （实测 24:0.0356 < 32:0.0376 < 48:0.0410 < 64:0.0560 < 96:0.0570）；同理小画布量化出的
+ * 不同颜色也更少（24→87 色、96→102 色）。两个指标**都在奖励"更糊"**，
+ * 所以只要拿它们跨尺寸排序，结果必然坍缩到最小档——用户要"像"，拿到 24×18 的糊图，
+ * 而报告还写着"观感最好的组合"。
+ *
+ * 结论：**跨尺寸没有可靠的自动判据，就不假装有**。尺寸由用户定（`--long-edge`，见 `searchLongEdge`），
+ * 或用 `--long-edge` 之外的方式自行决定；本函数只在**给定尺寸内**搜抖动/清理，
+ * 那正是 `quality.ts` 那个指标的可靠用法（同尺寸下比较抖动）。
+ *
+ * 要真的把尺寸纳入搜索，必须先把度量改成尺寸可比的——那是独立一轮的事，
+ * 且得先有跨尺寸的判据，不能靠现有这两个数。
+ */
 export const DEFAULT_TUNE_SPACE: TuneSpace = {
-  longEdge: [24, 32, 48, 64, 96],
+  longEdge: [],
   paletteK: [8, 12, 16, 24, 32],
   dither: ['none', 'floyd', 'atkinson', 'bayer8'],
   cleanup: [true, false],
@@ -54,12 +72,21 @@ export const DEFAULT_TUNE_SPACE: TuneSpace = {
 export interface TuneOptions {
   /** 色号数上限（`maxColors`）。**这是硬约束**，超限的候选直接淘汰 */
   maxColors?: number
-  /** 目标块平均误差；达到即停止改进（不给就只按"约束内最优"选） */
-  targetError?: number
   /** 自定义搜索空间 */
   space?: Partial<TuneSpace>
   /** 每张图最多评估多少组（防止大图 + 大空间跑太久；超出时取前 N 组，顺序固定所以仍确定） */
   maxCandidates?: number
+  /**
+   * 是否把尺寸纳入搜索（默认 `false`：只用 `base.longEdge`）。
+   *
+   * **默认关闭的理由见 `DEFAULT_TUNE_SPACE` 上方那段**：跨尺寸没有可靠判据，
+   * 现有两个指标都会奖励"更糊"的方案。用户显式写了 `--long-edge 58` 就是要 58 格，
+   * 更不该被搜索空间里的档位盖掉（实测过：`--long-edge 58 --auto-tune 14` 出 24×18，
+   * 而 `--json` 还回显 58——参数被静默丢弃，正是本项目最忌讳的一类失败）。
+   *
+   * 置为 `true` 时才回到"连尺寸一起搜"的旧行为；此时结果不可靠，仅供实验。
+   */
+  searchLongEdge?: boolean
 }
 
 export interface TuneCandidate {
@@ -92,13 +119,18 @@ function signature(p: ConvertParams): string {
  *
  * 排序规则（**这就是"最优"的定义，写在代码里而不是文档里**）：
  *   1. 满足色号上限的优先；
- *   2. 其次块平均误差小（观感更接近原图）；
- *   3. 再次色号数少（同样像就用更少的色 = 更省豆子）；
+ *   2. 其次色号数少（同样的约束下用更少的色 = 更省豆子，成本是用户真金白银买的）；
+ *   3. 再次块平均误差小（观感更接近原图）；
  *   4. 最后参数签名按字典序——**只为确定，不为优劣**。
  *
- * 注意第 2 级排在"色号少"前面：色号数是**成本**，不是**质量**。
- * 成本由 `maxColors` 硬约束表达，不该在排序里二次惩罚——否则会选出
- * "24 格 10 色"这类明显比"96 格 16 色"更糊的方案（实测踩到过）。
+ * ⚠️ **这个排序只在"尺寸已定"时成立**（默认就是——见 `DEFAULT_TUNE_SPACE`）。
+ * 第 2、3 级用的 `usedColors` 与 `blockError` **都会随画布变小而变小**，所以一旦跨尺寸比较，
+ * 它们会一致地奖励最小档（实测：24 格 87 色 / 96 格 102 色；块平均 24→0.0356 对 96→0.0570）。
+ * 用户要"像"却拿到"糊"，而报告写着"观感最好的组合"——那是会让人做错决定的错误结论。
+ * 真正的正确用法就是 `quality.ts` 文件头那个：**固定尺寸下比较抖动**
+ * （抖动让逐格误差变大、块平均变小，那才是它要捕捉的现象）。
+ *
+ * "最优"在这个前提下指：**在你指定的尺寸下**，色号够省、观感够像的那组参数。
  */
 export function autoTune(
   source: { width: number; height: number; data: Uint8ClampedArray },
@@ -106,7 +138,14 @@ export function autoTune(
   options: TuneOptions = {},
 ): TuneResult {
   const space: TuneSpace = {
-    longEdge: options.space?.longEdge ?? DEFAULT_TUNE_SPACE.longEdge,
+    /*
+     * 尺寸维度：默认**不搜**（`DEFAULT_TUNE_SPACE.longEdge` 是空数组），用 `base.longEdge`。
+     * 只有显式 `searchLongEdge: true` 或自带 `space.longEdge` 时才纳入——理由见
+     * `DEFAULT_TUNE_SPACE` 上方那段（跨尺寸的两个候选指标都在奖励"更糊"）。
+     */
+    longEdge: options.searchLongEdge
+      ? (options.space?.longEdge?.length ? options.space.longEdge : [24, 32, 48, 64, 96])
+      : (options.space?.longEdge?.length ? options.space.longEdge : [base.longEdge]),
     paletteK: options.space?.paletteK ?? DEFAULT_TUNE_SPACE.paletteK,
     dither: options.space?.dither ?? DEFAULT_TUNE_SPACE.dither,
     cleanup: options.space?.cleanup ?? DEFAULT_TUNE_SPACE.cleanup,
@@ -202,8 +241,13 @@ export function autoTune(
         beads: q.beads,
       })
     }
+    /*
+     * 无解分支的排序链与主路径**保持一致**（色号数优先于块误差）。
+     * 这里全部候选都走了 `ditherMaxColors`，色号数普遍贴着上限，所以两者差异通常不大；
+     * 但口径不一致本身就是隐患——同一份"最优"的定义不该有两套。
+     */
     const bestCapped = [...capped].sort(
-      (a, b) => a.blockError - b.blockError || a.usedColors - b.usedColors || signature(a.params).localeCompare(signature(b.params)),
+      (a, b) => a.usedColors - b.usedColors || a.blockError - b.blockError || signature(a.params).localeCompare(signature(b.params)),
     )
     const topCapped: TuneCandidate[] = []
     const seenCap = new Set<string>()
@@ -214,6 +258,14 @@ export function autoTune(
       topCapped.push(c)
       if (topCapped.length >= 3) break
     }
+    /*
+     * `capped` 可能为空（`maxCandidates: 0` 会让 `limited` 是空数组）。
+     * 没有这条兜底时会返回 `best: undefined`，调用方读 `tune.best.params` 直接抛
+     * "Cannot read properties of undefined"——一个远在故障现场的报错。这里给出明确错误。
+     */
+    if (!bestCapped.length) {
+      throw new Error('自动调参：没有可评估的候选（检查 maxCandidates / 搜索空间是否被置空）')
+    }
     return { best: bestCapped[0], feasible: false, evaluated: evaluated.length, top: topCapped }
   }
 
@@ -221,16 +273,19 @@ export function autoTune(
 
   /*
    * 排序：确定性来自**最后那一级参数签名**。
-   * 前三级都是数值比较，并列极常见（同 longEdge 下多组抖动可能给出同一个块误差），
-   * 没有第四级时结果会依赖 sort 的实现细节——而"同图同参同结果"是本项目的核心承诺。
+   * 前面都是数值比较，并列极常见（同 longEdge 下多组抖动可能给出同一个块误差），
+   * 没有最后一级时结果会依赖 sort 的实现细节——而"同图同参同结果"是本项目的核心承诺。
+   *
+   * **色号数排在块误差之前**：理由见函数头那段（blockError 是画布格数的函数，
+   * 越小反而越糊，不能当跨尺寸的主排序键）。
    */
   const sorted = [...pool].sort((a, b) => {
     const ca = a.usedColors <= maxColors || maxColors === 0 ? 0 : 1
     const cb = b.usedColors <= maxColors || maxColors === 0 ? 0 : 1
     return (
       ca - cb ||
-      a.blockError - b.blockError ||
       a.usedColors - b.usedColors ||
+      a.blockError - b.blockError ||
       signature(a.params).localeCompare(signature(b.params))
     )
   })

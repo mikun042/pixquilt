@@ -336,6 +336,23 @@ export function buildParams(args) {
   }
 
   if (args['long-edge'] !== undefined) params.longEdge = Number(args['long-edge'])
+  /*
+   * `--auto-tune` 的数值校验**必须在这里**，不能只放在逐图循环里。
+   *
+   * 原先只在 `--in` 的循环内校验，于是 `--blank ... --auto-tune abc` 会**被静默忽略**——
+   * 而 `--blank` 下确实没有素材可搜参，所以这个组合本身也是无效的。
+   * 两件事一起处理：① 数值非法 → 立刻报错（不管走哪条路径）；
+   * ② 用在 `--blank` 下 → 明确告知它不生效，而不是假装接受。
+   */
+  if (args['auto-tune'] !== undefined) {
+    const maxColors = Number(args['auto-tune'])
+    if (!Number.isFinite(maxColors) || maxColors < 2) {
+      throw new Error(`--auto-tune 需要一个色号上限（≥2），收到：${args['auto-tune']}`)
+    }
+    if (args.blank) {
+      throw new Error('--auto-tune 需要素材才能搜参，与 --blank 同用无效；请用 --in 指定素材')
+    }
+  }
   if (args.size !== undefined) {
     const spec = parseBlankSpec(args.size, '--size')
     params.exactWidth = spec.width
@@ -644,6 +661,17 @@ async function main() {
   const failures = []
   /** 非本命中的素材（例如目录里混进的 .svg/.jpg）：既不算成功也不算失败，只报数量 */
   const skipped = []
+  /**
+   * `--auto-tune` 的逐图决策记录（进 `--json` 的 `autoTune` 字段）。
+   * 原先这些信息只写 stderr，机器读不到。
+   */
+  const tuneLog = []
+  /**
+   * **全局实际生效的参数**。`--auto-tune` 是逐图改写参数，所以严格说没有单一的"生效参数"；
+   * 这里取最后一张的（单图批处理时就是它本身），逐图的准确值在 `results[].paramsEffective`。
+   * 没有它的时候，`--json` 里只有用户请求值，agent 无从判断参数到底生效没有。
+   */
+  let paramsEffective = params
 
   /** 空白画布模式：不读任何素材，纯程序化（拼豆图纸与资产原型常用） */
   if (args.blank) {
@@ -797,16 +825,55 @@ async function main() {
          *     批量处理时这正是它比"手动调一套参数套所有图"强的地方。
          */
         let fileParams = params
+        let tuneResult = null
         if (args['auto-tune'] !== undefined) {
+          // 数值与适用性已在 buildParams 里校验过（那里对 --blank 也生效），此处直接用
           const maxColors = Number(args['auto-tune'])
-          if (!Number.isFinite(maxColors) || maxColors < 2) {
-            throw new Error(`--auto-tune 需要一个色号上限（≥2），收到：${args['auto-tune']}`)
-          }
           const img = loadImageNode(src)
-          const tune = autoTune({ width: img.width, height: img.height, data: img.data }, params, { maxColors })
-          fileParams = tune.best.params
-          if (!args.quiet) progress(`↻ ${basename(src)} 搜参：${tuneSummary(tune)}`)
+          /*
+           * 尺寸**不进搜索空间**（`autoTune` 的默认行为）：`--long-edge N` 就是要 N 格。
+           *
+           * 不这么做的后果实测过：`--long-edge 58 --auto-tune 14` 的产物是 24×18，
+           * 而 `--json` 里 `params.longEdge` 还写着 58——参数被静默丢弃、报告回显输入值，
+           * 正好撞在 AGENTS.md 那条"别把命令成功当成参数生效"上。拼豆用户按板数算好 58 格，
+           * 拿到 24 格等于图白做了。
+           *
+           * 而"让工具自己挑尺寸"这条路本身也不成立：跨尺寸的两个候选指标
+           * （块平均误差、色号数）都会随画布变小而变小，等于一致奖励"更糊"的方案。
+           * 详见 `core/auto-tune.ts` 的 `DEFAULT_TUNE_SPACE` 注释。
+           */
+          tuneResult = autoTune(
+            { width: img.width, height: img.height, data: img.data },
+            params,
+            { maxColors },
+          )
+          fileParams = tuneResult.best.params
+          tuneLog.push({
+            src: basename(src),
+            feasible: tuneResult.feasible,
+            evaluated: tuneResult.evaluated,
+            best: {
+              longEdge: tuneResult.best.params.longEdge,
+              paletteK: tuneResult.best.params.paletteK,
+              dither: tuneResult.best.params.dither,
+              cleanup: tuneResult.best.params.cleanup,
+              blockError: tuneResult.best.blockError,
+              meanError: tuneResult.best.meanError,
+              usedColors: tuneResult.best.usedColors,
+              beads: tuneResult.best.beads,
+            },
+            top: tuneResult.top.map((c) => ({
+              longEdge: c.params.longEdge,
+              dither: c.params.dither,
+              cleanup: c.params.cleanup,
+              blockError: c.blockError,
+              usedColors: c.usedColors,
+              beads: c.beads,
+            })),
+          })
+          if (!args.quiet) progress(`↻ ${basename(src)} 搜参：${tuneSummary(tuneResult)}`)
         }
+        paramsEffective = fileParams
         const r = renderOne({
           src,
           params: fileParams,
@@ -848,6 +915,12 @@ async function main() {
           cleanup: r.cleanup ?? undefined,
           // 质量报告只在 --quality 时产出；不加就如实为 undefined，不留一个"看着像有值"的空壳
           quality: r.quality ?? undefined,
+          /*
+           * **这张图实际生效的参数**。与顶层 `params`（用户请求值）可能不同——
+           * `--auto-tune` 会逐图改写尺寸/抖动/清理。顶层那个是"你要什么"，
+           * 这个是"实际用了什么"；下游要判断产物就得看这个。
+           */
+          paramsEffective: fileParams,
           _sheet: r.sheet,
         })
         // 进度行报**产物**的透明像素：key 模式下模型侧恒为 0，按它显示会少报
@@ -914,7 +987,30 @@ async function main() {
     ok: results.length,
     failed: failures.length,
     skipped: skipped.length,
+    /*
+     * `params` 是**用户请求值**（`buildParams` 的解析结果）。
+     * 开了 `--auto-tune` 时它可能与实际产出的参数不同——真正生效的看
+     * `paramsEffective`（全局）与 `results[].paramsEffective`（逐图）。
+     */
     params,
+    /*
+     * `--auto-tune` 的**决策结果**。
+     *
+     * 以前这些只走 `progress()`（stderr），`--quiet` 下更是完全不输出——
+     * 于是"搜了多少组、最优是哪组、有没有解、备选是什么"对 agent 一个字都不可见，
+     * 而 agent 恰恰是靠 `--json` 写下游逻辑的。放进顶层让它机器可读。
+     */
+    autoTune: tuneLog.length
+      ? {
+          maxColors: Number(args['auto-tune']),
+          /** 尺寸是否参与了搜索（恒 false：跨尺寸无可靠判据，见 core/auto-tune.ts） */
+          searchedLongEdge: false,
+          /** 搜索用的尺寸（= 用户请求的 longEdge） */
+          longEdge: params.longEdge,
+          files: tuneLog,
+        }
+      : undefined,
+    paramsEffective,
     results,
     failures,
     skippedFiles: skipped,
@@ -947,6 +1043,9 @@ function printHelp() {
                           尺寸与透明有两套字段：width/height/transparent 是模型侧（格数、
                           alphaMask），pngWidth/pngHeight/pngTransparent 是产物侧（含 --scale
                           放大与 --transparent 键控）；判断产物请用 png* 那三个
+                          参数也有两套：params 是**用户请求值**，paramsEffective 是
+                          **实际生效值**（逐图在 results[].paramsEffective）——开了
+                          --auto-tune 时两者会不同，判断产物要看后者；调参决策在 autoTune 字段
   --dry-run               只打印解析后的参数，不处理任何图片
   --quiet                 少打印过程信息
   --progress              与 --json 同用时把进度行写到 stderr（保证 stdout 仍是纯 JSON）
@@ -975,6 +1074,9 @@ function printHelp() {
   --quality               额外输出图纸质量报告（保真误差 / 色号数 / 珠子数 / 抖动代价）
   --auto-tune <n>         自动搜参：在"色号数 ≤ n"的约束下找观感最好的参数组合，
                           并把结果写进本次转换（确定性：同图同参必得同一组）
+                          **只在当前尺寸内搜**抖动/清理——尺寸由 --long-edge 决定，
+                          不会被自动改掉（跨尺寸没有可靠判据，见 docs/架构.md）
+                          决策结果进 --json 的 autoTune 字段
   --no-cleanup            关闭杂色清理
   --cleanup-min <n>       杂色清理阈值（1–10）
   --brightness/--contrast/--saturation <n>   预处理（-100..100）
