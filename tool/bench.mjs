@@ -31,6 +31,7 @@ import { decodePixBin, encodePixBin, pixelJSONString } from '../src/core/export.
 import { DEFAULT_PARAMS } from '../src/core/types.ts'
 import { getPreset } from '../src/core/palettes.ts'
 import { applyOps } from '../src/core/ops.ts'
+import { hexToRgb, rgbToHex, rgbToOklab } from '../src/core/color.ts'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 void ROOT
@@ -160,6 +161,239 @@ for (const [w, h] of [
   const a = medianCut(colors, 24).join(',')
   const b = medianCut(colors, 24).join(',')
   assert('取色确定性：同输入 → 同色板（抽样用固定散列步长）', a === b, a === b ? '两次结果一致' : '两次结果不同！')
+}
+
+/* ②b 取色质量：OKLab 构造 vs sRGB 构造（本基准里唯一一条"两套算法互比"） ------
+ *
+ * 为什么要在基准里内联一份 sRGB 参考实现，而不是直接断言绝对误差：
+ * 基准的既有范式全是"同一实现的两种配置比值"（缓存开/关、pixbin/JSON），与机器无关、可复现。
+ * 但"medianCut 改成 OKLab 到底有没有变好"是个**跨实现**问题——改造之后旧实现已经不在代码里了，
+ * 不内联基线就没有对照物，只能写绝对阈值，而绝对阈值既不可复现也说明不了"变好了"。
+ * 所以这里把改造前的 sRGB 版本原样内联成基线。
+ *
+ * ## 实测结论（2026-09-16 本机，--quick。必须如实记下来，别写成"全面改善"）
+ *
+ * 各图型 × k 的平均 OKLab 误差比值（新/旧，越小越好）：
+ *
+ * | 图型 | k=8 | k=16 | k=32 |
+ * |---|---|---|---|
+ * | 照片式渐变 | 1.013 | 0.997 | 1.024 |
+ * | 暗部密集+亮部稀疏 | **0.915** | **0.925** | **0.934** |
+ * | 高饱和 | 1.013 | 0.883 | 0.915 |
+ * | 平色块+噪点 | 1.000 | 0.970 | 1.042 |
+ *
+ * **池化比值 0.984**（Σ新 0.1409 / Σ旧 0.1432）。
+ *
+ * 诚实读法：**这是一次小幅度、非均匀的改善**——
+ * · 目标场景（暗部密集）稳定好 6–9%，这正是本次改造的动机（sRGB 在暗部过采样）；
+ * · 平滑渐变在个别 k 上反而差 1–2%，高饱和/平色块也各有波动；
+ * · 池化后整体只有约 1.6% 的改善。
+ *
+ * 所以断言写成三条（目标场景 / 池化整体 / 已量化零失真），而**不是**一个漂亮的统一阈值——
+ * 后者只能靠挑样本得到。若哪天要声称"大幅提升"，先来跑这段并看池化比值。
+ */
+{
+  /** 改造前的 sRGB 版 medianCut（照抄 git 历史，**只用于对照**，不参与产品路径） */
+  function medianCutSrgbReference(input, k) {
+    const target = Math.max(1, Math.min(256, Math.round(k)))
+    const work = input.slice()
+    const boxes = [{ from: 0, to: work.length }]
+    const range = (from, to, ch) => {
+      let min = 255
+      let max = 0
+      for (let i = from; i < to; i++) {
+        const v = work[i][ch]
+        if (v < min) min = v
+        if (v > max) max = v
+      }
+      return max - min
+    }
+    while (boxes.length < target) {
+      let bestIdx = -1
+      let bestRange = 1
+      let bestCh = 'r'
+      for (let i = 0; i < boxes.length; i++) {
+        const box = boxes[i]
+        if (box.to - box.from < 2) continue
+        for (const ch of ['r', 'g', 'b']) {
+          const r = range(box.from, box.to, ch)
+          if (r > bestRange) {
+            bestRange = r
+            bestIdx = i
+            bestCh = ch
+          }
+        }
+      }
+      if (bestIdx < 0) break
+      const box = boxes[bestIdx]
+      const slice = work.slice(box.from, box.to)
+      slice.sort((p, q) => p[bestCh] - q[bestCh])
+      for (let i = 0; i < slice.length; i++) work[box.from + i] = slice[i]
+      const mid = box.from + ((box.to - box.from) >> 1)
+      boxes.splice(bestIdx, 1, { from: box.from, to: mid }, { from: mid, to: box.to })
+    }
+    const seen = new Set()
+    const out = []
+    for (const box of boxes) {
+      if (box.to <= box.from) continue
+      let r = 0
+      let g = 0
+      let b = 0
+      for (let i = box.from; i < box.to; i++) {
+        r += work[i].r
+        g += work[i].g
+        b += work[i].b
+      }
+      const n = box.to - box.from
+      const hex = rgbToHex(r / n, g / n, b / n)
+      if (!seen.has(hex)) {
+        seen.add(hex)
+        out.push(hex)
+      }
+    }
+    return out
+  }
+
+  /** 每个采样色到色板的**最小 OKLab 距离**的均值（越小越贴近原图的感知） */
+  function meanOklabError(palette, samples) {
+    const labs = palette.map((h) => {
+      const c = hexToRgb(h)
+      return rgbToOklab(c.r, c.g, c.b)
+    })
+    let sum = 0
+    for (const s of samples) {
+      const L = rgbToOklab(s.r, s.g, s.b)
+      let best = Infinity
+      for (const p of labs) {
+        const dl = L.L - p.L
+        const da = L.a - p.a
+        const db = L.b - p.b
+        const d = dl * dl + da * da + db * db
+        if (d < best) best = d
+      }
+      sum += Math.sqrt(best)
+    }
+    return sum / samples.length
+  }
+
+  /** 大面积暗部 + 亮部稀疏：这是"OKLab 该赢"的目标场景（sRGB 在暗部过采样） */
+  function makeDarkDetail(w, h) {
+    const r = makeRng(7)
+    const px = []
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (r() < 0.82) px.push({ r: 8 + (x % 9), g: 8 + (y % 8), b: 14 + (x % 7) })
+        else px.push({ r: 200 + (x % 40), g: 190 + (y % 35), b: 170 + (y % 30) })
+      }
+    }
+    return px
+  }
+
+  /** 高饱和双色系 */
+  function makeSaturated(w, h) {
+    const r = makeRng(99)
+    const px = []
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        px.push(r() < 0.5 ? { r: 255, g: (x * 3) % 80, b: (y * 5) % 60 } : { r: (x * 7) % 50, g: 255, b: (y * 3) % 90 })
+      }
+    }
+    return px
+  }
+
+  const sample = (px) => px.filter((_, i) => i % 7 === 0)
+  /** 把基准既有的 `{width,height,data(RGBA)}` 图转成 RGB 像素数组 */
+  const toPixels = (img) => {
+    const out = []
+    for (let i = 0; i < img.width * img.height; i++) {
+      const o = i * 4
+      out.push({ r: img.data[o], g: img.data[o + 1], b: img.data[o + 2] })
+    }
+    return out
+  }
+  const KS = [8, 16, 32]
+  const byCase = new Map()
+  /** 池化用：把每个组合的绝对误差都攒起来 */
+  let sumNew = 0
+  let sumOld = 0
+
+  for (const [label, px] of [
+    ['照片式渐变', toPixels(makePhoto(256, 256))],
+    ['暗部密集+亮部稀疏', makeDarkDetail(256, 256)],
+    ['高饱和', makeSaturated(256, 256)],
+    ['平色块+噪点', toPixels(makeFlat(256, 256))],
+  ]) {
+    const s = sample(px)
+    const perK = []
+    for (const k of KS) {
+      const newErr = meanOklabError(medianCut(s, k), s)
+      const oldErr = meanOklabError(medianCutSrgbReference(s, k), s)
+      perK.push(newErr / oldErr)
+      sumNew += newErr
+      sumOld += oldErr
+    }
+    byCase.set(label, perK)
+  }
+
+  const fmt = (arr) => arr.map((r) => r.toFixed(3)).join(' / ')
+  const pooled = sumNew / sumOld
+
+  /*
+   * ① 目标场景必须**一致改善**：暗部密集的图在每个 k 上都要比旧实现更贴近原图。
+   * 这条是这次改造的**动机本身**——任务书说的"该分开的暗部被合成一个色号"就指它。
+   */
+  {
+    const dark = byCase.get('暗部密集+亮部稀疏')
+    const worst = Math.max(...dark)
+    assert(
+      '取色质量：暗部密集的图在 OKLab 下一致优于 sRGB（本次改造的目标场景）',
+      worst <= 0.95,
+      `k=${KS.join('/')} 比值 ${fmt(dark)}（最差 ${worst.toFixed(3)}，期望全部 ≤0.95）`,
+    )
+  }
+
+  /*
+   * ② 整体不得劣化：**池化**比值（Σ新误差 / Σ旧误差）≤ 1.0。
+   *
+   * 为什么用池化而不是"各组合比值的平均"：后者会被**误差本身接近 0** 的组合主导——
+   * 已量化的图两边误差都在 1e-3 量级（远小于一个 8 位色阶，感知上无从区分），
+   * 那里 2.8 : 1 的比值在数值上成立，却对"哪个更像原图"毫无意义，
+   * 一个这样的项就能把平均值从 0.95 抬到 1.07、把结论整个翻过来。
+   * 池化按误差大小加权，天然不让近乎为零的项说话。**实测的绝对值也一并打出来**，便于判断。
+   */
+  {
+    assert(
+      '取色质量：整体平均感知误差不高于 sRGB 实现（按误差池化，越大越有话语权）',
+      pooled <= 1.0,
+      `池化比值 ${pooled.toFixed(3)}（Σ新 ${sumNew.toFixed(4)} / Σ旧 ${sumOld.toFixed(4)}）；逐项 ${[...byCase].map(([n, v]) => `${n} ${fmt(v)}`).join(' | ')}`,
+    )
+  }
+
+  /*
+   * ③ 已量化输入**零失真**：均匀重复的 8 色、k=8 时输出必须**精确**是那 8 个色。
+   *
+   * 这里刻意用**属性断言**而不是误差比值：该短路的契约就是"盒内同色 → 原样输出"，
+   * 比值形式反而测不准（k 大于色数时盒子会跨色，两边都不精确，比的是噪声）。
+   * 这条直接守住 `medianCut` 的 verbatim 短路——它防的是"像素画源图凭空多出 1/255 偏色"。
+   */
+  {
+    const pal = ['#1a1a1a', '#7f7f7f', '#e6e6e6', '#c82828', '#28c83c', '#283cc8', '#dcc828', '#963cc8']
+    const rgb = pal.map((h) => ({
+      r: parseInt(h.slice(1, 3), 16),
+      g: parseInt(h.slice(3, 5), 16),
+      b: parseInt(h.slice(5, 7), 16),
+    }))
+    const colors = []
+    for (let rep = 0; rep < 40; rep++) for (const c of rgb) colors.push(c)
+    const out = medianCut(colors, pal.length)
+    const exact = new Set(pal)
+    const bad = out.filter((h) => !exact.has(h))
+    assert(
+      '取色质量：已量化输入零失真（盒内同色走 verbatim，不引入 OKLab 往返误差）',
+      out.length === pal.length && bad.length === 0,
+      `${pal.length} 色精确重复 → 输出 ${out.length} 色，非原始色 ${bad.length} 个${bad.length ? `（${bad.slice(0, 3).join(',')}）` : ''}`,
+    )
+  }
 }
 
 /* ③ 量化缓存：它的价值**强依赖图的类型**（这条是本基准最有价值的发现） -------- */

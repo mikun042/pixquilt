@@ -7,17 +7,32 @@ import {
   ALPHA_THRESHOLD,
   CLEANUP_MIN_SIZE_MAX,
   CLEANUP_MIN_SIZE_MIN,
+  DITHER_MAX_COLORS_MAX,
+  DITHER_MAX_COLORS_MIN,
   MAX_CANVAS_SIDE,
   MIN_CANVAS_SIDE,
   PALETTE_K_MAX,
   PALETTE_K_MIN,
+  PALETTE_MAX,
   SCHEMA_VERSION,
   SUPPORTED_VERSIONS,
 } from './limits.ts'
 
 export { SCHEMA_VERSION, SUPPORTED_VERSIONS, ALPHA_THRESHOLD }
 
-export type DitherMode = 'none' | 'floyd' | 'bayer'
+/**
+ * 抖动方式。
+ *
+ * - `none` 关闭
+ * - `floyd` Floyd–Steinberg 误差扩散（经典，扩散到 4 个邻居）
+ * - `atkinson` Atkinson 误差扩散（**只扩散 3/4 的误差**，另 1/4 丢弃）
+ * - `bayer` Bayer 4×4 有序抖动
+ * - `bayer8` Bayer 8×8 有序抖动（阈值层次更细，渐变过渡更平滑）
+ *
+ * `atkinson` 为什么对拼豆特别有用：它丢弃 1/4 误差，所以**对比度更高、色点更少更干净**，
+ * 在有限色板上比 F-S 更不容易糊成一片噪点。代价是高光/暗部细节会丢一些。
+ */
+export type DitherMode = 'none' | 'floyd' | 'atkinson' | 'bayer' | 'bayer8'
 export type PaletteMode = 'auto' | 'preset' | 'custom'
 export type DownsampleMode = 'average' | 'nearest'
 export type CropRatio = 'free' | '1:1' | '4:3' | '16:9'
@@ -60,6 +75,14 @@ export interface ConvertParams {
   dither: DitherMode
   /** 抖动强度 0–100 */
   ditherStrength: number
+  /**
+   * 抖动时允许实际用到的最大色号数；**0 = 不限制**（默认，保持既有行为）。
+   *
+   * 存在的理由：抖动会增加色号数与珠子总数，对拼豆用户常常是负面的
+   * （"我手上只有 14 种豆子"）。设了它之后，量化会按色号使用情况递减地压制误差扩散，
+   * 把超出上限的色号让回去。见 `pipeline.ts` 的 `capDitherColors`。
+   */
+  ditherMaxColors: number
   cleanup: boolean
   /** 小于该格数的连通色块并入邻域主色；与抖动互斥 */
   cleanupMinSize: number
@@ -94,6 +117,7 @@ export const DEFAULT_PARAMS: ConvertParams = {
   customPalette: [],
   dither: 'none',
   ditherStrength: 100,
+  ditherMaxColors: 0,
   cleanup: true,
   cleanupMinSize: 2,
   brightness: 0,
@@ -208,19 +232,52 @@ function bool(v: unknown, fallback: boolean): boolean {
   return typeof v === 'boolean' ? v : fallback
 }
 
+/**
+ * 十六进制颜色字段：合法就用它，否则**回退默认值**。
+ *
+ * 「回退」本身就是一次静默改参——`matteColor: 'garbage'` 会悄悄变成 `#ffffff`。
+ * 所以调用点必须把这个判断的结论带出去（见下面 `hexOr` 的 `fixed` 上报），
+ * 而不是让 `hexField` 自己返回一个"看起来正常"的默认值就算完。
+ */
+function isHexField(v: unknown): v is string {
+  return isHex(v)
+}
+
 function hexField(v: unknown, fallback: string): string {
   return isHex(v) ? v.toLowerCase() : fallback
 }
 
-function paletteField(v: unknown, max = 256): string[] {
-  if (!Array.isArray(v)) return []
+/**
+ * 色板字段的校验结果。**必须把"截掉了几个/丢了几行"带出来**，不能只返回数组：
+ * 长度封顶与非法项跳过都是**静默丢数据**，而 agent 会按 `customPalette` 规划后续步骤——
+ * 少说一句就等于让它以为色卡完整生效了（与 `numP`/`enumP` 的 `FixedField` 同一态度）。
+ */
+interface PaletteFieldResult {
+  out: string[]
+  /** 因超过 max 被截掉的条数 */
+  truncated: number
+  /** 因不是合法 `#rrggbb` 被丢掉的条数（非字符串项也算） */
+  dropped: number
+}
+
+function paletteField(v: unknown, max = 256): PaletteFieldResult {
+  if (!Array.isArray(v)) return { out: [], truncated: 0, dropped: 0 }
   const out: string[] = []
+  let truncated = 0
+  let dropped = 0
   for (const c of v) {
     const n = typeof c === 'string' ? normalizeHex(c) : null
-    if (n) out.push(n)
-    if (out.length >= max) break
+    if (!n) {
+      dropped++
+      continue
+    }
+    if (out.length >= max) {
+      truncated++
+      continue
+    }
+    out.push(n)
   }
-  return out
+  return { out, truncated, dropped }
 }
 
 /**
@@ -234,14 +291,14 @@ function paletteField(v: unknown, max = 256): string[] {
  *  3. **全是空串时返回 undefined**：让"没有号色"和"号色都是空"是同一种形态，
  *     项目文件里就不会留一堆空串（导出侧的 JSON 也不至于变长）。
  */
-function paletteCodesField(v: unknown, max = 256): string[] | undefined {
-  if (!Array.isArray(v)) return undefined
+function paletteCodesField(v: unknown, max = 256): { out: string[] | undefined; truncated: number } {
+  if (!Array.isArray(v)) return { out: undefined, truncated: 0 }
   const out: string[] = []
   for (const c of v.slice(0, max)) {
     out.push(typeof c === 'string' ? c.trim() : '')
   }
   while (out.length && out[out.length - 1] === '') out.pop()
-  return out.some((c) => c !== '') ? out : undefined
+  return { out: out.some((c) => c !== '') ? out : undefined, truncated: Math.max(0, v.length - max) }
 }
 
 export interface FixedField {
@@ -326,17 +383,50 @@ export function sanitizeParams(raw: unknown): SanitizeReport {
       if (rawV !== undefined) fixed.push({ key: 'presetPaletteId', from: rawV, to: d.presetPaletteId, reason: '不是非空字符串，回退默认' })
       return d.presetPaletteId
     })(),
-    customPalette: paletteField(p.customPalette, 256),
-    customPaletteCodes: paletteCodesField(p.customPaletteCodes, 256),
-    dither: enumP('dither', ['none', 'floyd', 'bayer'] as const, d.dither),
+    customPalette: (() => {
+      const r = paletteField(p.customPalette, PALETTE_MAX)
+      // 截断与丢项都要如实上报：agent 按色板长度做规划，少说一句它就以为色卡完整生效了
+      if (r.truncated) {
+        fixed.push({
+          key: 'customPalette',
+          from: (p.customPalette as unknown[]).length,
+          to: r.out.length,
+          reason: `超过色板上限 ${PALETTE_MAX}，截掉 ${r.truncated} 色`,
+        })
+      }
+      if (r.dropped) {
+        fixed.push({ key: 'customPalette', from: r.dropped, to: 0, reason: `丢弃了 ${r.dropped} 项非法颜色（非 #rrggbb）` })
+      }
+      return r.out
+    })(),
+    customPaletteCodes: (() => {
+      const r = paletteCodesField(p.customPaletteCodes, PALETTE_MAX)
+      if (r.truncated) {
+        fixed.push({
+          key: 'customPaletteCodes',
+          from: (p.customPaletteCodes as unknown[]).length,
+          to: r.out?.length ?? 0,
+          reason: `与色板同上限 ${PALETTE_MAX}，截掉 ${r.truncated} 项号色`,
+        })
+      }
+      return r.out
+    })(),
+    dither: enumP('dither', ['none', 'floyd', 'atkinson', 'bayer', 'bayer8'] as const, d.dither),
     ditherStrength: numP('ditherStrength', 0, 100, d.ditherStrength),
+    ditherMaxColors: numP('ditherMaxColors', DITHER_MAX_COLORS_MIN, DITHER_MAX_COLORS_MAX, d.ditherMaxColors),
     cleanup: boolP('cleanup', d.cleanup),
     cleanupMinSize: numP('cleanupMinSize', CLEANUP_MIN_SIZE_MIN, CLEANUP_MIN_SIZE_MAX, d.cleanupMinSize),
     brightness: numP('brightness', -100, 100, 0),
     contrast: numP('contrast', -100, 100, 0),
     saturation: numP('saturation', -100, 100, 0),
     transparent,
-    matteColor: hexField(matteRaw, d.matteColor),
+    matteColor: (() => {
+      // 非法 hex 会静默回退成默认色（原图透明区就合成到另一个颜色上了），必须上报
+      if (matteRaw !== undefined && !isHexField(matteRaw)) {
+        fixed.push({ key: 'matteColor', from: matteRaw, to: d.matteColor, reason: '不是 #rrggbb，回退默认' })
+      }
+      return hexField(matteRaw, d.matteColor)
+    })(),
     keyMode: enumP('keyMode', ['global', 'border'] as const, d.keyMode),
     keyTolerance: numP('keyTolerance', 0, 255, d.keyTolerance),
   }

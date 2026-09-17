@@ -39,7 +39,7 @@ export interface CanvasApi {
    * 模型 → 画布的**同尺寸**同步原语（只换像素副本，保留选区与视图）。
    *
    * 为什么不用 `setArt` 代替：`setArt` 会清空选区，而"算子编辑后选区还在"是有用的行为。
-   * 见 docs/架构.md §2.1 的三条同步路径。
+   * 见 docs/架构.md §2.1 的四条同步路径。
    */
   applyIndices: (indices: Uint8Array, palette?: string[], alphaMask?: Uint8Array | null) => void
   /**

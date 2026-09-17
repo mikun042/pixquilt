@@ -5,10 +5,10 @@
  * 拼豆用户要的不是 PNG，而是**号色 + 数量 + 分板位置**。
  *
  * 全部是纯函数（只产出字符串/结构），因此 CLI 与 UI 都能用，且能被单测完整覆盖。
- * 拼豆模式的完整说明见 docs/使用手册.md「用途 A：拼豆图纸」。
+ * 拼豆模式的完整说明见 docs/使用手册.md「拼豆用户注意」。
  */
 import { ALPHA_THRESHOLD, type PixelArt } from './types.ts'
-import { hexToRgb, luminance } from './color.ts'
+import { colorTextOn } from './color.ts'
 import { paletteCodes } from './palettes.ts'
 import { countUsage } from './stats.ts'
 
@@ -77,7 +77,8 @@ export function beadReport(art: PixelArt, options: BeadOptions = {}): BeadReport
     .map(([color, cells]) => {
       const idx = art.palette.findIndex((c) => c.toLowerCase() === color)
       return {
-        code: codes[idx] ?? `C${idx + 1}`,
+        // codes 来自 paletteCodes()，它保证与色板等长且每项非空——不需要再兜一层
+        code: codes[idx],
         color,
         cells,
         beads: cells,
@@ -204,8 +205,7 @@ export function beadSvg(art: PixelArt, options: BeadSvgOptions = {}): string {
           parts.push(`<rect x="${px}" y="${py}" width="${cellPx}" height="${cellPx}" fill="${color}" stroke="#00000022" stroke-width="0.5"/>`)
           if (showLabel) {
             // 编号写在格子里：打印成黑白也能照着摆；深色格自动换白字
-            const c = hexToRgb(color)
-            const textColor = luminance(c.r, c.g, c.b) < 140 ? '#fff' : '#111'
+            const textColor = colorTextOn(color)
             parts.push(`<text x="${px + cellPx / 2}" y="${py + cellPx / 2 + 3}" font-size="${Math.max(6, cellPx * 0.34)}" fill="${textColor}" text-anchor="middle">${esc(code)}</text>`)
           }
         }

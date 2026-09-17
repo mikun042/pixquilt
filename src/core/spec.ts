@@ -9,8 +9,8 @@
  *
  * 因此：**改算子必须改这里，改这里也会被测试逼着改实现。**
  */
-import { ALPHA_THRESHOLD, CLEANUP_MIN_SIZE_MAX, CLEANUP_MIN_SIZE_MIN, EXPORT_SCALES, MAX_CANVAS_SIDE, MAX_EXPORT_PIXELS, MAX_EXPORT_SIDE, MIN_CANVAS_SIDE, PALETTE_K_MAX, PALETTE_K_MIN, PALETTE_MAX, SCHEMA_VERSION } from './limits.ts'
-import { PRESETS } from './palettes.ts'
+import { ALPHA_THRESHOLD, CLEANUP_MIN_SIZE_MAX, CLEANUP_MIN_SIZE_MIN, DITHER_MAX_COLORS_MAX, DITHER_MAX_COLORS_MIN, EXPORT_SCALES, MAX_CANVAS_SIDE, MAX_EXPORT_PIXELS, MAX_EXPORT_SIDE, MIN_CANVAS_SIDE, PALETTE_K_MAX, PALETTE_K_MIN, PALETTE_MAX, SCHEMA_VERSION } from './limits.ts'
+import { PRESETS, type PaletteSource } from './palettes.ts'
 import { STYLE_PRESETS, TOOLS, type ConvertParams } from './types.ts'
 
 export type FieldType = 'number' | 'string' | 'boolean' | 'hex' | 'enum' | 'cells' | 'opaque'
@@ -191,7 +191,18 @@ export const PARAM_SPECS: ParamSpec[] = [
   { key: 'cropRatio', type: 'enum', desc: '居中裁剪比例', enum: ['free', '1:1', '4:3', '16:9'], default: 'free' },
   { key: 'paletteMode', type: 'enum', desc: '色板来源', enum: ['auto', 'preset', 'custom'], default: 'auto' },
   { key: 'paletteK', type: 'number', desc: '自动取色的目标颜色数', min: PALETTE_K_MIN, max: PALETTE_K_MAX, default: 24, when: 'paletteMode=auto' },
-  { key: 'presetPaletteId', type: 'string', desc: `预置色卡 id（${PRESETS.map((p) => p.id).join(' / ')}）`, default: 'pico8', when: 'paletteMode=preset' },
+  {
+    key: 'presetPaletteId',
+    type: 'string',
+    /*
+     * 这里**不逐个列 id**（19 张卡会把参数表那一行撑得没法读）。
+     * 完整清单在本文档的「预置色卡」小节（由 CAPABILITIES.presets 生成），
+     * 按来源分三类列出——比一串逗号连缀的 id 有用得多。
+     */
+    desc: `预置色卡 id（共 ${PRESETS.length} 张：官方硬件色表 / 品牌拼豆（社区整理）/ 通用近似，完整清单见「预置色卡」小节）`,
+    default: 'pico8',
+    when: 'paletteMode=preset',
+  },
   { key: 'customPalette', type: 'string', desc: '自定义色板（#rrggbb 数组，≤256）', default: [], when: 'paletteMode=custom' },
   {
     key: 'customPaletteCodes',
@@ -202,8 +213,27 @@ export const PARAM_SPECS: ParamSpec[] = [
     default: [],
     when: 'paletteMode=custom（与 customPalette 等长）',
   },
-  { key: 'dither', type: 'enum', desc: '抖动方式（开启时自动关闭杂色清理）', enum: ['none', 'floyd', 'bayer'], default: 'none' },
+  {
+    key: 'dither',
+    type: 'enum',
+    desc:
+      '抖动方式（开启时自动关闭杂色清理）。floyd=误差扩散；atkinson=误差扩散但只扩散 3/4、' +
+      '对比度更高更干净（有限色板友好）；bayer/bayer8=有序抖动（8×8 层次更细）',
+    enum: ['none', 'floyd', 'atkinson', 'bayer', 'bayer8'],
+    default: 'none',
+  },
   { key: 'ditherStrength', type: 'number', desc: '抖动强度', min: 0, max: 100, default: 100, when: 'dither!=none' },
+  {
+    key: 'ditherMaxColors',
+    type: 'number',
+    desc:
+      '抖动时允许实际用到的最大色号数（0=不限制）。抖动会增加色号数与珠子总数，' +
+      '拼豆场景可用它约束到"我手上只有这么多种豆子"；超出时按色号使用情况递减压制误差扩散',
+    min: DITHER_MAX_COLORS_MIN,
+    max: DITHER_MAX_COLORS_MAX,
+    default: 0,
+    when: 'dither!=none && ditherMaxColors>0',
+  },
   {
     key: 'cleanup',
     type: 'boolean',
@@ -250,7 +280,19 @@ export interface Capabilities {
   exportScales: readonly number[]
   alphaThreshold: number
   tools: readonly string[]
-  presets: { id: string; name: string; desc: string; colors: number; hasCodes: boolean }[]
+  /**
+   * 预置色卡。`source` 说明这张卡的色号可不可信：
+   * `official`（厂商/规范公开色表）> `community`（社区整理，以实物为准）> `approximate`（我们自造的通用近似色）。
+   * 见 `src/core/palettes.ts` 文件头的三类来源表格。
+   */
+  presets: {
+    id: string
+    name: string
+    desc: string
+    colors: number
+    hasCodes: boolean
+    source: PaletteSource
+  }[]
   stylePresets: { id: string; name: string; desc: string }[]
   decodeFormatsInNode: readonly string[]
   decodeFormatsInBrowser: readonly string[]
@@ -282,7 +324,7 @@ export const CAPABILITIES: Capabilities = {
   exportScales: EXPORT_SCALES,
   alphaThreshold: ALPHA_THRESHOLD,
   tools: TOOLS,
-  presets: PRESETS.map((p) => ({ id: p.id, name: p.name, desc: p.desc, colors: p.colors.length, hasCodes: !!p.codes })),
+  presets: PRESETS.map((p) => ({ id: p.id, name: p.name, desc: p.desc, colors: p.colors.length, hasCodes: !!p.codes, source: p.source })),
   stylePresets: STYLE_PRESETS.map((s) => ({ id: s.id, name: s.name, desc: s.desc })),
   decodeFormatsInNode: ['png'],
   decodeFormatsInBrowser: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif', 'ico', 'svg'],

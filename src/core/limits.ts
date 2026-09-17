@@ -37,6 +37,22 @@ export const PALETTE_K_MAX = 64
 /** 超过该格数时对取色抽样：切分是统计性聚类，几百万像素只会让盒内排序白白变慢 */
 export const MEDIAN_CUT_SAMPLE_LIMIT = 250_000
 
+/**
+ * 抖动时允许实际用到的最大色号数（0 = 不限制）。
+ *
+ * 为什么这个上限值钱：**抖动会增加色号数与珠子总数**，对拼豆用户常常是负面的
+ * （真实场景就是"我手上只有 14 种豆子"）。竞品只提供"更多抖动算法"，
+ * 没有一个能约束"这次抖动用掉了几色"。
+ *
+ * ⚠️ **下限必须是 0，不能是 2**：0 是"不限制"这个语义的载体，而 `sanitizeParams`
+ * 的 `numP` 会把越界值夹到 `[min, max]`——下限若写 2，用户传 0（或省略，默认值就是 0）
+ * 会被静默夹成 2，等于**默认把画面限成 2 色**。这个坑在实现时真实踩到过
+ * （实测 `ditherMaxColors: 0` 解析出来是 2，全图只剩 2 色）。
+ * 真正的"启用时的最小上限"由 applyCap 里的 `Math.max(2, cap)` 保证。
+ */
+export const DITHER_MAX_COLORS_MIN = 0
+export const DITHER_MAX_COLORS_MAX = PALETTE_K_MAX
+
 /** 杂色清理阈值（小于该格数的连通色块并入邻域主色），与参数面板滑块上限一致 */
 export const CLEANUP_MIN_SIZE_MIN = 1
 export const CLEANUP_MIN_SIZE_MAX = 10

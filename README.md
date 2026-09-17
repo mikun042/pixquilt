@@ -116,12 +116,19 @@ src/core/                ← 纯逻辑：零 DOM、零 node: 依赖，Node 可�
    limits.ts             ←   全部魔法数字集中在此
    pipeline.ts           ←   像素化管线（像素化 / 量化 / 抖动 / 清理的固定顺序）
    ops.ts rasterize.ts   ←   13 类编辑算子 / 几何栅格化
+   quality.ts auto-tune.ts ←  图纸质量度量 / 在色号数约束下自动搜参
+   palette-edit.ts       ←   色板条目编辑与合并的去重、下标重映射（纯函数）
+   palettes.ts           ←   预置色卡（主机色表）
+   palettes-beads.ts     ←   13 张品牌拼豆色卡（社区整理数据，逐卡声明来源）
    export.ts bead.ts     ←   序列化、拼豆图纸与缺口清单
    sheetmeta.ts          ←   图集元数据 → Godot / Unity / Tiled 三引擎格式（纯函数）
 src/io/                  ← Node 侧平台绑定（PNG 编解码、文件 IO、浏览器通道解码）
 src/app/                 ← 浏览器侧：UI、画布、页内 API、导出动作、撤销栈、自动草稿
+   ui/                   ←   参数面板、取色器、色板编辑器、数值滑条、右键菜单、帮助弹窗
 tool/artc.mjs            ← 批处理 CLI（agent 主入口）
+tool/selftest.mjs        ← 链路自检（从 artc.mjs 拆出）
 tool/quickstart.mjs      ← Agent 快速上手（一条命令跑通全链路）
+tool/bead-palettes.mjs   ← 由社区数据生成品牌色卡的脚本
 tool/build.mjs           ← 单文件构建（内联 CSS + JS，核对产物哈希）
 tool/describe.mjs        ← 由 core/spec.ts 生成 docs/AGENT_API.md
 tool/cdp.mjs             ← 零依赖 CDP 客户端（e2e / 截图 / 探针共用这一份）
@@ -155,9 +162,9 @@ npm run verify
 | 步骤 | 内容 | 需要浏览器 |
 |---|---|---|
 | `typecheck` | `tsc --noEmit` | 否 |
-| `test` | 141 项单元测试 | 否 |
+| `test` | 181 项单元测试 | 否 |
 | `build` | 单文件产物 + 核对两份 HTML 哈希一致 | 否 |
-| `selftest` | 42 项链路自检（不需要素材） | 否 |
+| `selftest` | 50 项链路自检（不需要素材） | 否 |
 | `e2e` | 36 项端到端 | **是** |
 | `e2e:picker` / `e2e:slider` | 取色器 18 项 / 滑条 12 项 | **是** |
 | `e2e:palette` | 色板编辑 14 项（右键微调 / 替换 / Esc 放弃） | **是** |
@@ -179,7 +186,18 @@ npm run verify
   走页内 API 的浏览器通道、或先用图像工具转成 PNG。
 - **屏幕吸管未实现**（`eyeDropper: false`）。画布取色用取色工具 `I` 或 `Alt+点击`。
 - **单画布模型**：一次处理一张图（批量由 CLI 逐张跑）。
-- **拼豆内建色卡是通用近似色**，不是任何品牌官方色号；要严格对应请导入自己的 `.hex`。
+- **内建色卡分三类来源**（`source`）：
+  - `official` —— 主机硬件色表（PICO-8 / GameBoy / NES / CGA），权威；
+  - `community` —— **社区整理**的品牌拼豆色卡（Hama / Perler / Artkal / Nabbi / Yant 等，来自
+    [beadcolors](https://github.com/maxcleme/beadcolors) 的 MIT 数据）。
+    **有据可查，但与实物可能有偏差，以实物为准**；
+  - `approximate` —— 自造的通用近似色（`beads16` / `beads24`）。
+
+  要严格对应手上的号色，请导入自己的 `.hex`。
+  - **Mard（290 色）与 Diamond Dotz（461 色）未收录**：色板数组上限是 256
+    （索引存成 `Uint8Array`，超限会让颜色回绕出错误结果），这两张卡超了。
+    要用它们走 `--palette 我的色卡.hex`（支持带号色）；要内置则需先把索引位宽迁到
+    `Uint16Array` —— 那会牵动 pixbin 字节布局等多处，属独立一轮的结构性改动。
 - **自动草稿只保"最近一次"**（刷新后弹「恢复 / 放弃」提示条）：它防手滑，不是归档；
   很大的原图可能因浏览器配额存不进去（此时画布照常恢复，只是不能重新转换）。
   要长期保存请导出项目 JSON。

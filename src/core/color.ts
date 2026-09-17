@@ -125,15 +125,36 @@ export function hsvToRgb(h: number, s: number, v: number): Rgb {
   return { r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 }
 }
 
-/** 感知亮度（用于决定色块上的文字取黑还是白） */
+/**
+ * 感知亮度（ITU-R BT.709 系数，用于决定色块上的文字取黑还是白）。
+ *
+ * ⚠️ **不要再在别处自己算一份**：这个判断曾有三处实现，其中 `bead-pdf.ts` 用的是
+ * BT.601 系数（`(r*299+g*587+b*114)/1000`）。两套系数在纯黑纯白上结论一致，
+ * 但在中间调会分歧——后果是**同一张图纸的 SVG 与 PDF 里，同一个色块的编号一个白字一个黑字**。
+ * 现已统一走本函数 / `colorTextOn()` / `needsLightText()`。
+ */
 export function luminance(r: number, g: number, b: number): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
-/** 色块上的可读文字色 */
+/** 白字/黑字的分界亮度。集中一处，避免两处阈值各自漂移 */
+const TEXT_CONTRAST_THRESHOLD = 140
+
+/**
+ * 色块上的可读文字色。
+ *
+ * 与 `needsLightText()` 是同一个判断的两种入参形态：前者给手里已有 hex 的调用方
+ * （UI 色板、号色表），后者给手里是 RGB 分量的调用方（图纸 SVG / PDF 渲染）。
+ * **不要再写第三套**。
+ */
 export function colorTextOn(hex: string): '#111' | '#fff' {
   const c = hexToRgb(hex)
-  return luminance(c.r, c.g, c.b) < 140 ? '#fff' : '#111'
+  return luminance(c.r, c.g, c.b) < TEXT_CONTRAST_THRESHOLD ? '#fff' : '#111'
+}
+
+/** 该颜色上该用浅色（白）文字吗。见 `colorTextOn` 的说明 */
+export function needsLightText(r: number, g: number, b: number): boolean {
+  return luminance(r, g, b) < TEXT_CONTRAST_THRESHOLD
 }
 
 /** OKLab 线性插值（渐变行用）：在感知空间混色，不会出现中间发灰 */

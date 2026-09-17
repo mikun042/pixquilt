@@ -366,8 +366,8 @@ await check('幽灵引用：文档提到的页内 API 方法必须真的存在�
  * 这条把它变成**全量**核对：从手册正文里抓出所有 `ps.<name>(` 提到的方法，逐个确认
  * `window.pixelArtStudio` 上真的存在。文档多写一个名字、或实现改名后忘了改文档，都会变红。
  *
- * 为什么值得单独一条：本项目栽过同一类——某份早已删除的 agent 上手文档里，L3 示例写着 core 有
- * `render` 导出，实际没有，照抄的脚本第一行就报错。那次是运行期实跑才发现的，静态 grep 看不出来。
+ * 为什么值得单独一条：本项目栽过同一类——某份早已删除的 agent 上手文档里，L3 示例写着 core 有 `render` 导出，
+ * 实际没有，照抄的脚本第一行就报错。那次是运行期实跑才发现的，静态 grep 看不出来。
  */
 await check('契约面完整：docs/AGENT_API.md 里写到的每个页内方法都真的存在', async () => {
   const doc = readFileSync(join(ROOT, 'docs', 'AGENT_API.md'), 'utf8')

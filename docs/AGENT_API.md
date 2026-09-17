@@ -14,7 +14,7 @@ node tool/artc.mjs --in 素材目录 --out 输出 --palette beads16 --long-edge 
 node tool/artc.mjs --in 素材目录 --out 输出 --palette gameboy --size 32x32 --alpha --sheet 4
 
 # ② 自检与自省（先确认环境与能力，再写脚本）
-node tool/artc.mjs --selftest      # 42 项链路自检，无需任何素材
+node tool/artc.mjs --selftest      # 44 项链路自检，无需任何素材
 node tool/artc.mjs --describe     # 打印完整的算子/参数/能力 JSON
 
 # ③ 页内 API（浏览器自动化 / Playwright / CDP evaluate）
@@ -56,7 +56,10 @@ node tool/artc.mjs --ops '[{"op":"eraseColor","color":"#ffffff"},{"op":"trim"}]'
 | `--preset` | 只指定预置色卡（等价于 `--palette <预置 id>`；带号色的卡会把号色写进图纸 / 清单 / `.hex`） |
 | `--palette-k` | 自动取色颜色数（2–64） |
 | `--style` | photo / gameboy / retro / silhouette / sprite / beads |
-| `--dither` | `none` \| `floyd` \| `bayer` |
+| `--dither` | `none` \| `floyd` \| `atkinson` \| `bayer` \| `bayer8` |
+| `--dither-max-colors` | 抖动时最多用到几种色号（0=不限）；拼豆场景约束到"手上只有这么多种" |
+| `--quality` | 额外输出图纸质量报告（保真误差 / 色号数 / 珠子数 / 抖动代价） |
+| `--auto-tune` | 自动搜参：在「色号数 ≤ n」约束下找观感最好的参数组合（确定性） |
 | `--no-cleanup` | 关闭杂色清理（像素素材请开它：清理会吃掉 1px 高光/描边断点） |
 | `--cleanup-min` | 杂色清理阈值（1–10） |
 | `--brightness / --contrast / --saturation` | 预处理（-100…100） |
@@ -92,14 +95,37 @@ node tool/artc.mjs --ops '[{"op":"eraseColor","color":"#ffffff"},{"op":"trim"}]'
 
 ### 预置色卡
 
-| id | 名称 | 色数 | 号色 | 说明 |
-|---|---|---|---|---|
-| `pico8` | PICO-8 (16色) | 16 | 无 | 幻想主机 16 色，像素游戏最通用的一套 |
-| `gameboy` | GameBoy (4色) | 4 | 无 | DMG 四绿，配合 Bayer 抖动出复古掌机感 |
-| `nes` | NES 主机 (55色) | 55 | 无 | 2C02 色表，硬边像素风 |
-| `cga` | CGA (16色) | 16 | 无 | 早期 PC 十六色，怀旧配色 |
-| `beads16` | 拼豆 16 色（近似） | 16 | 有 | 通用拼豆配色，带号色，可出图纸与缺口清单 |
-| `beads24` | 拼豆 24 色（近似） | 24 | 有 | 在 16 色上补中间色，适合照片类图纸 |
+**`source` 决定色号可不可信**（三类，别混用）：
+
+- `official` —— 厂商/规范公开的色表，色号与颜色是权威的。
+- `community` —— **社区整理**的品牌拼豆色卡，有据可查但**不保证与实物零偏差**，以实物为准。
+- `approximate` —— 我们自造的通用近似色，只为让图纸有稳定号色，不属任何品牌。
+
+| id | 名称 | 色数 | 号色 | 来源 | 说明 |
+|---|---|---|---|---|---|
+| `pico8` | PICO-8 (16色) | 16 | 无 | official | 幻想主机 16 色，像素游戏最通用的一套 |
+| `gameboy` | GameBoy (4色) | 4 | 无 | official | DMG 四绿，配合 Bayer 抖动出复古掌机感 |
+| `nes` | NES 主机 (55色) | 55 | 无 | official | 2C02 色表，硬边像素风 |
+| `cga` | CGA (16色) | 16 | 无 | official | 早期 PC 十六色，怀旧配色 |
+| `beads16` | 拼豆 16 色（近似） | 16 | 有 | approximate | 通用近似配色，不属任何品牌；带号色，可出图纸与缺口清单 |
+| `beads24` | 拼豆 24 色（近似） | 24 | 有 | approximate | 在 16 色基础上补中间色，不属任何品牌 |
+| `hama_midi` | Hama Midi（92色） | 92 | 有 | community | Hama 中号拼豆（2.6mm）· 社区整理色卡，以实物为准 |
+| `hama_mini` | Hama Mini（78色） | 78 | 有 | community | Hama 小号拼豆（1.5mm）· 社区整理色卡，以实物为准 |
+| `hama_maxi` | Hama Maxi（25色） | 25 | 有 | community | Hama 大号拼豆（4.5mm）· 社区整理色卡，以实物为准 |
+| `perler` | Perler（103色） | 103 | 有 | community | Perler 标准拼豆（5mm）· 社区整理色卡，以实物为准 |
+| `perler_mini` | Perler Mini（41色） | 41 | 有 | community | Perler 小号拼豆· 社区整理色卡，以实物为准 |
+| `perler_caps` | Perler Caps（26色） | 26 | 有 | community | Perler 胶囊珠· 社区整理色卡，以实物为准 |
+| `artkal_a` | Artkal A（145色） | 145 | 有 | community | Artkal A 系列（2.6mm 软珠）· 社区整理色卡，以实物为准 |
+| `artkal_c` | Artkal C（174色） | 174 | 有 | community | Artkal C 系列（2.6mm 硬珠）· 社区整理色卡，以实物为准 |
+| `artkal_m` | Artkal M（220色） | 220 | 有 | community | Artkal M 系列（2.6mm 珠光）· 社区整理色卡，以实物为准 |
+| `artkal_r` | Artkal R（89色） | 89 | 有 | community | Artkal R 系列（5mm）· 社区整理色卡，以实物为准 |
+| `artkal_s` | Artkal S（199色） | 199 | 有 | community | Artkal S 系列（5mm 软珠）· 社区整理色卡，以实物为准 |
+| `nabbi` | Nabbi（30色） | 30 | 有 | community | Nabbi 中号拼豆（北欧常见）· 社区整理色卡，以实物为准 |
+| `yant` | Yant（118色） | 118 | 有 | community | Yant 拼豆· 社区整理色卡，以实物为准 |
+
+> 品牌色卡取自 [maxcleme/beadcolors](https://github.com/maxcleme/beadcolors)（MIT），
+> 由 `tool/bead-palettes.mjs` 生成。**Mard（290 色）与 Diamond Dotz（461 色）因超过色板上限 256 未收录**；
+> 需要它们时用 `--palette 我的色卡.hex` 导入（支持带号色），或等索引位宽迁移（属独立一轮）。
 
 ### 风格预设（一次性套用一组参数）
 
@@ -121,11 +147,12 @@ node tool/artc.mjs --ops '[{"op":"eraseColor","color":"#ffffff"},{"op":"trim"}]'
 | `cropRatio` | enum | `free` / `1:1` / `4:3` / `16:9` | `"free"` | 居中裁剪比例 |
 | `paletteMode` | enum | `auto` / `preset` / `custom` | `"auto"` | 色板来源 |
 | `paletteK` | number | 2 … 64 | `24` | 自动取色的目标颜色数（paletteMode=auto） |
-| `presetPaletteId` | string | — | `"pico8"` | 预置色卡 id（pico8 / gameboy / nes / cga / beads16 / beads24）（paletteMode=preset） |
+| `presetPaletteId` | string | — | `"pico8"` | 预置色卡 id（共 19 张：官方硬件色表 / 品牌拼豆（社区整理）/ 通用近似，完整清单见「预置色卡」小节）（paletteMode=preset） |
 | `customPalette` | string | — | `[]` | 自定义色板（#rrggbb 数组，≤256）（paletteMode=custom） |
 | `customPaletteCodes` | string | — | `[]` | 自定义色板的号色数组，与 customPalette 按下标一一对应（如 ["S12","S31"]）；缺项留空串，下游会自动编号 C1/C2…。**拼豆用户靠它让自己的色卡编号印在图纸上**（paletteMode=custom（与 customPalette 等长）） |
-| `dither` | enum | `none` / `floyd` / `bayer` | `"none"` | 抖动方式（开启时自动关闭杂色清理） |
+| `dither` | enum | `none` / `floyd` / `atkinson` / `bayer` / `bayer8` | `"none"` | 抖动方式（开启时自动关闭杂色清理）。floyd=误差扩散；atkinson=误差扩散但只扩散 3/4、对比度更高更干净（有限色板友好）；bayer/bayer8=有序抖动（8×8 层次更细） |
 | `ditherStrength` | number | 0 … 100 | `100` | 抖动强度（dither!=none） |
+| `ditherMaxColors` | number | 0 … 64 | `0` | 抖动时允许实际用到的最大色号数（0=不限制）。抖动会增加色号数与珠子总数，拼豆场景可用它约束到"我手上只有这么多种豆子"；超出时按色号使用情况递减压制误差扩散（dither!=none && ditherMaxColors>0） |
 | `cleanup` | boolean | — | `true` | 杂色清理：把孤立小色块并入邻域主色。注意它**只改颜色归属，不删除脱离主体的小碎片**（不减少连通块数）——去碎片请在上游处理或用 --no-cleanup 自行保留 |
 | `cleanupMinSize` | number | 1 … 10 | `2` | 小于该格数的连通色块会被并入（cleanup=true） |
 | `brightness` | number | -100 … 100 | `0` | 亮度调整（转换前） |

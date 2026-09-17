@@ -1,14 +1,35 @@
 /**
  * 预置色卡 + .hex 解析/序列化。
  *
- * 说明：游戏机色卡（PICO-8 / GameBoy / NES / CGA）是公开的硬件色表，可直接内建。
- * 拼豆色卡（beads*）是**通用近似色**，用于让图纸有稳定号色；各品牌实际色号以官方色卡为准，
- * 用户应导出/导入自己的 `.hex`（支持 `#rrggbb` 每行一个，或 `编号 #rrggbb` 两列带号色）。
+ * ## 三类来源，必须分清（`PaletteSource`）
+ *
+ * | 来源 | 是什么 | 例 |
+ * |---|---|---|
+ * | `official` | **厂商/规范公开的色表**，色号与颜色是权威的 | PICO-8 / GameBoy / NES / CGA |
+ * | `community` | **社区整理**的品牌拼豆色卡，有据可查但不保证与实物零偏差 | Hama / Perler / Artkal / Nabbi / Yant |
+ * | `approximate` | **我们自造的通用近似色**，只为让图纸有稳定号色 | beads16 / beads24 |
+ *
+ * 为什么要把这三类拆开而不是一个 `official: boolean`：
+ * "官方"与"社区整理"在语义上差得很远（前者可直接引用，后者要以实物为准），
+ * 而"自造近似色"更不是同一回事。合成一个布尔值后，前两者都只能标 false，
+ * 界面与文档就没法给出正确的措辞。三值枚举也让断言能双向锁住每一类。
+ *
+ * 用户自己的色卡走 `.hex` 导入（支持 `#rrggbb` 每行一个，或 `编号 #rrggbb` 两列带号色），
+ * 那条路不受这里限制，任意品牌任意色数。
  */
 import { PALETTE_MAX } from './limits.ts'
 import { normalizeHex } from './types.ts'
+import { BEAD_BRAND_PALETTES } from './palettes-beads.ts'
 
 export { PALETTE_MAX }
+
+/**
+ * 色卡的来源类别。见文件头表格。
+ *
+ * 用字面量联合而不是 enum：项目里 `ConvertParams` 的枚举字段全是这个风格，
+ * 且 `capabilities()` 要把它序列化进 `--describe` 的 JSON（字符串更直白）。
+ */
+export type PaletteSource = 'official' | 'community' | 'approximate'
 
 export function dedupePalette(colors: string[]): string[] {
   const seen = new Set<string>()
@@ -30,6 +51,11 @@ export interface PalettePreset {
   colors: string[]
   /** 拼豆号色：与 colors 等长，供图纸标注与清单使用 */
   codes?: string[]
+  /**
+   * 来源类别（见文件头表格）。**必填**——正是靠它必填，漏标的新卡才会在 tsc 阶段就报错，
+   * 而不是悄悄混进去当"官方"用。
+   */
+  source: PaletteSource
 }
 
 /** PICO-8 官方 16 色 */
@@ -68,12 +94,35 @@ const BEADS24_CODES = [
 ]
 
 export const PRESETS: PalettePreset[] = [
-  { id: 'pico8', name: 'PICO-8 (16色)', desc: '幻想主机 16 色，像素游戏最通用的一套', colors: PICO8 },
-  { id: 'gameboy', name: 'GameBoy (4色)', desc: 'DMG 四绿，配合 Bayer 抖动出复古掌机感', colors: GAMEBOY },
-  { id: 'nes', name: 'NES 主机 (55色)', desc: '2C02 色表，硬边像素风', colors: NES },
-  { id: 'cga', name: 'CGA (16色)', desc: '早期 PC 十六色，怀旧配色', colors: CGA },
-  { id: 'beads16', name: '拼豆 16 色（近似）', desc: '通用拼豆配色，带号色，可出图纸与缺口清单', colors: BEADS16, codes: BEADS16_CODES },
-  { id: 'beads24', name: '拼豆 24 色（近似）', desc: '在 16 色上补中间色，适合照片类图纸', colors: BEADS24, codes: BEADS24_CODES },
+  // ---- 官方硬件色表 ----
+  { id: 'pico8', name: 'PICO-8 (16色)', desc: '幻想主机 16 色，像素游戏最通用的一套', colors: PICO8, source: 'official' },
+  { id: 'gameboy', name: 'GameBoy (4色)', desc: 'DMG 四绿，配合 Bayer 抖动出复古掌机感', colors: GAMEBOY, source: 'official' },
+  { id: 'nes', name: 'NES 主机 (55色)', desc: '2C02 色表，硬边像素风', colors: NES, source: 'official' },
+  { id: 'cga', name: 'CGA (16色)', desc: '早期 PC 十六色，怀旧配色', colors: CGA, source: 'official' },
+
+  // ---- 通用近似色（自造，与品牌无关） ----
+  { id: 'beads16', name: '拼豆 16 色（近似）', desc: '通用近似配色，不属任何品牌；带号色，可出图纸与缺口清单', colors: BEADS16, codes: BEADS16_CODES, source: 'approximate' },
+  { id: 'beads24', name: '拼豆 24 色（近似）', desc: '在 16 色基础上补中间色，不属任何品牌', colors: BEADS24, codes: BEADS24_CODES, source: 'approximate' },
+
+  /*
+   * ---- 品牌拼豆色卡（社区整理）----
+   *
+   * 数据由 `tool/bead-palettes.mjs` 从 maxcleme/beadcolors（MIT）生成，
+   * 统一标 `source: 'community'`：**有据可查、但不保证与实物零偏差**，
+   * 界面与文档都要写明"以实物为准"。见 `palettes-beads.ts` 的文件头。
+   *
+   * 为什么用 `.map` 而不是把 13 条手写在这里：量太大（1340 色）且是生成物，
+   * 手抄一遍就多一份会漂移的副本。`source` 在这里统一加上——
+   * 生成文件只负责"颜色 + 号色 + 名字"，不该知道业务语义。
+   */
+  ...BEAD_BRAND_PALETTES.map((b) => ({
+    id: b.id,
+    name: `${b.name}（${b.colors.length}色）`,
+    desc: `${b.desc}· 社区整理色卡，以实物为准`,
+    colors: b.colors,
+    codes: b.codes,
+    source: 'community' as const,
+  })),
 ]
 
 export function getPreset(id: string): PalettePreset | null {

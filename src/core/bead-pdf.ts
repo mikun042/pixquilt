@@ -20,6 +20,7 @@ import type { PixelArt } from './types.ts'
 import { ALPHA_THRESHOLD } from './limits.ts'
 import { beadReport, type BeadOptions } from './bead.ts'
 import { buildPdf, buildPdfAsync, type PdfNode, type PdfPage } from './pdf.ts'
+import { colorTextOn } from './color.ts'
 
 /** A4 纵向，单位 pt */
 export const A4 = { width: 595.28, height: 841.89 } as const
@@ -106,8 +107,19 @@ function layout(art: PixelArt, options: BeadPdfOptions): PdfPage[] {
       used.set(art.indices[p], (used.get(art.indices[p]) ?? 0) + 1)
     }
     const order = [...used.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    /*
+     * `report.rows` 与 `order` 是**同一个排序**（都按用量降序、同量按色板下标升序），
+     * 所以第 n 行就对应这里的第 n 个色板下标，`rows[n].code` 必然存在。
+     *
+     * 原先写的是 `report.rows[n]?.code ?? \`C${n + 1}\``，两个问题：
+     *  ① 那个兜底**不可达**（`paletteCodes()` 保证每行都有 code）；
+     *  ② 万一真用到还会**用错下标**——`n` 是排序位次而非色板下标，
+     *     拼出来的编号与 CSV/SVG 对不上（而 PDF 号色必须与它们一致，见上面的注释）。
+     * 现在直接取，把"不可能缺"这个契约写明，而不是拿一个错误兜底掩盖它。
+     */
     order.forEach(([idx], n) => {
-      codeByIndex[idx] = report.rows[n]?.code ?? `C${n + 1}`
+      const row = report.rows[n]
+      if (row) codeByIndex[idx] = row.code
     })
   }
 
@@ -232,7 +244,7 @@ function layout(art: PixelArt, options: BeadPdfOptions): PdfPage[] {
             size: fontSize,
             align: 'center',
             // 深色底用白字：否则深色格上的黑字完全看不见
-            gray: needsLightText(art.palette[paletteIdx] ?? '#000000') ? 1 : 0,
+            gray: colorTextOn(art.palette[paletteIdx] ?? '#000000') === '#fff' ? 1 : 0,
             text: code,
           })
         }
@@ -278,14 +290,9 @@ export async function beadPdfAsync(art: PixelArt, options: BeadPdfOptions = {}):
   return buildPdfAsync(pages, { deflate: options.deflate })
 }
 
-/** 该颜色上的文字该用白还是黑：按感知亮度阈值（与 core/color.ts 的 colorTextOn 同一判据思路） */
-function needsLightText(hex: string): boolean {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
-  if (!m) return true
-  const n = parseInt(m[1], 16)
-  const r = (n >> 16) & 255
-  const g = (n >> 8) & 255
-  const b = n & 255
-  // ITU-R BT.601 亮度
-  return (r * 299 + g * 587 + b * 114) / 1000 < 140
-}
+/*
+ * 这里曾有一个本地 `needsLightText(hex)`，注释写着"与 core/color.ts 的 colorTextOn 同一判据思路"，
+ * 但**实际用的是 BT.601 系数**（`(r*299+g*587+b*114)/1000`），而 colorTextOn 用 BT.709。
+ * 两套系数在纯黑白上一致、中间调分歧——后果是同一张图纸的 SVG 与 PDF 里，
+ * 同一个色块的编号可能一个白字一个黑字。现在直接 import 共享实现（`needsLightText`）。
+ */

@@ -23,9 +23,12 @@ import { runPipeline } from '../src/core/pipeline.ts'
 import { applyOps, blankArt } from '../src/core/ops.ts'
 import { DEFAULT_PARAMS, coerceParams, normalizeHex, sanitizeParams, STYLE_PRESETS } from '../src/core/types.ts'
 import { PRESETS, getPreset, isPresetId, parseHexPalette, serializeHexPalette } from '../src/core/palettes.ts'
+import { PALETTE_MAX } from '../src/core/limits.ts'
 import { artHash, encodePixBin, layoutSheet, parseProjectFile, pixelJSONString } from '../src/core/export.ts'
 import { ENGINE_EXT, ENGINE_FORMATS, exportSheetMeta, isEngineFormat } from '../src/core/sheetmeta.ts'
 import { beadListCsv, beadReport, beadSvg } from '../src/core/bead.ts'
+import { qualityReport, qualitySummary } from '../src/core/quality.ts'
+import { autoTune, tuneSummary } from '../src/core/auto-tune.ts'
 import { beadPdfNode } from '../src/io/node-pdf.ts'
 import { countTransparent, countUsage } from '../src/core/stats.ts'
 import { describeAll, OP_SPECS } from '../src/core/spec.ts'
@@ -52,13 +55,14 @@ const BOOL_FLAGS = new Set([
   // 浏览器通道解码：把 Node 不能直接解的格式（JPEG/WebP/GIF/BMP/AVIF/ICO/SVG）
   // 借无头浏览器原生解码器转成 PNG，再走同一条渲染链路。见 src/io/node-decode.ts
   'browser-decode',
+  'quality',
 ])
 /** 可选值开关：后面跟的值不以 -- 开头才算值（`--sheet` 与 `--sheet 4` 都合法） */
 const OPTIONAL_VALUE_FLAGS = new Set(['sheet', 'bead'])
 /** 取值型开关（后面必须跟一个值） */
 const VALUE_FLAGS = new Set([
   'in', 'out', 'name', 'index', 'scale', 'ops', 'ops-file', 'blank', 'blank-color', 'long-edge', 'size',
-  'dither', 'contrast', 'saturation', 'brightness', 'crop', 'downsample', 'palette-k',
+  'dither', 'dither-max-colors', 'auto-tune', 'contrast', 'saturation', 'brightness', 'crop', 'downsample', 'palette-k',
   'palette', 'preset', 'style', 'matte', 'cleanup-min', 'bead-mm', 'bead-gram', 'board',
   'key-mode', 'key-tolerance', 'slice',
   // 图集元数据的多引擎导出（见 src/core/sheetmeta.ts）：--engine godot|unity|tiled
@@ -205,6 +209,28 @@ export function collectInputs(dirOrFile) {
 
 /* ------------------------------------------------------------------ 参数组装 */
 
+/**
+ * 把预置卡 id 按**来源分组**排成一行，供报错文案与 `--help` 共用。
+ *
+ * 为什么不再用 `PRESETS.map(p => p.id).join(' / ')`：加入 13 张品牌卡之后是 19 个 id，
+ * 一串逗号连缀既读不出结构、又会把报错信息刷满屏。按来源分组后，
+ * 用户一眼能看出哪些是硬件色表、哪些是社区整理的品牌卡、哪些是自造近似色。
+ */
+function presetIdList() {
+  const groups = [
+    ['official', '官方'],
+    ['community', '社区整理'],
+    ['approximate', '近似'],
+  ]
+  return groups
+    .map(([src, label]) => {
+      const ids = PRESETS.filter((p) => p.source === src).map((p) => p.id)
+      return ids.length ? `${label}（${ids.join(' ')}）` : ''
+    })
+    .filter(Boolean)
+    .join('；')
+}
+
 /** 把 --palette 的取值解析成参数补丁：auto | 预置 id | *.hex | #aabbcc,... */
 export function resolvePaletteFlag(value) {
   if (!value || value === 'auto') return { patch: { paletteMode: 'auto' } }
@@ -220,8 +246,9 @@ export function resolvePaletteFlag(value) {
     // 原先直接 readFileSync，报的是裸 ENOENT（`open '不存在'`）——agent 看不出这个开关接受什么。
     // 与 --preset 的措辞对齐：把可选值列出来。
     throw new Error(
-      `未知色板：${value}——--palette 接受 auto / 预置 id（${PRESETS.map((x) => x.id).join(' / ')}）/ ` +
-        `*.hex 文件路径 / #rrggbb[,#rrggbb…]；若要按路径加载，确认文件存在`,
+      `未知色板：${value}——--palette 接受 auto / 预置 id / *.hex 文件路径 / #rrggbb[,#rrggbb…]。\n` +
+        `  预置 id：${presetIdList()}\n` +
+        `  若要按路径加载，确认文件存在`,
     )
   }
   const text = readFileSync(path, 'utf8')
@@ -229,10 +256,18 @@ export function resolvePaletteFlag(value) {
   if (!parsed.colors.length) throw new Error(`色板文件里没有合法颜色：${value}（每行一个 #rrggbb，可带号色）`)
   // 号色**同时写进参数**（customPaletteCodes）：只塞进返回值的话，
   // 它活不过一次 `--dry-run`/项目文件往返，也没法被页内 API 或 UI 复用。
+  //
+  // 截断与跳行必须**说出来**：`parseHexPalette` 一直算好了 truncated/skipped，
+  // 但这里原先只读 colors/codes，于是 `--palette big.hex` 超过 256 色时静默丢色、
+  // 非法行静默跳过——agent 会按文件里的色数做规划，最后拿到一张少了几十色的图纸。
+  // 拼进 `source` 是最省的做法：它本来就会被打进进度输出与 `--json` 的结果里（不污染 stdout）。
+  const notes = []
+  if (parsed.truncated) notes.push(`超出 ${PALETTE_MAX} 的 ${parsed.truncated} 色已截断`)
+  if (parsed.skipped) notes.push(`跳过 ${parsed.skipped} 行无法解析的内容`)
   return {
     patch: { paletteMode: 'custom', customPalette: parsed.colors, customPaletteCodes: parsed.codes },
     codes: parsed.codes,
-    source: `文件 ${basename(path)}（${parsed.colors.length} 色）`,
+    source: `文件 ${basename(path)}（${parsed.colors.length} 色${notes.length ? `；${notes.join('；')}` : ''}）`,
   }
 }
 
@@ -240,6 +275,33 @@ export function resolvePaletteFlag(value) {
  * 由命令行参数组装最终参数。
  * 基底永远是 `DEFAULT_PARAMS`（或 `--style` 预设），**与任何"当前状态"无关** —— 这是可复现的前提。
  */
+/**
+ * 拼豆相关的数值开关 → `beadingOptions`（供 `beadReport` / 图纸 / 清单用）。
+ *
+ * 单独成函数是为了**可被自检直接调用**：这几个数**不走 `sanitizeParams`**
+ * （它们是拼豆选项，不属于 `ConvertParams`），因此没有自动的 NaN/越界兜底。
+ * 实测过的真实行为（修之前）：`--bead-gram abc` → 重量 `NaN g`、
+ * `--board abc` → 分板数 `null`，而命令**照常成功退出**。
+ * 那正是本项目最忌讳的"接受了但没生效"（DEVELOPMENT §3 第 4 条）。
+ *
+ * 放在 `buildParams` 旁边、`main` 之外，好处是自检能直接调它，
+ * 而不必起子进程（`execFileSync` 的 stdout 在本机会漏到父进程，见 §6 第 6 条）。
+ */
+export function parseBeadingOptions(args) {
+  const numFlag = (raw, flag) => {
+    const v = Number(raw)
+    if (!Number.isFinite(v) || v <= 0) throw new Error(`${flag} 需要一个大于 0 的数值，收到：${raw}`)
+    return v
+  }
+  const out = {}
+  if (args['bead-mm'] !== undefined) out.beadMm = numFlag(args['bead-mm'], '--bead-mm')
+  if (args['bead-gram'] !== undefined) out.beadGram = numFlag(args['bead-gram'], '--bead-gram')
+  if (args['board'] !== undefined) out.boardCells = numFlag(args['board'], '--board')
+  // `--bead` 既能当开关（true）也能带板规格（58x58 那类），所以只在它是字符串时取值
+  else if (typeof args.bead === 'string') out.boardCells = numFlag(args.bead, '--bead')
+  return out
+}
+
 export function buildParams(args) {
   let params = { ...DEFAULT_PARAMS }
   const notes = []
@@ -268,7 +330,7 @@ export function buildParams(args) {
    */
   if (args.preset !== undefined && !args.palette) {
     const id = String(args.preset)
-    if (!isPresetId(id)) throw new Error(`未知预置色卡：${id}（可选 ${PRESETS.map((p) => p.id).join(' / ')}）`)
+    if (!isPresetId(id)) throw new Error(`未知预置色卡：${id}（可选：${presetIdList()}）`)
     params = { ...params, paletteMode: 'preset', presetPaletteId: id }
     notes.push(`色板 预置卡 ${id}`)
   }
@@ -280,6 +342,7 @@ export function buildParams(args) {
     params.exactHeight = spec.height
   }
   if (args.dither !== undefined) params.dither = String(args.dither)
+  if (args['dither-max-colors'] !== undefined) params.ditherMaxColors = Number(args['dither-max-colors'])
   if (args.contrast !== undefined) params.contrast = Number(args.contrast)
   if (args.saturation !== undefined) params.saturation = Number(args.saturation)
   if (args.brightness !== undefined) params.brightness = Number(args.brightness)
@@ -411,7 +474,7 @@ export function sanitizeName(s) {
  * 把透明参数翻译成 core/raster 的 RasterOptions。
  * 集中一处的原因：renderOne / --blank / pngStats 三处都要用，各写一遍必然分叉。
  */
-function keyOptions(params) {
+export function keyOptions(params) {
   return {
     transparentBg: params.transparent === 'key',
     bgHex: params.matteColor,
@@ -420,14 +483,44 @@ function keyOptions(params) {
   }
 }
 
-function pngStats(art, scale, pngOpts) {
+export function pngStats(art, scale, pngOpts) {
   const img = artToImageData(art, scale, pngOpts)
   let transparentPixels = 0
   for (let i = 3; i < img.data.length; i += 4) if (img.data[i] === 0) transparentPixels++
   return { pngWidth: img.width, pngHeight: img.height, pngTransparent: transparentPixels }
 }
 
-function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wantSheet, wantPixbin, wantPdf, nameTemplate, index }) {
+/**
+ * 质量报告：把"原图 ↔ 产物"的差距量化。
+ *
+ * 为什么要跑两遍管线：`ditherExtraColors`（抖动多用了几种色）需要"同参数关抖动"作对照。
+ * 只在开了抖动时跑第二遍——关抖动时没有可比对象，硬跑一遍纯属浪费。
+ * 第二遍用 `{...params, dither:"none"}`，其余参数完全一致，所以差值可以干净地归因到抖动上。
+ */
+function qualityFor(image, art, params) {
+  let noDitherBaseline
+  if (params.dither !== 'none') {
+    const base = runPipeline(
+      { width: image.width, height: image.height, data: image.data },
+      { ...params, dither: 'none' },
+    )
+    noDitherBaseline = { usedColors: new Set([...base.art.indices]).size }
+  }
+  return qualityReport(
+    { width: image.width, height: image.height, data: image.data },
+    art,
+    {
+      paletteMode: params.paletteMode,
+      presetPaletteId: params.presetPaletteId,
+      transparent: params.transparent,
+      customPaletteCodes: params.customPaletteCodes,
+    },
+    { noDitherBaseline },
+  )
+}
+
+function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wantSheet, wantPixbin, wantPdf,
+          wantQuality, nameTemplate, index }) {
   const image = loadImageNode(src)
   const { art: rendered, overflow, paletteSource, cleanup } = runPipeline({ width: image.width, height: image.height, data: image.data }, params)
   const applied = ops.length ? applyOps(rendered, ops, { allowApproxColor: !params.lockPalette }) : { art: rendered, changes: [], applied: false }
@@ -465,6 +558,7 @@ function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wa
     beadSvg: null,
     beadPdfBytes: null,
     beadSummary: null,
+    quality: wantQuality ? qualityFor(image, art, params) : null,
   }
 
   if (beading) {
@@ -488,656 +582,6 @@ function renderOne({ src, params, ops, scale, codes, beading, beadingOptions, wa
 
   if (wantSheet) result.sheet = { width: art.width, height: art.height, name: base }
   return result
-}
-
-/* ------------------------------------------------------------------ 自检 */
-
-/**
- * `--selftest`：不读任何外部素材，用进程内生成的合成数据把"引擎 → 算子 → 导出 → 拼豆"整条链路走一遍。
- * 每项断言都必须能因为一个真实缺陷而失败（见 docs/开发.md §3.1：测试有效性看"故意改坏会不会红"）。
- */
-async function selftest() {
-  const checks = []
-  const check = (name, fn) => {
-    try {
-      const detail = fn()
-      checks.push({ name, ok: true, detail: detail === undefined ? '' : String(detail) })
-    } catch (err) {
-      checks.push({ name, ok: false, detail: err?.message ?? String(err) })
-    }
-  }
-  const assert = (cond, msg) => {
-    if (!cond) throw new Error(msg)
-  }
-  const eq = (a, b, msg) => assert(a === b, `${msg}（期望 ${b}，实际 ${a}）`)
-
-  /** 合成测试图：横向渐变 + 左侧半透明块 + 右下纯色块（覆盖取色、透明、区域平均三条路径） */
-  const makeFixture = (w = 64, h = 48) => {
-    const data = new Uint8ClampedArray(w * h * 4)
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const o = (y * w + x) * 4
-        data[o] = Math.round((x / (w - 1)) * 255)
-        data[o + 1] = Math.round((y / (h - 1)) * 255)
-        data[o + 2] = 80
-        data[o + 3] = 255
-      }
-    }
-    for (let y = 8; y < 20; y++) for (let x = 4; x < 16; x++) data[(y * w + x) * 4 + 3] = 0
-    for (let y = h - 12; y < h; y++) for (let x = w - 12; x < w; x++) {
-      const o = (y * w + x) * 4
-      data[o] = 200
-      data[o + 1] = 30
-      data[o + 2] = 30
-    }
-    return { width: w, height: h, data }
-  }
-
-  check('自描述：describe() 含版本/算子/参数/能力', () => {
-    const d = describeAll()
-    assert(typeof d.version === 'string' && d.version.length > 0, 'version 缺失')
-    assert(Array.isArray(d.ops) && d.ops.length > 0, 'ops 缺失')
-    assert(Array.isArray(d.params) && d.params.length > 0, 'params 缺失')
-    assert(d.animation === false, 'animation 应为 false（本期不实现多帧）')
-    assert(d.eyeDropper === false, 'eyeDropper 应为 false（刻意不实现）')
-    return `${d.ops.length} 算子 / ${d.params.length} 参数`
-  })
-
-  check('参数校验：越界被夹紧并如实报告', () => {
-    const r = sanitizeParams({ longEdge: 99999, dither: 'nope', paletteK: 999 })
-    eq(r.params.longEdge, 2048, 'longEdge 应夹到上限')
-    eq(r.params.dither, 'none', 'dither 应回退默认')
-    eq(r.params.paletteK, 64, 'paletteK 应夹到上限')
-    assert(r.fixed.length >= 3, `应报告至少 3 处修正，实际 ${r.fixed.length}`)
-    return `${r.fixed.length} 处修正`
-  })
-
-  check('旧字段迁移：alpha(boolean) → transparent，flattenBg → matteColor', () => {
-    const r = sanitizeParams({ alpha: true, flattenBg: '#123456' })
-    eq(r.params.transparent, 'alpha', 'alpha=true 应迁移为 transparent=alpha')
-    eq(r.params.matteColor, '#123456', 'flattenBg 应迁移为 matteColor')
-    return 'v2 → v3 迁移正常'
-  })
-
-  check('管线：合成图 + 固定色板 → 所有格子都在色板内', () => {
-    const preset = getPreset('beads16')
-    const { params } = sanitizeParams({ paletteMode: 'preset', presetPaletteId: 'beads16', longEdge: 32, lockPalette: true })
-    const { art } = runPipeline(makeFixture(), params)
-    eq(art.width, 32, '长边应为 32')
-    eq(art.height, 24, '短边应按比例推到 24')
-    const allowed = new Set(preset.colors.map((c) => c.toLowerCase()))
-    for (let i = 0; i < art.indices.length; i++) {
-      const c = art.palette[art.indices[i]]
-      assert(allowed.has(c), `第 ${i} 格的 ${c} 不在给定色板内（lockPalette 下不该新增颜色）`)
-    }
-    return `${art.width}×${art.height}，${art.palette.length} 色全部命中`
-  })
-
-  check('管线：确定性（同图同参两次 → artHash 一致）', () => {
-    const { params } = sanitizeParams({ paletteMode: 'auto', paletteK: 12, longEdge: 24 })
-    const a = runPipeline(makeFixture(), params).art
-    const b = runPipeline(makeFixture(), params).art
-    eq(artHash(a), artHash(b), '两次运行的画布指纹应一致')
-    return `hash ${artHash(a)}`
-  })
-
-  check('管线：抖动开启时杂色清理被自动关闭（互斥约束）', () => {
-    const { params } = sanitizeParams({ dither: 'floyd', cleanup: true, longEdge: 24, paletteMode: 'auto', paletteK: 8 })
-    const { art } = runPipeline(makeFixture(), params)
-    assert(art.indices.length === 24 * 18, '尺寸应符合预期')
-    return '抖动 + cleanup=true 未报错，互斥由管线强制'
-  })
-
-  check('管线：真 alpha（transparent=alpha）产出透明格', () => {
-    const { params } = sanitizeParams({ transparent: 'alpha', longEdge: 48, paletteMode: 'auto', paletteK: 8 })
-    const { art } = runPipeline(makeFixture(), params)
-    const n = countTransparent(art.indices, art.alphaMask)
-    assert(n > 0, '透明块应产生透明格')
-    assert(art.alphaMask !== null, 'alphaMask 应被建立')
-    return `${n} 个透明格`
-  })
-
-  check('管线：不透明模式把透明区合成到 matteColor（不出现黑边）', () => {
-    const { params } = sanitizeParams({ transparent: 'none', matteColor: '#ff00ff', longEdge: 48, paletteMode: 'custom', customPalette: ['#ff00ff'] })
-    const { art } = runPipeline(makeFixture(), params)
-    eq(art.palette[0], '#ff00ff', '唯一色应为合成色')
-    eq(countTransparent(art.indices, art.alphaMask), 0, '不透明模式不应有透明格')
-    return '合成色命中'
-  })
-
-  check('算子：rect/setAll/transform/trim 语义与 changed 判定', () => {
-    const art = blankArt(8, 8, '#000000', true)
-    const r1 = applyOps(art, [{ op: 'rect', x0: 2, y0: 2, x1: 5, y1: 5, color: '#ff0000' }])
-    assert(r1.applied, '实心矩形应产生改动')
-    eq(r1.changes[0].cells, 16, '4×4 矩形应为 16 格')
-    eq(countTransparent(r1.art.indices, r1.art.alphaMask), 64 - 16, '矩形外应保持透明')
-    const r2 = applyOps(r1.art, [{ op: 'trim' }])
-    assert(r2.applied, 'trim 应裁掉透明边')
-    eq(r2.art.width, 4, 'trim 后宽应为 4')
-    eq(r2.art.height, 4, 'trim 后高应为 4')
-
-    // 对称图形旋转 180° 理应"无变化"——这条断言本身就是对 changed 判定的回归防线
-    const sym = applyOps(r2.art, [{ op: 'transform', kind: 'rotate180' }])
-    assert(!sym.applied, '对称内容旋转 180° 不应报告改动')
-    eq(sym.changes[0].changed, false, 'changed 应为 false')
-
-    // 不对称内容必须报告改动，且 hash 真的变了
-    const notch = applyOps(r2.art, [{ op: 'setCells', cells: [[0, 0]], color: '#00ff00' }])
-    const rotated = applyOps(notch.art, [{ op: 'transform', kind: 'rotate180' }])
-    assert(rotated.applied, '不对称内容旋转 180° 应报告改动')
-    assert(artHash(rotated.art) !== artHash(notch.art), '旋转后画布指纹应变化')
-    eq(rotated.changes[0].kind, 'rotate180', 'transform 应汇报 kind')
-
-    // 90° 旋转交换宽高
-    const tall = blankArt(3, 5, '#123456', false)
-    const q = applyOps(tall, [{ op: 'transform', kind: 'rotate90' }])
-    eq(q.art.width, 5, 'rotate90 后宽应为原高')
-    eq(q.art.height, 3, 'rotate90 后高应为原宽')
-    return `${r1.changes[0].cells} 格 → trim ${r2.art.width}×${r2.art.height} → rotate90 换宽高`
-  })
-
-  check('算子：只改 alpha 的编辑必须被记为 changed（回归防线）', () => {
-    const art = blankArt(4, 4, '#ffffff', false)
-    const r = applyOps(art, [{ op: 'setCells', cells: [[1, 1]], erase: true }])
-    assert(r.applied, '挖洞必须算作改动（曾出现被静默丢弃的缺陷）')
-    eq(r.changes[0].changed, true, 'changed 应为 true')
-    eq(countTransparent(r.art.indices, r.art.alphaMask), 1, '应恰好 1 个透明格')
-    return 'changed=true'
-  })
-
-  check('算子：未知算子必须报错而不是静默忽略', () => {
-    let threw = false
-    try {
-      applyOps(blankArt(2, 2, '#000000', false), [{ op: 'nope' }])
-    } catch {
-      threw = true
-    }
-    assert(threw, '未知算子应抛错')
-    return '已抛错'
-  })
-
-  check('算子：lockPalette 下色板满/色板外颜色会报错', () => {
-    const art = blankArt(2, 2, '#000000', false)
-    let threw = false
-    try {
-      applyOps(art, [{ op: 'rect', x0: 0, y0: 0, x1: 1, y1: 1, color: '#ffffff' }], { allowApproxColor: false, fallbackColor: undefined })
-    } catch {
-      threw = true
-    }
-    // 色板未满时允许新增颜色，因此这里应当**成功**（锁色板只影响"满了之后"与近似色退化）
-    assert(!threw, '色板未满时新增颜色应被允许')
-    return '未满时允许新增（符合设计）'
-  })
-
-  check('导出：PNG 编解码往返（像素逐位一致）', () => {
-    const art = blankArt(5, 3, '#3366cc', false)
-    const bytes = artToPngBytesNode(art, 3)
-    const decoded = decodePngNode(bytes)
-    eq(decoded.width, 15, '放大 3 倍后宽应为 15')
-    eq(decoded.height, 9, '放大 3 倍后高应为 9')
-    const o = (4 * 15 + 4) * 4
-    eq(decoded.data[o], 0x33, 'R 分量应保持')
-    eq(decoded.data[o + 1], 0x66, 'G 分量应保持')
-    eq(decoded.data[o + 2], 0xcc, 'B 分量应保持')
-    eq(decoded.data[o + 3], 255, 'A 分量应不透明')
-    return `${bytes.length} 字节往返一致`
-  })
-
-  check('导出：透明底（单色键控）把背景色变透明', () => {
-    const art = { width: 2, height: 2, indices: new Uint8Array([0, 0, 0, 0]), palette: ['#ffffff'], alphaMask: null }
-    const keyed = decodePngNode(artToPngBytesNode(art, 1, { transparentBg: true, bgHex: '#ffffff' }))
-    eq(keyed.data[3], 0, '键控后 alpha 应为 0')
-    const kept = decodePngNode(artToPngBytesNode(art, 1, { transparentBg: false }))
-    eq(kept.data[3], 255, '不键控时应保持不透明')
-    return '键控生效'
-  })
-
-  // 下面这条是回归防线：汇总里的 transparent 读的是模型 alphaMask，而 key 模式
-  // 只在导出时生效、管线里不建 mask，两者会不一致。pngStats 必须反映**产物**。
-  check('汇总：key 模式的 pngTransparent 必须反映产物（而不是恒为 0 的模型 mask）', () => {
-    const art = { width: 4, height: 4, indices: new Uint8Array(16), palette: ['#ffffff'], alphaMask: null }
-    const modelSide = countTransparent(art.indices, art.alphaMask)
-    eq(modelSide, 0, '前提：key 模式下模型侧透明格就是 0（这正是当年误判的来源）')
-    const st = pngStats(art, 1, { transparentBg: true, bgHex: '#ffffff' })
-    eq(st.pngTransparent, 16, 'key 后产物应全透明（16 像素）')
-    const off = pngStats(art, 1, { transparentBg: false, bgHex: '#ffffff' })
-    eq(off.pngTransparent, 0, '不键控时产物应无透明像素')
-    return `模型侧 ${modelSide} vs 产物侧 ${st.pngTransparent}（已如实汇报）`
-  })
-
-  check('汇总：pngWidth/pngHeight 必须计入 --scale（而不是只报格数）', () => {
-    const art = blankArt(5, 3, '#3366cc', false)
-    eq(pngStats(art, 1, {}).pngWidth, 5, 'scale=1 时宽 = 格数')
-    const x4 = pngStats(art, 4, {})
-    eq(x4.pngWidth, 20, 'scale=4 时宽应为 20')
-    eq(x4.pngHeight, 12, 'scale=4 时高应为 12')
-    return '5×3 → 20×12'
-  })
-
-  check('汇总：--alpha 模式下 pngTransparent 与模型侧 transparent 一致', () => {
-    // blankArt(..., transparent=true) 造的是**整幅透明**的底，必须先把要保留的格补成不透明，
-    // 否则测的是"全透明画布"，模型侧会是 16 而不是 1。
-    const art = blankArt(4, 4, '#000000', true)
-    art.alphaMask.fill(255)
-    art.alphaMask[0] = 0
-    const modelSide = countTransparent(art.indices, art.alphaMask)
-    const st = pngStats(art, 2, {})
-    eq(modelSide, 1, '模型侧应有 1 个透明格')
-    eq(st.pngTransparent, 4, 'scale=2 时产物应为 2×2=4 个透明像素')
-    return `模型 1 格 → 产物 4 像素`
-  })
-
-  // 键控新选项的 CLI 侧接线：--key-mode / --key-tolerance 必须真的进 params 并被 keyOptions 透传
-  check('算子：fit 把内容适配成精确尺寸，且 trim+fit 组合能定尺寸', () => {
-    // 32×32 画布，中央 8×4 内容（周围全是透明边）
-    const art = blankArt(32, 32, '#ffffff', true)
-    for (let y = 14; y < 18; y++) for (let x = 12; x < 20; x++) art.alphaMask[y * 32 + x] = 255
-    const onlyTrim = applyOps(art, [{ op: 'trim' }]).art
-    eq(onlyTrim.width, 8, '前提：trim 只裁边，得到内容原始尺寸 8×4')
-    eq(onlyTrim.height, 4, 'trim 后高应为 4')
-    const fitted = applyOps(art, [{ op: 'trim' }, { op: 'fit', width: 16, height: 16, mode: 'contain' }]).art
-    eq(fitted.width, 16, 'trim+fit 后宽应为目标 16')
-    eq(fitted.height, 16, 'trim+fit 后高应为目标 16')
-    const kept = countTransparent(fitted.indices, fitted.alphaMask)
-    eq(kept, 16 * 16 - 16 * 8, 'contain 应等比成 16×8，上下各留 4 行透明')
-    return `8×4 → trim → fit → 16×16（透明 ${kept} 格）`
-  })
-
-  check('CLI：--slice 解析三种写法，并对不可整除的网格报错', () => {
-    eq(parseSliceSpec('auto', 64, 32).kind, 'auto', 'auto 应识别为自动推断')
-    const g = parseSliceSpec('4x2', 64, 32)
-    eq(g.kind, 'grid', '4x2 应识别为网格')
-    eq(g.columns * g.rows, 8, '4×2 网格应有 8 格')
-    const c = parseSliceSpec('16x16px', 64, 32)
-    eq(c.kind, 'cell', '16x16px 应识别为每格像素')
-    eq(c.columns, 4, '64/16 = 4 列')
-    eq(c.rows, 2, '32/16 = 2 行')
-    // 不可整除必须报错，而不是静默丢掉余下像素
-    let threw = ''
-    try { parseSliceSpec('4x3', 64, 32) } catch (e) { threw = e.message }
-    assert(/不能被 3 整除/.test(threw), `不可整除应报错并指名，实际："${threw}"`)
-    return 'auto / 4x2 / 16x16px 三种写法正确；4x3 被拒'
-  })
-
-  check('核心：切片按网格拆图，像素逐块对应', () => {
-    // 4×2 的纯色块图（每块 2×2），切成 4 列 2 行
-    const W = 8
-    const H = 4
-    const data = new Uint8ClampedArray(W * H * 4)
-    const put = (x, y, rgb) => { const i = (y * W + x) * 4; data[i] = rgb[0]; data[i + 1] = rgb[1]; data[i + 2] = rgb[2]; data[i + 3] = 255 }
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) put(x, y, [x < 4 ? 255 : 0, y < 2 ? 255 : 0, 128])
-    const pieces = sliceByGrid({ width: W, height: H, data }, 4, 2, { baseName: 'f' })
-    eq(pieces.length, 8, '应切出 8 块')
-    eq(pieces[0].image.width, 2, '每块宽 2')
-    eq(pieces[0].image.height, 2, '每块高 2')
-    eq(pieces[0].name, 'f_00', '首块命名应零填充')
-    eq(pieces[7].name, 'f_07', '末块命名应零填充')
-    // 第 0 块取自左上（红+绿），第 7 块取自右下（无红无绿）
-    eq(pieces[0].image.data[0], 255, '第 0 块 R 应为 255')
-    eq(pieces[0].image.data[1], 255, '第 0 块 G 应为 255')
-    eq(pieces[7].image.data[0], 0, '第 7 块 R 应为 0')
-    eq(pieces[7].image.data[1], 0, '第 7 块 G 应为 0')
-    return '8 块，像素对应正确'
-  })
-
-  check('CLI：--key-mode / --key-tolerance 进入参数并被导出采用', () => {
-    const a = buildParams({ 'key-mode': 'border' })
-    eq(a.params.transparent, 'key', '给了 --key-mode 就应自动进入键控模式（否则选项静默失效）')
-    eq(a.params.keyMode, 'border', 'keyMode 应传进参数')
-    const b = buildParams({ 'key-tolerance': '3' })
-    eq(b.params.transparent, 'key', '给了 --key-tolerance 也应自动进入键控模式')
-    eq(b.params.keyTolerance, 3, 'keyTolerance 应为数字 3')
-    const opts = keyOptions(a.params)
-    eq(opts.keyMode, 'border', 'keyOptions 应把 keyMode 透传给 core/raster')
-    return 'keyMode=border / keyTolerance=3 均已接线'
-  })
-
-  check('CLI：--key-mode border 保护主体内部同色高光（与 global 形成对照）', () => {
-    // 白底 7×7，中央 3×3 深绿主体，主体**正中** 1 格白高光（与背景同色且被主体完全包围）
-    const w = 7
-    const indices = new Uint8Array(w * w)
-    const palette = ['#ffffff', '#007800']
-    for (let y = 2; y <= 4; y++) for (let x = 2; x <= 4; x++) indices[y * w + x] = 1
-    indices[3 * w + 3] = 0 // 正中高光：四周都被绿色包围，与背景不连通
-    const art = { width: w, height: w, indices, palette, alphaMask: null }
-    const g = pngStats(art, 1, { transparentBg: true, bgHex: '#ffffff', keyMode: 'global', keyTolerance: 0 })
-    const b = pngStats(art, 1, { transparentBg: true, bgHex: '#ffffff', keyMode: 'border', keyTolerance: 0 })
-    // 7×7=49 格：主体 9 格（含 1 格高光），背景 40 格
-    eq(g.pngTransparent, 41, 'global 应键掉背景 40 格 + 主体内高光 1 格 = 41')
-    eq(b.pngTransparent, 40, 'border 应只键掉背景 40 格，被围住的高光保留')
-    eq(g.pngTransparent - b.pngTransparent, 1, '两种模式的差值必须恰好等于被保护的那 1 格高光')
-    return `global ${g.pngTransparent} 格 vs border ${b.pngTransparent} 格（差的就是高光那 1 格）`
-  })
-
-  check('导出：pixbin 往返', () => {
-    const art = blankArt(7, 4, '#123456', true)
-    const bytes = encodePixBin(art)
-    eq(bytes[0], 'P'.charCodeAt(0), '魔数应为 PIXB1')
-    eq(bytes.length, 12 + 7 * 4 * 2, '长度应为头 + indices + alphaMask')
-    return `${bytes.length} 字节`
-  })
-
-  check('导出：项目 JSON 严格校验（引用越界索引必须报错）', () => {
-    const art = blankArt(2, 2, '#000000', false)
-    const okJson = JSON.stringify({
-      version: 3,
-      savedAt: new Date().toISOString(),
-      params: DEFAULT_PARAMS,
-      width: 2,
-      height: 2,
-      palette: ['#000000'],
-      indices: Buffer.from(new Uint8Array([0, 0, 0, 0])).toString('base64'),
-    })
-    const parsed = parseProjectFile(okJson)
-    eq(parsed.art.width, 2, '应能解析合法项目')
-    const badJson = okJson.replace(/indexes|indices/, 'indices').replace(/("indices":")[^"]+/, `$1${Buffer.from(new Uint8Array([5, 0, 0, 0])).toString('base64')}`)
-    let threw = false
-    try {
-      parseProjectFile(badJson)
-    } catch {
-      threw = true
-    }
-    assert(threw, '越界色板索引应报错')
-    return '合法可解析 / 越界被拒'
-  })
-
-  check('图集：等尺寸网格布局互不重叠', () => {
-    const frames = Array.from({ length: 5 }, (_, i) => ({ name: `f${i}`, width: 32, height: 32 }))
-    const sheet = layoutSheet(frames, 3, 0)
-    eq(sheet.columns, 3, '列数应为 3')
-    eq(sheet.rows, 2, '行数应为 2')
-    eq(sheet.width, 96, '宽度应为 3×32')
-    const seen = new Set()
-    for (const f of sheet.frames) {
-      const key = `${f.x},${f.y}`
-      assert(!seen.has(key), `帧 ${f.name} 与其它帧重叠于 ${key}`)
-      seen.add(key)
-    }
-    return `${sheet.width}×${sheet.height} / ${sheet.frames.length} 帧`
-  })
-
-  check('拼豆：清单不变量（每色格数之和 + 透明格 == 总格数）', () => {
-    const { params } = sanitizeParams({ paletteMode: 'preset', presetPaletteId: 'beads16', longEdge: 40, transparent: 'alpha', lockPalette: true })
-    const { art } = runPipeline(makeFixture(), params)
-    const rep = beadReport(art, { codes: getPreset('beads16').codes })
-    const sum = rep.rows.reduce((n, r) => n + r.cells, 0)
-    eq(sum + rep.transparentCells, art.width * art.height, '格数守恒')
-    eq(rep.totalBeads, sum, '珠子数应等于格数（1 格 1 颗）')
-    for (const r of rep.rows) assert(getPreset('beads16').codes.includes(r.code), `号色 ${r.code} 不在色卡内`)
-    return `${rep.colorCount} 色 / ${rep.totalBeads} 颗 / ${rep.totalGrams} g`
-  })
-
-  check('拼豆：图纸 SVG 结构完整（含图例与板标注）', () => {
-    const { params } = sanitizeParams({ paletteMode: 'preset', presetPaletteId: 'beads16', longEdge: 40, lockPalette: true })
-    const { art } = runPipeline(makeFixture(), params)
-    const svg = beadSvg(art, { codes: getPreset('beads16').codes, cellPx: 18 })
-    assert(svg.startsWith('<svg'), 'SVG 应以 <svg 开头')
-    assert(svg.trimEnd().endsWith('</svg>'), 'SVG 应闭合')
-    assert(svg.includes('<text'), '应含文字（编号/图例）')
-    assert(/板 1,1/.test(svg), '应含板编号标注')
-    const rects = (svg.match(/<rect/g) ?? []).length
-    assert(rects > 100, `矩形数量应覆盖整幅图纸，实际 ${rects}`)
-    return `${svg.length} 字节 / ${rects} 个矩形`
-  })
-
-  check('拼豆：预置色卡的号色必须被用上（不是自动编号 C1/C2）', () => {
-    // 回归防线：resolvePaletteFlag 对 .hex 会返回 codes，但预置卡分支曾经直接 return、不带 codes，
-    // 于是 `--palette beads16 --bead` 的清单印出 C1/C2…，预置卡的 B01/G02… 被丢掉。
-    const a = buildParams({ palette: 'beads16' })
-    assert(a.codes && a.codes.length > 0, '通过 --palette beads16 应取到预置卡号色')
-    assert(a.codes[0] === 'B01', `首个号色应为 B01，实际 ${a.codes[0]}`)
-    // 只用 --preset（不带 --palette）时同样要能取到
-    const b = buildParams({ preset: 'beads16' })
-    assert(b.params.presetPaletteId === 'beads16' && b.codes && b.codes[0] === 'B01', '--preset beads16 也应取到号色')
-    // 自动取色没有号色可言，不应伪造
-    const c = buildParams({ palette: 'auto' })
-    assert(!c.codes, 'auto 模式不应带号色')
-    return `--palette beads16 → ${a.codes.slice(0, 3).join('/')}…`
-  })
-
-  check('拼豆：缺口清单 CSV 表头与合计行', () => {
-    const { params } = sanitizeParams({ paletteMode: 'preset', presetPaletteId: 'beads16', longEdge: 40, lockPalette: true })
-    const { art } = runPipeline(makeFixture(), params)
-    const csv = beadListCsv(art, { codes: getPreset('beads16').codes })
-    const lines = csv.trim().split('\n')
-    assert(lines[0].startsWith('编号,颜色,格数'), '表头顺序应符合采购习惯')
-    assert(lines.some((l) => l.startsWith('合计,')), '应含合计行')
-    assert(lines.some((l) => l.startsWith('透明格,')), '应含透明格行')
-    return `${lines.length} 行`
-  })
-
-  check('拼豆：可打印 PDF 结构合法且内容真的被压缩', () => {
-    const { params } = sanitizeParams({ paletteMode: 'preset', presetPaletteId: 'beads16', longEdge: 40, lockPalette: true })
-    const { art } = runPipeline(makeFixture(), params)
-    const bytes = beadPdfNode(art, { codes: getPreset('beads16').codes })
-    const text = Buffer.from(bytes).toString('latin1')
-    assert(text.startsWith('%PDF-1.4'), 'PDF 头缺失')
-    assert(text.trimEnd().endsWith('%%EOF'), 'PDF 尾缺失')
-    // xref 的 startxref 必须指向 xref 表本身（手写 PDF 最常见的错处）
-    const xrefIdx = text.search(/^xref$/m)
-    const startxref = Number(/^startxref\r?\n(\d+)/m.exec(text)?.[1])
-    eq(startxref, xrefIdx, 'startxref 应指向 xref 表')
-    // 声明压缩的流必须真能解开——防"声称 FlateDecode 却写明文"
-    const streamAt = text.search(/^stream$/m)
-    assert(streamAt > 0, '没有内容流')
-    const body = bytes.subarray(streamAt + 7, text.indexOf('\nendstream', streamAt))
-    eq(body[0], 0x78, 'zlib 容器首字节应为 0x78')
-    const inflated = inflateSync(Buffer.from(body))
-    assert(inflated.includes('Tj'), '解压后应是绘制指令')
-    return `${Math.round(bytes.length / 1024)} KB，解压 ${Math.round(inflated.length / 1024)} KB`
-  })
-
-  check('CLI：参数解析（布尔 / 可选值 / 缺值报错）', () => {
-    const a = parseArgs(['--in', 'x', '--alpha', '--sheet', '4', '--json'])
-    eq(a.in, 'x', '--in 应取值')
-    eq(a.alpha, true, '--alpha 应为 true')
-    eq(a.sheet, '4', '--sheet 4 应取值为 4')
-    const b = parseArgs(['--sheet'])
-    eq(b.sheet, true, '裸 --sheet 应为 true')
-    let threw = false
-    try {
-      parseArgs(['--in'])
-    } catch {
-      threw = true
-    }
-    assert(threw, '缺值应报错')
-    return '布尔/可选值/缺值三种情况正确'
-  })
-
-  check('CLI：命名模板支持 {name}{index:02}{w}{h}{scale}', () => {
-    eq(applyTemplate('{name}_{w}x{h}_{scale}x', { name: 'hero', w: 32, h: 32, scale: 4 }), 'hero_32x32_4x', '基本占位符')
-    eq(applyTemplate('{index:02}_{name}', { index: 7, name: 'a' }), '07_a', '零填充')
-    return '模板正确'
-  })
-
-  check('CLI：--palette 三种取值形态', () => {
-    eq(resolvePaletteFlag('gameboy').patch.presetPaletteId, 'gameboy', '预置 id')
-    eq(resolvePaletteFlag('#112233,#445566').patch.customPalette.length, 2, '内联色表')
-    eq(resolvePaletteFlag('auto').patch.paletteMode, 'auto', 'auto')
-    return '预置 / 内联 / auto 均正确'
-  })
-
-  check('CLI：--blank 规格解析', () => {
-    eq(parseBlankSpec('58x58').width, 58, '小写 x')
-    eq(parseBlankSpec('32×32').height, 32, '全角 ×')
-    let threw = false
-    try {
-      parseBlankSpec('abc')
-    } catch {
-      threw = true
-    }
-    assert(threw, '非法规格应报错')
-    // 文案必须指认用户实际写的开关（原先写死 --blank，--size abc 也会被说成 --blank）
-    let msg = ''
-    try {
-      parseBlankSpec('abc', '--size')
-    } catch (err) {
-      msg = err.message
-    }
-    assert(msg.includes('--size') && !msg.includes('--blank'), `--size 的报错不该提 --blank，实际：${msg}`)
-    return '三种写法正确；报错文案跟随调用方的开关名'
-  })
-
-  check('IO：Node 端只承诺自己能解码的格式（不冒充支持 JPEG）', () => {
-    eq(canDecodeInNode('a.png'), true, 'PNG 应可解码')
-    eq(canDecodeInNode('a.jpg'), false, 'JPEG 应如实报告不可解码')
-    return '能力边界如实声明'
-  })
-
-  /*
-   * ↓↓↓ 以下为「工具问题记录」修复的回归防线。
-   * 每条都必须能因为一个真实缺陷而失败——这正是它们存在的理由。
-   */
-
-  check('CLI：未知参数必须报错，不能静默忽略', () => {
-    // 曾经 `--exact 32x32` 完全静默：它进了没人读的 args.exact，32x32 落进没人读的位置参数，
-    // 命令"成功"退出但产物仍是默认尺寸。调用方会拿这份产物当真。
-    let threw = false
-    try {
-      assertKnownFlags(['--in', 'a.png', '--exact', '32x32'])
-    } catch (e) {
-      threw = true
-      assert(/--exact/.test(e.message), '错误信息要点出是哪个参数')
-      assert(/32x32/.test(e.message), '要提示它吞掉了后面的值')
-    }
-    assert(threw, '未知参数 --exact 应报错')
-    // 合法参数不能被误伤
-    assertKnownFlags(['--in', 'a.png', '--size', '32x32', '--no-cleanup', '--sheet', '4'])
-    return '未知参数报错且带纠正提示，合法参数不受影响'
-  })
-
-  check('CLI：帮助文本与参数允许集完全一致（两个方向）', () => {
-    const src = readFileSync(fileURLToPath(import.meta.url), 'utf8')
-    // 用 lastIndexOf 而不是 indexOf：本断言自身的说明文字里也含 'function printHelp()'，
-    // 取第一个会把区域截在自己的字符串里（真实踩过，表现为"帮助一个 flag 都没提到"）。
-    const start = src.lastIndexOf('function printHelp()')
-    const region = src.slice(start, src.indexOf('\n}\n', start))
-    const mentioned = new Set([...region.matchAll(/--([a-z][a-z0-9-]*)/g)].map((m) => m[1]))
-    const missingInSet = [...mentioned].filter((k) => !KNOWN_FLAGS.has(k))
-    const missingInHelp = [...KNOWN_FLAGS].filter((k) => !mentioned.has(k))
-    assert(missingInSet.length === 0, `帮助提到但未实现：${missingInSet.join(', ')}`)
-    assert(missingInHelp.length === 0, `已实现但帮助未提：${missingInHelp.join(', ')}`)
-    return `${mentioned.size} 个 flag 双向一致`
-  })
-
-  /*
-   * --browser-decode 的两条能力边界。
-   *
-   * 这条守的是**声明与实现一致**：`src/io/node-image.ts` 一直如实声明"Node 端只直接解码 PNG"，
-   * 而 `--browser-decode` 是另一条通道（借浏览器原生解码器）。两者必须分得清——
-   * 不能因为加了这条通道，就把 `canDecodeInNode('a.jpg')` 悄悄改成 true
-   * （那会让"Node 端能力"这块招牌变成假话，而 mock 掉的能力最容易被下游误信）。
-   */
-  check('CLI：--browser-decode 只覆盖"浏览器能解"的格式，且不篡改 Node 端能力声明', () => {
-    // Node 端的能力声明**不因新通道改变**：仍然只承诺 PNG
-    eq(canDecodeInNode('a.png'), true, 'PNG 仍应可解码')
-    eq(canDecodeInNode('a.jpg'), false, 'JPEG 在 Node 端仍不可直接解码（能力声明不能被新通道篡改）')
-    // 但"需不需要走浏览器通道"要如实回答
-    eq(needsBrowserDecode('a.jpg'), true, 'JPEG 应可由浏览器通道解码')
-    eq(needsBrowserDecode('a.webp'), true, 'WebP 应可由浏览器通道解码')
-    eq(needsBrowserDecode('a.gif'), true, 'GIF 应可由浏览器通道解码')
-    eq(needsBrowserDecode('a.bmp'), true, 'BMP 应可由浏览器通道解码')
-    eq(needsBrowserDecode('a.png'), false, 'PNG 不该走浏览器通道（没必要起浏览器）')
-    eq(needsBrowserDecode('a.txt'), false, '非图片不该被当成可解码')
-    return '4 种浏览器格式可解；Node 端仍只承诺 PNG'
-  })
-
-  /*
-   * 性能基准脚本的存在性与自洽性。
-   *
-   * 为什么**不在这里跑基准**：绝对耗时随机器浮动，把它当断言会变成"在慢机器上永远红"的假警报。
-   * 这里只守两件不会因机器而异的事：
-   *  ① `tool/bench.mjs` 还在，且 package.json 里有 `npm run bench`（否则会像"文档提到但不存在
-   *     的文件"那样静默腐坏——本项目已有 `tool/bench.mjs` 曾被 ARCHITECTURE 引用却不存在的前例）；
-   *  ② 它**声明了自己的用法与取舍**（`--quick` 与"耗时不当断言"的说明），
-   *     免得后来者把它当成"跑一次就能判定性能好坏"的测试。
-   * 真正的性能结论由 `npm run bench` 自己断言（比值类，与机器无关）。
-   */
-  check('工程：性能基准脚本存在、已接线，且声明了"耗时不当断言"', () => {
-    const benchPath = join(dirname(fileURLToPath(import.meta.url)), 'bench.mjs')
-    assert(existsSync(benchPath), 'tool/bench.mjs 不见了——ARCHITECTURE「性能」一节的结论就没有可复现依据了')
-    const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'))
-    assert(pkg.scripts && pkg.scripts.bench, 'package.json 里没有 bench 脚本（npm run bench）')
-    const src = readFileSync(benchPath, 'utf8')
-    assert(/--quick/.test(src), 'bench.mjs 应支持 --quick（缩小规模，用于改动后随手跑）')
-    assert(/不要\*\*把它当断言|不要\*\*把它当断言或写进文档|绝对耗时随机器浮动/.test(src), 'bench.mjs 应写明"绝对耗时不当断言"')
-    return 'bench.mjs 存在、已接线、含 --quick 与免责说明'
-  })
-
-  check('工程：artc.mjs 被 import 时不得执行 main()（否则导入方会被 process.exit 带走）', () => {
-    const src = readFileSync(fileURLToPath(import.meta.url), 'utf8')
-    assert(/const invokedDirectly =/.test(src), '缺少"直接执行"守卫')
-    assert(/if \(invokedDirectly\)/.test(src), 'main() 未被守卫包裹')
-    return '有直接执行守卫，可安全导入'
-  })
-
-  check('算子：--ops @文件 / --ops-file 读文件，路径错要报错', () => {
-    const tmp = join(tmpdir(), `artc-ops-${process.pid}.json`)
-    writeFileSync(tmp, '[{"op":"setAll","color":"#ff0000"}]', 'utf8')
-    try {
-      eq(loadOps({ 'ops-file': tmp }).length, 1, '--ops-file 应读到 1 条算子')
-      eq(loadOps({ ops: `@${tmp}` }).length, 1, '--ops @file 简写应等价')
-      eq(loadOps({}).length, 0, '不给算子时为空数组')
-      let threw = false
-      try {
-        loadOps({ 'ops-file': join(tmpdir(), 'definitely-missing-artc.json') })
-      } catch {
-        threw = true
-      }
-      assert(threw, '算子文件不存在必须报错，不能当成"没有算子"继续跑')
-    } finally {
-      try {
-        unlinkSync(tmp)
-      } catch {
-        /* 清理失败不影响断言结论 */
-      }
-    }
-    return '文件读取 + 缺失报错均正确'
-  })
-
-  check('管线：cleanup 吃掉的颜色必须如实上报（像素画的 1px 细节最容易被吞）', () => {
-    // 合成一张 32×32 图：一片实色 + 一个孤立像素。
-    // cleanupMinSize=2 必然把孤立像素并入邻色，而它正是像素画里的高光/眼神。
-    const w = 32
-    const h = 32
-    const data = new Uint8ClampedArray(w * h * 4)
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const o = (y * w + x) * 4
-        const isolated = x === 20 && y === 20
-        data[o] = isolated ? 255 : 30
-        data[o + 1] = isolated ? 215 : 30
-        data[o + 2] = isolated ? 0 : 30
-        data[o + 3] = 255
-      }
-    }
-    const base = { ...DEFAULT_PARAMS, paletteMode: 'auto', paletteK: 8, cleanup: true, cleanupMinSize: 2, longEdge: 32, exactWidth: 32, exactHeight: 32 }
-    const withClean = runPipeline({ width: w, height: h, data }, coerceParams(base))
-    assert(withClean.cleanup !== null, '启用 cleanup 时必须给出报告，不能是 null')
-    assert(withClean.cleanup.changedCells > 0, '孤立像素应被清理改掉')
-    assert(withClean.cleanup.removedColors.length > 0, '被整幅吃掉的颜色必须出现在报告里')
-
-    const noClean = runPipeline({ width: w, height: h, data }, coerceParams({ ...base, cleanup: false }))
-    eq(noClean.cleanup, null, '关闭 cleanup 时不应报"有清理动作"')
-    // 报告的语义是"这些色在最终产物里一格都不剩"。cleanup 只改 indices 不动 palette，
-    // 所以消失的颜色仍留在色板里，但在最终像素中引用数必须为 0——这比对比色板长度更贴近事实。
-    for (const gone of withClean.cleanup.removedColors) {
-      assert(withClean.art.palette[gone.index] === gone.hex, `报告里的 hex 与色板第 ${gone.index} 项不一致`)
-      const stillUsed = withClean.art.indices.includes(gone.index)
-      assert(!stillUsed, `被报为"整幅消失"的 ${gone.hex} 其实仍在最终像素里被引用`)
-      assert(noClean.art.indices.includes(gone.index), `${gone.hex} 在关闭 cleanup 后应当仍在像素里`)
-    }
-    return `改掉 ${withClean.cleanup.changedCells} 格，消失 ${withClean.cleanup.removedColors.map((c) => c.hex).join('/')}`
-  })
-
-  const passed = checks.filter((c) => c.ok).length
-  const failed = checks.length - passed
-  for (const c of checks) {
-    const mark = c.ok ? '✔' : '✘'
-    console.log(` ${mark} ${c.name}${c.detail ? ` — ${c.detail}` : ''}`)
-  }
-  console.log(`\n自检：${passed}/${checks.length} 通过${failed ? `，${failed} 项失败` : ''}`)
-  return failed === 0
 }
 
 /* ------------------------------------------------------------------ 主流程 */
@@ -1167,6 +611,9 @@ async function main() {
   }
 
   if (args.selftest) {
+    // selftest 已拆到 ./selftest.mjs（它占过本文件 779 行）。动态 import：
+    // 只有真跑 --selftest 时才加载那一大坨断言，不影响普通出图的启动开销。
+    const { selftest } = await import('./selftest.mjs')
     const ok = await selftest()
     process.exit(ok ? 0 : 1)
   }
@@ -1179,11 +626,7 @@ async function main() {
   const wantSheet = args.sheet !== undefined && args.sheet !== false
   const sheetCols = typeof args.sheet === 'string' ? Number(args.sheet) : 0
 
-  const beadingOptions = {}
-  if (args['bead-mm'] !== undefined) beadingOptions.beadMm = Number(args['bead-mm'])
-  if (args['bead-gram'] !== undefined) beadingOptions.beadGram = Number(args['bead-gram'])
-  if (args['board'] !== undefined) beadingOptions.boardCells = Number(args['board'])
-  else if (typeof args.bead === 'string') beadingOptions.boardCells = Number(args.bead)
+  const beadingOptions = parseBeadingOptions(args)
 
   if (wantProgress) {
     progress(`参数：长边 ${params.longEdge}${params.exactWidth ? `（精确 ${params.exactWidth}×${params.exactHeight}）` : ''} · 降采样 ${params.downsample} · 色板 ${params.paletteMode}${params.paletteMode === 'preset' ? `(${params.presetPaletteId})` : ''} · 抖动 ${params.dither} · 透明 ${params.transparent}`)
@@ -1345,9 +788,28 @@ async function main() {
     for (let i = 0; i < renderList.length; i++) {
       const src = renderList[i]
       try {
+        /*
+         * `--auto-tune <n>`：在"色号数 ≤ n"的约束下自动搜参。
+         *
+         * 放在**每张图各自的循环里**（而不是 buildParams 里）有两个理由：
+         *  1. 搜索需要解码后的像素（`runPipeline` 的输入），buildParams 阶段还没有；
+         *  2. "最优参数"是**逐图不同**的——一张平色图和一张照片该用不同档位，
+         *     批量处理时这正是它比"手动调一套参数套所有图"强的地方。
+         */
+        let fileParams = params
+        if (args['auto-tune'] !== undefined) {
+          const maxColors = Number(args['auto-tune'])
+          if (!Number.isFinite(maxColors) || maxColors < 2) {
+            throw new Error(`--auto-tune 需要一个色号上限（≥2），收到：${args['auto-tune']}`)
+          }
+          const img = loadImageNode(src)
+          const tune = autoTune({ width: img.width, height: img.height, data: img.data }, params, { maxColors })
+          fileParams = tune.best.params
+          if (!args.quiet) progress(`↻ ${basename(src)} 搜参：${tuneSummary(tune)}`)
+        }
         const r = renderOne({
           src,
-          params,
+          params: fileParams,
           ops,
           scale,
           codes,
@@ -1356,6 +818,7 @@ async function main() {
           wantSheet,
           wantPixbin: !!args.pixbin,
           wantPdf: !!args.pdf,
+          wantQuality: !!args.quality,
           nameTemplate,
           index: i + 1,
         })
@@ -1383,11 +846,14 @@ async function main() {
           changes: r.changes.length,
           bead: r.beadSummary ?? undefined,
           cleanup: r.cleanup ?? undefined,
+          // 质量报告只在 --quality 时产出；不加就如实为 undefined，不留一个"看着像有值"的空壳
+          quality: r.quality ?? undefined,
           _sheet: r.sheet,
         })
         // 进度行报**产物**的透明像素：key 模式下模型侧恒为 0，按它显示会少报
         // （实测一次键控出 60% 透明格，屏幕上却什么都没说）。
         if (!args.quiet) progress(`✔ ${basename(src)} → ${r.base}.png（${r.width}×${r.height}${r.pngWidth !== r.width ? ` → 导出 ${r.pngWidth}×${r.pngHeight}` : ''}，${r.paletteSize} 色${r.pngTransparent ? `，透明 ${r.pngTransparent} 像素` : ''}${r.beadSummary ? `，拼豆 ${r.beadSummary.totalBeads} 颗` : ''}）`)
+        if (r.quality && !args.quiet) progress(`   质量：${qualitySummary(r.quality)}`)
         // 杂色清理吃掉了整幅消失的颜色时必须说出来。像素画资产里的"小连通块"常常正是
         // 故意画的 1px 细节（高光/眼神/描边断点），被静默并入邻色后只能靠对图才发现。
         if (r.cleanup && r.cleanup.removedColors.length) {
@@ -1498,12 +964,17 @@ function printHelp() {
   --downsample <m>        average | nearest
   --crop <r>              free | 1:1 | 4:3 | 16:9
   --palette <v>           auto | 预置 id | *.hex 文件 | #aabbcc,#112233
-                          预置 id：${[...new Set([...describeAll().presets.map((p) => p.id)])].join(' / ')}
+                          预置 id：${presetIdList()}
   --preset <id>           只指定预置色卡（等价于 --palette <预置 id>；带号色的卡会把号色写进
                           图纸/清单/.hex/像素 JSON，拼豆出图请用它）
   --palette-k <n>         自动取色颜色数（2–64）
   --style <id>            先套风格预设：${STYLE_PRESETS.map((s) => s.id).join(' / ')}
-  --dither <m>            none | floyd | bayer
+  --dither <m>            none | floyd | atkinson | bayer | bayer8
+  --dither-max-colors <n> 抖动时最多用到几种色号（0=不限）。拼豆场景用它约束到
+                          "我手上只有这么多种豆子"；超出时自动收敛到用量最大的 n 色
+  --quality               额外输出图纸质量报告（保真误差 / 色号数 / 珠子数 / 抖动代价）
+  --auto-tune <n>         自动搜参：在"色号数 ≤ n"的约束下找观感最好的参数组合，
+                          并把结果写进本次转换（确定性：同图同参必得同一组）
   --no-cleanup            关闭杂色清理
   --cleanup-min <n>       杂色清理阈值（1–10）
   --brightness/--contrast/--saturation <n>   预处理（-100..100）

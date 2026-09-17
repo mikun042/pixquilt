@@ -9,7 +9,7 @@
  * 跟着工厂实例走即可。**上一轮拆不动，就是因为没先做这一步**（见 529f3b1 的提交说明）。
  */
 import { DEFAULT_PARAMS, coerceParams, type ConvertParams, type PixelArt } from '../../core/types.ts'
-import { PRESETS, getPreset, paletteCodes, parseHexPalette, serializeHexPalette } from '../../core/palettes.ts'
+import { PRESETS, getPreset, paletteCodes, parseHexPalette, serializeHexPalette, type PaletteSource } from '../../core/palettes.ts'
 import { addCustomPreset, effectivePresets, removeCustomPreset, resetPreset, sameParams, updatePreset } from '../presets.ts'
 import { colorTextOn } from '../../core/color.ts'
 import { el } from '../store.ts'
@@ -605,10 +605,25 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
       field('色板', selectInput(p.paletteMode, [['auto', '自动提取'], ['preset', '预置色卡'], ['custom', '自定义 / .hex']], (v) => deps.patch({ paletteMode: v as ConvertParams['paletteMode'] }))),
     )
     if (p.paletteMode === 'preset') {
-      const colors = PRESETS.map((x) => [x.id, `${x.name}`] as [string, string])
+      /*
+       * 19 张卡按 `source` 分三组显示（分组标题与色卡自己的声明同源，不在这里硬编码 id）。
+       * 顺序刻意是"越可信越靠前"：官方硬件色表 → 社区整理品牌卡 → 自造近似色。
+       * 组标题里带上"以实物为准"这类提示，让用户不必读文档也知道社区卡的边界。
+       */
+      const groups: { source: PaletteSource; group: string }[] = [
+        { source: 'official', group: '官方硬件色表' },
+        { source: 'community', group: '品牌拼豆（社区整理，以实物为准）' },
+        { source: 'approximate', group: '通用近似色（不属任何品牌）' },
+      ]
+      const colorGroups = groups
+        .map(({ source, group }) => ({
+          group,
+          items: PRESETS.filter((x) => x.source === source).map((x) => [x.id, x.name] as [string, string]),
+        }))
+        .filter((g) => g.items.length > 0)
       paletteFields.push(
         el('div', { class: 'field-inner' }, [
-          selectInput(p.presetPaletteId, colors, (v) => deps.patch({ presetPaletteId: v })),
+          selectInput(p.presetPaletteId, colorGroups, (v) => deps.patch({ presetPaletteId: v })),
           el('span', { class: 'hint' }, [getPreset(p.presetPaletteId)?.desc ?? '']),
         ]),
       )
@@ -759,12 +774,38 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
     })
   }
 
-  function selectInput(value: string, options: [string, string][], onChange: (v: string) => void): HTMLSelectElement {
+  /**
+   * 下拉框。两种入参形态：
+   *  - `[val, label][]` —— 平铺
+   *  - `{ group: string; items: [val, label][] }[]` —— 带 `<optgroup>` 分组
+   *
+   * 为什么需要分组：预置色卡从 6 张变 19 张之后，平铺的列表既长又读不出结构
+   * （"哪张是硬件色表、哪张是社区整理的品牌卡"全靠名称后缀猜）。
+   * 分组维度直接用色卡自己的 `source` 字段，不在 UI 里硬编码 id ——
+   * 声明与呈现同源，将来加第四类来源时这里不用改。
+   */
+  function selectInput(
+    value: string,
+    options: [string, string][] | { group: string; items: [string, string][] }[],
+    onChange: (v: string) => void,
+  ): HTMLSelectElement {
     const sel = el('select', { onchange: (e: Event) => onChange((e.target as HTMLSelectElement).value) })
-    for (const [val, label] of options) {
+    const addOption = (parent: HTMLElement, val: string, label: string): void => {
       const opt = el('option', { value: val }, [label])
       if (val === value) opt.setAttribute('selected', '')
-      sel.append(opt)
+      parent.append(opt)
+    }
+    const grouped = options.length > 0 && !Array.isArray(options[0])
+    if (grouped) {
+      for (const g of options as { group: string; items: [string, string][] }[]) {
+        // 空组不产出（否则会出现一个没有任何选项的分组标题）
+        if (g.items.length === 0) continue
+        const og = el('optgroup', { label: g.group })
+        for (const [val, label] of g.items) addOption(og, val, label)
+        sel.append(og)
+      }
+    } else {
+      for (const [val, label] of options as [string, string][]) addOption(sel, val, label)
     }
     return sel
   }

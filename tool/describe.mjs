@@ -59,7 +59,7 @@ export function build() {
   lines.push('node tool/artc.mjs --in 素材目录 --out 输出 --palette gameboy --size 32x32 --alpha --sheet 4')
   lines.push('')
   lines.push('# ② 自检与自省（先确认环境与能力，再写脚本）')
-  lines.push('node tool/artc.mjs --selftest      # 42 项链路自检，无需任何素材')
+  lines.push('node tool/artc.mjs --selftest      # 44 项链路自检，无需任何素材')
   lines.push('node tool/artc.mjs --describe     # 打印完整的算子/参数/能力 JSON')
   lines.push('')
   lines.push('# ③ 页内 API（浏览器自动化 / Playwright / CDP evaluate）')
@@ -112,7 +112,10 @@ export function build() {
     ['--preset', '只指定预置色卡（等价于 `--palette <预置 id>`；带号色的卡会把号色写进图纸 / 清单 / `.hex`）', ['preset']],
     ['--palette-k', '自动取色颜色数（2–64）', ['palette-k']],
     ['--style', STYLE_PRESETS.map((s) => s.id).join(' / '), ['style']],
-    ['--dither', '`none` \\| `floyd` \\| `bayer`', ['dither']],
+    ['--dither', '`none` \\| `floyd` \\| `atkinson` \\| `bayer` \\| `bayer8`', ['dither']],
+    ['--dither-max-colors', '抖动时最多用到几种色号（0=不限）；拼豆场景约束到"手上只有这么多种"', ['dither-max-colors']],
+    ['--quality', '额外输出图纸质量报告（保真误差 / 色号数 / 珠子数 / 抖动代价）', ['quality']],
+    ['--auto-tune', '自动搜参：在「色号数 ≤ n」约束下找观感最好的参数组合（确定性）', ['auto-tune']],
     ['--no-cleanup', '关闭杂色清理（像素素材请开它：清理会吃掉 1px 高光/描边断点）', ['no-cleanup']],
     ['--cleanup-min', '杂色清理阈值（1–10）', ['cleanup-min']],
     ['--brightness / --contrast / --saturation', '预处理（-100…100）', ['brightness', 'contrast', 'saturation']],
@@ -186,11 +189,21 @@ export function build() {
   lines.push('')
   lines.push('### 预置色卡')
   lines.push('')
-  lines.push('| id | 名称 | 色数 | 号色 | 说明 |')
-  lines.push('|---|---|---|---|---|')
+  lines.push('**`source` 决定色号可不可信**（三类，别混用）：')
+  lines.push('')
+  lines.push('- `official` —— 厂商/规范公开的色表，色号与颜色是权威的。')
+  lines.push('- `community` —— **社区整理**的品牌拼豆色卡，有据可查但**不保证与实物零偏差**，以实物为准。')
+  lines.push('- `approximate` —— 我们自造的通用近似色，只为让图纸有稳定号色，不属任何品牌。')
+  lines.push('')
+  lines.push('| id | 名称 | 色数 | 号色 | 来源 | 说明 |')
+  lines.push('|---|---|---|---|---|---|')
   for (const p of CAPABILITIES.presets) {
-    lines.push(`| \`${p.id}\` | ${p.name} | ${p.colors} | ${p.hasCodes ? '有' : '无'} | ${p.desc} |`)
+    lines.push(`| \`${p.id}\` | ${p.name} | ${p.colors} | ${p.hasCodes ? '有' : '无'} | ${p.source} | ${p.desc} |`)
   }
+  lines.push('')
+  lines.push('> 品牌色卡取自 [maxcleme/beadcolors](https://github.com/maxcleme/beadcolors)（MIT），')
+  lines.push('> 由 `tool/bead-palettes.mjs` 生成。**Mard（290 色）与 Diamond Dotz（461 色）因超过色板上限 256 未收录**；')
+  lines.push('> 需要它们时用 `--palette 我的色卡.hex` 导入（支持带号色），或等索引位宽迁移（属独立一轮）。')
   lines.push('')
   lines.push('### 风格预设（一次性套用一组参数）')
   lines.push('')

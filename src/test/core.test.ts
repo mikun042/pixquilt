@@ -16,7 +16,11 @@ import { deflateSync, inflateSync } from 'node:zlib'
 import { runPipeline, computeCropRect, computeGridSize, medianCut, quantize } from '../core/pipeline.ts'
 import { applyOps, blankArt, brushCells, lineCells, rasterizeEllipse, rasterizeRect, anchorOffset, type EditOp } from '../core/ops.ts'
 import { DEFAULT_PARAMS, STYLE_PRESETS, coerceParams, sanitizeParams, sanitizePrefs } from '../core/types.ts'
-import { codesForParams, getPreset, parseHexPalette, serializeHexPalette, paletteCodes } from '../core/palettes.ts'
+import { PRESETS, codesForParams, getPreset, parseHexPalette, serializeHexPalette, paletteCodes } from '../core/palettes.ts'
+import { PARAM_SPECS } from '../core/spec.ts'
+import { qualityReport } from '../core/quality.ts'
+import { MAX_CELL, MIN_CELL, clampCell, fitViewState, pointToCellClamped, zoomAtPoint } from '../core/viewport.ts'
+import { autoTune, tuneSummary } from '../core/auto-tune.ts'
 import { artHash, decodePixBin, encodePixBin, layoutSheet, parseProjectFile, pixelJSONString, projectJSONString } from '../core/export.ts'
 import { base64ToBytes, bytesToBase64 } from '../core/binary.ts'
 import { countTransparent, countUsage, hasRealAlpha } from '../core/stats.ts'
@@ -100,6 +104,54 @@ function directNearestIndices(data: Uint8ClampedArray, palette: string[]): numbe
 }
 
 describe('参数 Schema', () => {
+  /*
+   * 元数据对账（R2「单一真源」）。
+   *
+   * 算子那边一直有严格对账（`spec.ts` 的算子集 == `ops.ts` 的 switch 集 == 数量常量），
+   * **参数这边原本没有任何对账**——`PARAM_SPECS` 全仓只有 4 处引用（定义 / describeAll /
+   * describe.mjs 渲染 / describeParams），漏加一条 `ParamSpec` 不会被任何测试抓到：
+   * `--describe` 里少一行、手册少一项，而代码照常工作。这正是本项目最忌讳的"静默漂移"。
+   *
+   * 加这条的时机也重要：T5/T3 都要往 `ConvertParams` 加字段，先有防线再改，改动才可验收。
+   *
+   * 为什么用 `DEFAULT_PARAMS` 的键而不是 `ConvertParams` 接口的键：接口是**类型**，
+   * 运行时枚举不出来（TS 类型在编译后不存在）。而 `DEFAULT_PARAMS` 是 `ConvertParams` 类型的
+   * 完整字面量——少写一个必填字段 tsc 就会报错，所以它天然是"必填字段全集"。
+   * 可选字段（`?`）不在其中，所以下面用白名单显式列出，并要求它**正好**是那四个。
+   */
+  it('参数元数据与实现一致：每个参数都有 ParamSpec，且没有多余条目（漂移会被这条抓住）', () => {
+    // 用 Set<string> 而不是 Set<keyof ConvertParams>：下面要拿它跟 Object.keys() 的
+    // string[] 比对，而 `keyof ConvertParams` 是窄类型，TS 不接受"窄集合查宽键"这种用法
+    const specKeys = new Set<string>(PARAM_SPECS.map((s) => s.key))
+    const defaultKeys: string[] = Object.keys(DEFAULT_PARAMS)
+
+    // ① 每个「必有默认值」的参数都必须有元数据，否则 --describe / 文档会漏掉它
+    const missingSpec = defaultKeys.filter((k) => !specKeys.has(k))
+    assert.deepEqual(
+      missingSpec,
+      [],
+      `这些参数在 DEFAULT_PARAMS 里但没有 ParamSpec，--describe 与手册会漏掉：${missingSpec.join(', ')}`,
+    )
+
+    // ② 反过来：ParamSpec 不该有 DEFAULT_PARAMS 里不存在的键（拼错或已删除的字段）
+    //    例外是**可选字段**——它们没有默认值（undefined 有意义，表示"不启用"），
+    //    这个白名单必须精确，不能写成"包含即通过"，否则真拼错的键会被放行。
+    const OPTIONAL_FIELDS = ['customPaletteCodes', 'exactWidth', 'exactHeight', 'lockPalette']
+    const specOnly = [...specKeys].filter((k) => !defaultKeys.includes(k)).sort()
+    assert.deepEqual(
+      specOnly,
+      [...OPTIONAL_FIELDS].sort(),
+      `ParamSpec 里出现了 DEFAULT_PARAMS 之外的键。若这是**新加的可选字段**，请把它加进本测试的白名单；` +
+        `若是拼错的键或已删除的字段，请从 PARAM_SPECS 移除。实际多出：${specOnly.join(', ')}`,
+    )
+
+    // ③ id 不能重复（重复会让 describe 输出两条同名条目，且 Object 化时后者覆盖前者）
+    assert.equal(specKeys.size, PARAM_SPECS.length, 'PARAM_SPECS 里有重复的 key')
+
+    // ④ 数量锁：加参数时这条会红，提醒同步文档与测试（与算子那条同一个套路）
+    assert.equal(PARAM_SPECS.length, 23, '参数数量变化时必须同步文档与测试')
+  })
+
   it('越界值被夹紧并如实报告（agent 必须能发现自己传的值没生效）', () => {
     const r = sanitizeParams({ longEdge: 99999, paletteK: 0, dither: 'x', brightness: -500 })
     assert.equal(r.params.longEdge, 2048)
@@ -128,6 +180,43 @@ describe('参数 Schema', () => {
     const r = sanitizeParams({ longEdge: 'huge', customPalette: ['#zzzzzz', '#00ff00', 5] })
     assert.equal(r.params.longEdge, DEFAULT_PARAMS.longEdge)
     assert.deepEqual(r.params.customPalette, ['#00ff00'])
+  })
+
+  /*
+   * 色板与颜色字段的**如实上报**（2026-09-16 补）。
+   *
+   * 背景：`paletteField` 长度封顶、`hexField` 非法回退，**原先都不产出 `FixedField`**——
+   * 于是 `validateParams()` 与 CLI 的"已修正 N 处参数"完全看不到，
+   * 而 agent 会按自己传的色板长度规划后续步骤，最后拿到一张少了几十色的图纸。
+   * `numP`/`enumP` 一直有上报，色板这条路是缺口。
+   *
+   * 变异验证：把 `paletteField` 的 truncated/dropped 上报或 `matteColor` 的上报删掉，这两条立刻红。
+   */
+  it('超长色板要如实上报截断（不能静默丢色）', () => {
+    const big = Array.from({ length: PALETTE_MAX + 7 }, (_, i) => `#${(i * 257 + 1).toString(16).padStart(6, '0').slice(-6)}`)
+    const r = sanitizeParams({ customPalette: big })
+    assert.equal(r.params.customPalette.length, PALETTE_MAX, `色板应被截到 ${PALETTE_MAX}`)
+    const hit = r.fixed.find((f) => f.key === 'customPalette' && /截掉/.test(f.reason))
+    assert.ok(hit, `截断必须记进 FixedField，实际 fixed=${JSON.stringify(r.fixed)}`)
+    assert.match(hit.reason, /截掉 7 色/, `应报出真实被截条数，实际「${hit.reason}」`)
+  })
+
+  it('色板里的非法颜色要如实上报丢弃条数', () => {
+    const r = sanitizeParams({ customPalette: ['#ff0000', 'not-a-color', '#00ff00', 42] })
+    assert.deepEqual(r.params.customPalette, ['#ff0000', '#00ff00'])
+    const hit = r.fixed.find((f) => f.key === 'customPalette' && /非法颜色/.test(f.reason))
+    assert.ok(hit, `丢弃项必须记进 FixedField，实际 fixed=${JSON.stringify(r.fixed)}`)
+    assert.match(hit.reason, /2 项/, `应报出 2 项，实际「${hit.reason}」`)
+  })
+
+  it('非法的 matteColor 要如实上报回退（否则原图透明区会合成到另一个颜色上）', () => {
+    const r = sanitizeParams({ matteColor: 'garbage' })
+    assert.equal(r.params.matteColor, DEFAULT_PARAMS.matteColor)
+    const hit = r.fixed.find((f) => f.key === 'matteColor')
+    assert.ok(hit, `回退必须记进 FixedField，实际 fixed=${JSON.stringify(r.fixed)}`)
+    assert.match(hit.reason, /回退默认/)
+    // 合法值不该产生噪音上报
+    assert.equal(sanitizeParams({ matteColor: '#123456' }).fixed.some((f) => f.key === 'matteColor'), false)
   })
 
   /*
@@ -214,6 +303,96 @@ describe('取色（Median Cut）', () => {
     const b = medianCut(colors, 8)
     assert.deepEqual(a, b)
   })
+
+  /*
+   * 下面两条守的是"改色彩空间时阈值必须跟着换量纲"这个坑（2026-09-16 把 medianCut
+   * 从 sRGB 换成 OKLab 时引入的守卫）。
+   *
+   * 分裂循环里的"最小可切跨度"原本写死 `1`，那是 **0–255 量纲**的值；而 OKLab 的
+   * L∈[0,1]、a/b 约 ±0.4，跨度只有 0.4–1.0 量级。阈值不换 → 每个盒子都被判成"纯色、不可切"
+   * → `bestIdx` 永远 -1 → 直接 break → **整张图只输出 1 个色号**。
+   * 它不报错、不抛异常，只是静默退化——所以必须有断言当场抓住。
+   * 变异验证：把阈值改回 `1`，这两条立刻红（实测输出 1 色）。
+   */
+  it('多色图取色不得塌成单色（守住分裂阈值与色彩空间的量纲一致）', () => {
+    // 造一张"暗部密集 + 亮部稀疏"的图——这正是 sRGB 体积与感知不成比例的典型形态
+    const colors = [
+      ...Array.from({ length: 3000 }, (_, i) => ({ r: 10 + (i % 40), g: 10 + (i % 35), b: 20 + (i % 30) })),
+      ...Array.from({ length: 1000 }, (_, i) => ({ r: 200 + (i % 50), g: 180 + (i % 60), b: 150 + (i % 70) })),
+    ]
+    for (const k of [4, 16, 32]) {
+      const out = medianCut(colors, k)
+      assert.ok(out.length > 1, `k=${k} 时塌成了 ${out.length} 色——分裂阈值与 OKLab 量纲不一致`)
+    }
+  })
+
+  it('取色数量随 k 单调不减（k 变大不该反而给出更少的色号）', () => {
+    const colors = Array.from({ length: 4000 }, (_, i) => ({
+      r: (i * 37) % 256,
+      g: (i * 91) % 256,
+      b: (i * 53) % 256,
+    }))
+    let prev = 0
+    for (const k of [2, 4, 8, 16, 32]) {
+      const n = medianCut(colors, k).length
+      assert.ok(n >= prev, `k=${k} 给出 ${n} 色，比更小的 k 还少（${prev}）`)
+      // 撞色去重会让实际色数 ≤ k，这是既有语义（dedupePalette），但要如实受这条上界约束
+      assert.ok(n <= k, `k=${k} 却给出 ${n} 色，超过请求值`)
+      prev = n
+    }
+  })
+
+  /*
+   * 下面两条守的是"**排序会就地重排，按位置回查原始数据必须与排序同步**"这个坑。
+   *
+   * 背景：medianCut 内部会 `sort` 一份 OKLab 数组。第一版把原始 sRGB 放在**平行数组**里、
+   * 用 `box.from` 回查原始色——但排序只重排了 OKLab 那一份，原始数组没跟着动，
+   * 于是取到的是**另一个位置**的颜色。它不会抛错、取到的也仍是"合法色板项"，
+   * 只是不对应盒内内容。
+   *
+   * 触发条件很具体：**少量颜色重复排列**时，排序会把同色聚到一起，
+   * 使 `box.from` 恰好落在同一个色上——实测 8 色各重复 40 次、k=8 时整幅图塌成 1 色。
+   * 所以这两条用该形态构造，而不是用"每个像素都不同"的合成图（那种图抓不到）。
+   */
+  it('少量颜色重复排列时不得塌成单色，且盒内同色必须原样输出（排序与原始色不同步的防线）', () => {
+    const base = ['#1a1a1a', '#7f7f7f', '#e6e6e6', '#c82828', '#28c83c', '#283cc8', '#dcc828', '#963cc8']
+    const rgb = base.map((h) => ({
+      r: parseInt(h.slice(1, 3), 16),
+      g: parseInt(h.slice(3, 5), 16),
+      b: parseInt(h.slice(5, 7), 16),
+    }))
+    // 逐色轮转排列（不是每个色连续 40 个）——正是这个交错让"按位置回查"错位
+    const colors: { r: number; g: number; b: number }[] = []
+    for (let rep = 0; rep < 40; rep++) for (const c of rgb) colors.push(c)
+
+    const exact = new Set(base)
+    for (const k of [8, 16]) {
+      const out = medianCut(colors, k)
+      assert.equal(out.length, base.length, `k=${k} 应还原出 ${base.length} 个不同色，实际 ${out.length}`)
+      // 盒内全是同一个已知色时，走 verbatim 短路，输出必须**精确**等于该色
+      for (const h of out) assert.ok(exact.has(h), `输出了非原始色 ${h}——原始色与排序不同步`)
+    }
+    // k 小于色数时是正常的"合并"，只要求不塌成单色
+    for (const k of [2, 4]) {
+      const out = medianCut(colors, k)
+      assert.ok(out.length > 1 && out.length <= k, `k=${k} 给出 ${out.length} 色`)
+    }
+  })
+
+  it('单调性在"少量颜色重复排列"上同样成立（该形态曾触发反向退化）', () => {
+    const pal = [
+      [26, 26, 26], [127, 127, 127], [230, 230, 230], [200, 40, 40],
+      [40, 200, 60], [40, 60, 200], [220, 200, 40], [150, 60, 200],
+    ]
+    const colors: { r: number; g: number; b: number }[] = []
+    for (let rep = 0; rep < 40; rep++) for (const c of pal) colors.push({ r: c[0], g: c[1], b: c[2] })
+    let prev = 0
+    for (const k of [2, 4, 6, 8, 10, 16]) {
+      const n = medianCut(colors, k).length
+      assert.ok(n >= prev, `k=${k} 给出 ${n} 色，比更小的 k 还少（${prev}）——真实发生过这种反向退化`)
+      prev = n
+    }
+  })
 })
 
 describe('像素化管线', () => {
@@ -287,6 +466,122 @@ describe('像素化管线', () => {
     const floydOnly = runPipeline(fixture(), coerceParams({ ...base, dither: 'floyd', cleanup: false })).art
     assert.equal(artHash(withDither), artHash(floydOnly), 'cleanup=true 不应改变抖动结果（应被强制关闭）')
     assert.notEqual(artHash(withDither), artHash(noCleanup), '抖动与不抖动应产生不同结果')
+  })
+
+  /* ------------------------------------------------------------------ 抖动：新增算法与色号上限 */
+
+  /** 用一张多色渐变图统计"实际用到了几个色号"（抖动会逼出比色板更多的中间色） */
+  const usedColors = (art: { indices: Uint8Array }): number => new Set([...art.indices]).size
+  it('五种抖动模式都能跑，且各自产出可区分的结果（不是同一份实现换名字）', () => {
+    /*
+     * 这条守的是"宣称支持了几种抖动，就得真的各不相同"。本项目最忌讳
+     * "清单里有、实现没有"——若某个模式只是 `dither` 分支漏写而落回默认，
+     * 结果会与 none 完全一致，这条就会红。
+     */
+    const hashes = new Map<string, string>()
+    for (const m of ['none', 'floyd', 'atkinson', 'bayer', 'bayer8'] as const) {
+      const art = runPipeline(
+        fixture(96, 96),
+        sanitizeParams({ paletteMode: 'preset', presetPaletteId: 'beads24', longEdge: 64, cleanup: false, dither: m }).params,
+      ).art
+      hashes.set(m, artHash(art))
+    }
+    // none 之外的四者必须互不相同，且都与 none 不同
+    for (const m of ['floyd', 'atkinson', 'bayer', 'bayer8'] as const) {
+      assert.notEqual(hashes.get(m), hashes.get('none'), `${m} 的结果与 none 相同——该模式没生效`)
+    }
+    const four = ['floyd', 'atkinson', 'bayer', 'bayer8'].map((m) => hashes.get(m))
+    assert.equal(new Set(four).size, 4, `四种抖动模式应产出 4 种不同结果，实际 ${new Set(four).size} 种`)
+  })
+
+  it('Atkinson 比 Floyd–Steinberg 用更少的色号（它主动丢弃 1/4 误差，这是它的性格）', () => {
+    /*
+     * 这条把 Atkinson 与 F-S 的**设计差别**钉成可验证的事实：Atkinson 六个邻居各拿 1/8、
+     * 总共只扩散 3/4，剩下 1/4 主动丢弃 → 色点更干净、色号更少。
+     * 若哪天有人把它的权值改成"补齐到 1"（看着更"正确"），这条会红——
+     * 那正是我们要避免的"修掉了一个特性"。
+     */
+    const base = { paletteMode: 'preset' as const, presetPaletteId: 'beads24', longEdge: 64, cleanup: false }
+    const floyd = usedColors(runPipeline(fixture(96, 96), sanitizeParams({ ...base, dither: 'floyd' }).params).art)
+    const atk = usedColors(runPipeline(fixture(96, 96), sanitizeParams({ ...base, dither: 'atkinson' }).params).art)
+    assert.ok(atk < floyd, `Atkinson 应比 F-S 用更少色号（实测 atkinson=${atk} vs floyd=${floyd}）`)
+  })
+
+  it('ditherMaxColors=0 表示不限制（默认值不能被夹成 2）', () => {
+    /*
+     * 真实踩过的坑：`DITHER_MAX_COLORS_MIN` 一度写成 2，而 0 是"不限制"的载体——
+     * `sanitizeParams` 的 numP 会把 0 夹到 min，于是**默认值 0 被静默变成"限成 2 色"**，
+     * 整幅图只剩两种颜色。这条守住"0 必须原样保留"。
+     */
+    assert.equal(sanitizeParams({}).params.ditherMaxColors, 0, '默认必须是 0（不限制）')
+    assert.equal(sanitizeParams({ ditherMaxColors: 0 }).params.ditherMaxColors, 0, '0 不能被夹紧')
+  })
+
+  it('ditherMaxColors 真的把色号数压到上限内（且各上限都守得住）', () => {
+    /*
+     * 这是 T5 的核心承诺：用户设了"我只有 8 种豆子"，输出就**必须**不超过 8 色。
+     *
+     * 实现是**两遍法**（先看真实用量挑出用量最大的 N 色，再用这 N 色重跑一遍）——
+     * 第一版试过两种"在线"做法，都实测失败并记录在案：
+     *  · 压制误差扩散 → 色号反而变多（14→16）；
+     *  · 在线的"只用已用色"贪心 → 不可靠且非单调（上限 4→11 色、6→14 色、8→9 色）。
+     * 这条断言就是防止有人再退回那两种做法（它们都通不过下面的严格 `<=`）。
+     */
+    for (const cap of [4, 6, 8, 12]) {
+      const art = runPipeline(
+        fixture(96, 96),
+        sanitizeParams({
+          paletteMode: 'preset',
+          presetPaletteId: 'beads24',
+          longEdge: 64,
+          cleanup: false,
+          dither: 'floyd',
+          ditherMaxColors: cap,
+        }).params,
+      ).art
+      const used = usedColors(art)
+      assert.ok(used <= cap, `设了上限 ${cap} 却用到 ${used} 色——上限没守住，用户会按错的数量去买豆子`)
+    }
+  })
+
+  it('ditherMaxColors 越小色号越少（单调），且下限不低于 1', () => {
+    // 单调性是人能理解这个参数的前提："我少要几种色"就该真的更少
+    const run = (cap: number) =>
+      usedColors(
+        runPipeline(
+          fixture(96, 96),
+          sanitizeParams({
+            paletteMode: 'preset',
+            presetPaletteId: 'beads24',
+            longEdge: 64,
+            cleanup: false,
+            dither: 'atkinson',
+            ditherMaxColors: cap,
+          }).params,
+        ).art,
+      )
+    let prev = Infinity
+    for (const cap of [16, 12, 8, 6, 4, 2]) {
+      const n = run(cap)
+      assert.ok(n <= prev, `上限 ${cap} 给出 ${n} 色，比更大的上限还多（上一个 ${prev}）`)
+      assert.ok(n >= 1, `色号数不该为 0（实测 ${n}）`)
+      prev = n
+    }
+  })
+
+  it('色号上限不影响确定性（同图同参两次同结果）', () => {
+    // 两遍法引入了排序（按用量降序、并列按下标升序），排序必须稳定，
+    // 否则"同图同参 → 同结果"这条核心承诺会被破坏
+    const p = sanitizeParams({ paletteMode: 'preset', presetPaletteId: 'beads24', longEdge: 48, dither: 'floyd', ditherMaxColors: 8 }).params
+    assert.equal(artHash(runPipeline(fixture(96, 96), p).art), artHash(runPipeline(fixture(96, 96), p).art))
+  })
+
+  it('ditherMaxColors 在 dither=none 时不生效（没有抖动就没有抖动带来的色号膨胀）', () => {
+    // 语义边界：上限是"约束抖动"的，不是"约束量化"的。关抖动时设它不该改变任何东西
+    const base = { paletteMode: 'preset' as const, presetPaletteId: 'beads24', longEdge: 48, cleanup: false }
+    const a = artHash(runPipeline(fixture(), sanitizeParams({ ...base, dither: 'none', ditherMaxColors: 0 }).params).art)
+    const b = artHash(runPipeline(fixture(), sanitizeParams({ ...base, dither: 'none', ditherMaxColors: 8 }).params).art)
+    assert.equal(a, b, '关抖动时 ditherMaxColors 不应产生任何影响')
   })
 
   it('transparent=alpha：透明区不参与取色，且透明格可被统计', () => {
@@ -617,6 +912,259 @@ function sampleOp(op: string): EditOp {
       return { op } as unknown as EditOp
   }
 }
+
+
+/*
+ * ============================================================
+ *  质量度量（core/quality.ts）与自动调参（core/auto-tune.ts）
+ * ============================================================
+ */
+
+describe('质量度量（core/quality.ts）', () => {
+  /** 多色渐变图：色号数与保真度都会随参数明显变化，适合验证度量 */
+  const grad = () => fixture(96, 96)
+  const run = (patch: Record<string, unknown>) => {
+    const params = sanitizeParams({
+      paletteMode: 'preset',
+      presetPaletteId: 'beads24',
+      longEdge: 48,
+      cleanup: false,
+      ...patch,
+    }).params
+    return { params, art: runPipeline(grad(), params).art }
+  }
+
+  it('保真误差随色号数单调下降（k 越大越准——这是度量的基本自洽性）', () => {
+    // 若这条不成立，说明度量测的不是"像不像"，后面的 auto-tune 也就没有意义
+    let prev = Infinity
+    for (const k of [4, 8, 16, 32]) {
+      const { params, art } = run({ paletteMode: 'auto', paletteK: k, presetPaletteId: undefined })
+      const q = qualityReport(grad(), art, { paletteMode: 'auto', presetPaletteId: '' })
+      assert.ok(q.fidelity.mean <= prev, `k=${k} 的误差 ${q.fidelity.mean.toFixed(4)} 比更小的 k 还大（上一个 ${prev.toFixed(4)}）`)
+      prev = q.fidelity.mean
+      void params
+    }
+  })
+
+  it('块平均误差与逐格误差是**两个不同的数**，且抖动下块平均明显更小（指标陷阱的防线）', () => {
+    /*
+     * 这条守住文件头记录的那个陷阱：抖动**故意**让单格偏离，却让观感更接近原图。
+     * 实测：逐格误差 floyd 0.112 > none 0.086（看起来更差），
+     *       块平均 floyd 0.038 < none 0.075（实际好一倍）。
+     * 若哪天有人把 blockFidelity 实现成"逐格的别名"（例如忘了按块平均就比），
+     * 这条会红——而那是会让人**关掉抖动**的错误结论。
+     */
+    const noneArt = run({ dither: 'none' }).art
+    const floydArt = run({ dither: 'floyd' }).art
+    const qn = qualityReport(grad(), noneArt, { paletteMode: 'preset', presetPaletteId: 'beads24' })
+    const qf = qualityReport(grad(), floydArt, { paletteMode: 'preset', presetPaletteId: 'beads24' })
+    assert.ok(qf.fidelity.mean > qn.fidelity.mean, '抖动应让逐格误差变大（它故意让单格偏离）')
+    assert.ok(qf.blockFidelity.mean < qn.blockFidelity.mean, `抖动应让块平均误差变小（观感更好），实测 floyd ${qf.blockFidelity.mean.toFixed(4)} vs none ${qn.blockFidelity.mean.toFixed(4)}`)
+  })
+
+  it('透明格不计入保真统计（它们没有颜色可谈）', () => {
+    const params = sanitizeParams({ paletteMode: 'auto', paletteK: 8, longEdge: 32, transparent: 'alpha' }).params
+    const art = runPipeline(fixture(64, 48), params).art
+    const q = qualityReport(fixture(64, 48), art, { paletteMode: 'auto', presetPaletteId: '' })
+    assert.ok(q.transparentCells > 0, '测试图有味明块，应统计到透明格')
+    assert.equal(q.fidelity.cells + q.transparentCells, art.width * art.height, '不透明格 + 透明格 = 总格数')
+  })
+
+  it('抖动代价如实上报：开抖动时 usedColors 增加、ditherExtraColors 为正', () => {
+    const noDither = run({ dither: 'none' }).art
+    const noUse = new Set([...noDither.indices]).size
+    const { art } = run({ dither: 'bayer8' })
+    const q = qualityReport(grad(), art, { paletteMode: 'preset', presetPaletteId: 'beads24' }, { noDitherBaseline: { usedColors: noUse } })
+    assert.ok(q.ditherExtraColors > 0, `bayer8 应比关抖动用更多色号（实测 ${q.usedColors} vs ${noUse}）`)
+  })
+
+  it('珠子数与重量复用 bead.ts 的口径（不另算一套）', () => {
+    // 两处口径若分叉，就会出现"报告说 1024 颗、清单印 1100 颗"这种矛盾
+    const { art } = run({})
+    const q = qualityReport(grad(), art, { paletteMode: 'preset', presetPaletteId: 'beads24' })
+    const rep = beadReport(art, { codes: getPreset('beads24')?.codes })
+    assert.equal(q.beads, rep.totalBeads)
+    assert.equal(q.grams, Number(rep.totalGrams.toFixed(2)))
+  })
+})
+
+describe('自动调参（core/auto-tune.ts）', () => {
+  const base = () => sanitizeParams({ paletteMode: 'preset', presetPaletteId: 'beads24', longEdge: 32 }).params
+  const src = () => fixture(96, 96)
+
+  it('确定性：同图同参两次搜索得到**完全相同**的最优解（本项目核心承诺）', () => {
+    /*
+     * 搜索是最容易引入不确定性的地方（排序并列、遍历顺序）。这条守住它。
+     * 实现里有四道防线：不用随机、固定遍历顺序、排序末级用参数签名裁决、只调纯函数。
+     * 变异验证：把排序末级的签名裁决去掉，本图下可能仍偶然一致——所以下面还断言 evaluated 数一致。
+     */
+    const a = autoTune(src(), base(), { maxColors: 12 })
+    const b = autoTune(src(), base(), { maxColors: 12 })
+    assert.equal(tuneSummary(a), tuneSummary(b), '两次搜索的摘要必须完全一致')
+    assert.equal(a.evaluated, b.evaluated)
+  })
+
+  it('硬约束：有可行解时，最优解一定不超过色号上限', () => {
+    // 这是"自动调参"存在的意义——用户设了"我只有 12 种豆子"，返回的方案就必须能用
+    for (const cap of [8, 12, 16]) {
+      const r = autoTune(src(), base(), { maxColors: cap })
+      if (r.feasible) {
+        assert.ok(r.best.usedColors <= cap, `上限 ${cap} 却给出 ${r.best.usedColors} 色`)
+      }
+    }
+  })
+
+  it('无解时仍守住上限（把上限下沉成 ditherMaxColors），并如实标记 feasible=false', () => {
+    /*
+     * 无解的正确处理不是"挑个最好的凑数"——那会给用户一个超过上限的方案，等于没解决问题。
+     * 实现是**把上限下沉成 ditherMaxColors**（两遍法硬保证 ≤N），观感变差但约束守住，
+     * 并用 feasible:false 如实说明。变异验证：去掉下沉那段，本条的 usedColors 断言立刻红。
+     */
+    const r = autoTune(src(), base(), { maxColors: 2 })
+    assert.equal(r.feasible, false, '上限 2 色应判定为无解')
+    assert.ok(r.best.usedColors <= 2, `无解时仍必须守住上限 2，实测 ${r.best.usedColors} 色`)
+  })
+
+  it('放宽上限不会让观感变差（约束越松，块平均误差不增）', () => {
+    // 否则说明搜索在"约束更松时反而选了更差的方案"，那是排序规则写反了
+    const r12 = autoTune(src(), base(), { maxColors: 12 })
+    const r24 = autoTune(src(), base(), { maxColors: 24 })
+    assert.ok(r24.best.blockError <= r12.best.blockError + 1e-9, `上限 24 的块平均 ${r24.best.blockError.toFixed(4)} 比上限 12 的 ${r12.best.blockError.toFixed(4)} 还差`)
+  })
+
+  it('top 里没有"产物等价"的重复项（参数不同但结果相同的要去重）', () => {
+    /*
+     * 实测踩过：不去重时 top 3 会印出三行一模一样的最优，看着像 bug 也让人无法比较方案。
+     * 判据是 (块误差, 色号数, 珠子数) 三元组。
+     */
+    const r = autoTune(src(), base(), { maxColors: 12 })
+    const keys = r.top.map((c) => `${c.blockError.toFixed(6)}|${c.usedColors}|${c.beads}`)
+    assert.equal(new Set(keys).size, keys.length, `top 里有等价重复项：${keys.join(' / ')}`)
+  })
+
+  it('preset 档下不搜 paletteK（它不影响任何结果，搜它只会产生重复候选）', () => {
+    /*
+     * paletteK 只在 paletteMode='auto' 时生效。preset 档下把它放进搜索空间，
+     * 会让候选数凭空 ×5 而结果完全一样（实测 200 → 40 组，且 top3 全是同一行）。
+     */
+    const preset = autoTune(src(), base(), { maxColors: 12 })
+    const auto = autoTune(src(), sanitizeParams({ paletteMode: 'auto', paletteK: 16, longEdge: 32 }).params, { maxColors: 12 })
+    // preset 档：5 长边 × 1 paletteK × 4 抖动 × 2 清理 = 40
+    assert.equal(preset.evaluated, 40, `preset 档应只评估 40 组，实测 ${preset.evaluated}`)
+    // auto 档：5 × 5 × 4 × 2 = 200
+    assert.equal(auto.evaluated, 200, `auto 档应评估 200 组，实测 ${auto.evaluated}`)
+  })
+})
+
+/*
+ * ----------------------------------------------------------------
+ *  视口数学（core/viewport.ts）
+ * ----------------------------------------------------------------
+ *
+ * 这个模块的 docblock 自称"最容易算错又最难肉眼发现"（差半格、缩放漂移、
+ * "以鼠标为中心"实际以左上角为中心），**但它此前一条单测都没有**——
+ * 只有 e2e 间接覆盖（放大镜显示、绘制落点），而那些断言查的是"有没有画出来"，
+ * 不是"坐标对不对"。落差半格在 8px 格子上看不出来，判定框选边界时就是错一格。
+ *
+ * 下面按"能因为什么真实缺陷而红"来写，不是复述实现。
+ */
+describe('视口数学（core/viewport.ts）', () => {
+  it('clampCell：非法输入回退 1，越界夹到 [MIN_CELL, MAX_CELL]', () => {
+    // NaN 的常见来源是"容器还没布局（尺寸 0）时算比例"——回退 1 而不是 NaN，
+    // 否则 NaN 会顺着 ox/oy 污染成 NaN 坐标，整幅画消失（比崩溃更难查）
+    assert.equal(clampCell(Number.NaN), 1)
+    assert.equal(clampCell(Number.POSITIVE_INFINITY), 1)
+    assert.equal(clampCell(0), MIN_CELL)
+    assert.equal(clampCell(-5), MIN_CELL)
+    assert.equal(clampCell(1e6), MAX_CELL)
+    assert.equal(clampCell(8), 8)
+  })
+
+  it('fitViewState：整幅图放进容器且居中（四周留白相等、不溢出）', () => {
+    const v = fitViewState(32, 32, 400, 300, 20)
+    // 可用区 = 400-40 = 360 宽、300-40 = 260 高 → 取小的那个 → 260/32 = 8.125
+    assert.ok(Math.abs(v.cell - 260 / 32) < 1e-9, "cell 应为 " + 260 / 32 + "，实际 " + v.cell)
+    const leftGap = v.ox
+    const rightGap = 400 - (v.ox + 32 * v.cell)
+    assert.ok(Math.abs(leftGap - rightGap) <= 1, "左右留白应相等：" + leftGap + " vs " + rightGap)
+    const topGap = v.oy
+    const bottomGap = 300 - (v.oy + 32 * v.cell)
+    assert.ok(Math.abs(topGap - bottomGap) <= 1, "上下留白应相等：" + topGap + " vs " + bottomGap)
+    assert.ok(v.ox >= 0 && v.oy >= 0, "起点不应为负（会画到容器外）")
+    assert.ok(v.ox + 32 * v.cell <= 400 && v.oy + 32 * v.cell <= 300, "不应超出容器")
+  })
+
+  it('fitViewState：非方形容器按**短边**受限（取错方向就会溢出）', () => {
+    const wide = fitViewState(16, 16, 1000, 200, 10)
+    assert.ok(Math.abs(wide.cell - (200 - 20) / 16) < 1e-9, "宽容器应受高度限制，实际 cell=" + wide.cell)
+    const tall = fitViewState(16, 16, 200, 1000, 10)
+    assert.ok(Math.abs(tall.cell - (200 - 20) / 16) < 1e-9, "高容器应受宽度限制，实际 cell=" + tall.cell)
+  })
+
+  it('fitViewState：容器极小或为 0 时不产出 NaN（未布局时的早期调用）', () => {
+    // 真实场景：面板刚建、容器还没布局（clientWidth = 0）时就调了一次 fit
+    for (const pair of [[0, 0], [1, 1], [10, 10]]) {
+      const v = fitViewState(64, 64, pair[0], pair[1])
+      assert.ok(Number.isFinite(v.cell) && v.cell > 0, "容器 " + pair[0] + "x" + pair[1] + " 时 cell 非法：" + v.cell)
+      assert.ok(Number.isFinite(v.ox) && Number.isFinite(v.oy), "容器 " + pair[0] + "x" + pair[1] + " 时原点非法")
+    }
+  })
+
+  it('zoomAtPoint：锚点处的画布位置**缩放前后不变**（以鼠标为中心的实质）', () => {
+    /*
+     * 这是整个模块最核心的一条不变量。写错的典型表现是"缩放时画面往左上角跑"——
+     * 用户会说"滚轮缩放跳一下"，但没人能一眼看出是公式里少了减号。
+     * 验法：取锚点对应的"画布格子坐标"，缩放前后应当相同。
+     */
+    const v0 = { cell: 8, ox: 100, oy: 50 }
+    const mx = 260
+    const my = 170
+    const before = pointToCellClamped(v0, mx, my, 1000, 1000)
+    const v1 = zoomAtPoint(v0, mx, my, 2)
+    assert.ok(Math.abs(v1.cell - 16) < 1e-9, "cell 应翻倍，实际 " + v1.cell)
+    const after = pointToCellClamped(v1, mx, my, 1000, 1000)
+    assert.ok(before && after, "两次换算都应成功")
+    assert.equal(after!.x, before!.x, "缩放后锚点处格子 x 应不变：" + before!.x + " → " + after!.x)
+    assert.equal(after!.y, before!.y, "缩放后锚点处格子 y 应不变：" + before!.y + " → " + after!.y)
+  })
+
+  it('zoomAtPoint：到上下限时**原样返回**，不做半次缩放', () => {
+    // 触顶时若仍改 ox/oy 而不改 cell，画面会平移——用户看到"滚轮还在动但没放大"
+    const atMax = { cell: MAX_CELL, ox: 10, oy: 20 }
+    assert.deepEqual(zoomAtPoint(atMax, 100, 100, 2), atMax, "已达上限应原样返回")
+    const atMin = { cell: MIN_CELL, ox: 10, oy: 20 }
+    assert.deepEqual(zoomAtPoint(atMin, 100, 100, 0.5), atMin, "已达下限应原样返回")
+  })
+
+  it('pointToCellClamped：越界**夹到边界**而不是返回 null（从画布外起手拖拽）', () => {
+    /*
+     * 守住 docblock 里写明的设计决定：用户从面板空白处按下去、一路拖进画布是常见操作，
+     * 若在这里返 null，"从外面起手"就失效（旧项目为此返工过两次）。
+     * 变异验证：把夹紧改成 return null，这条立刻红。
+     */
+    const v = { cell: 10, ox: 0, oy: 0 }
+    assert.deepEqual(pointToCellClamped(v, -50, -50, 8, 8), { x: 0, y: 0 }, "左上越界夹到 (0,0)")
+    assert.deepEqual(pointToCellClamped(v, 500, 500, 8, 8), { x: 7, y: 7 }, "右下越界夹到 (7,7)")
+    assert.deepEqual(pointToCellClamped(v, 5, 5, 8, 8), { x: 0, y: 0 }, "格内取整")
+    assert.deepEqual(pointToCellClamped(v, 15, 25, 8, 8), { x: 1, y: 2 }, "第二列第三行")
+  })
+
+  it('pointToCellClamped：非法尺寸返回 null（此时任何坐标都没有意义）', () => {
+    const v = { cell: 10, ox: 0, oy: 0 }
+    assert.equal(pointToCellClamped(v, 5, 5, 0, 8), null, "cols=0 应返 null")
+    assert.equal(pointToCellClamped(v, 5, 5, 8, 0), null, "rows=0 应返 null")
+    // cell=0 会让除法变 Infinity ——"还没 fit 过"的真实状态
+    assert.equal(pointToCellClamped({ cell: 0, ox: 0, oy: 0 }, 5, 5, 8, 8), null, "cell=0 应返 null")
+  })
+
+  it('pointToCellClamped：格子边界归属**右下**那格（与绘制落点一致）', () => {
+    // 用 floor 而不是 round：否则每格中心附近会偏差半格，画细线时表现为"描边偏一像素"
+    const v = { cell: 10, ox: 0, oy: 0 }
+    assert.deepEqual(pointToCellClamped(v, 0, 0, 8, 8), { x: 0, y: 0 }, "左上角属第 0 格")
+    assert.deepEqual(pointToCellClamped(v, 9.99, 9.99, 8, 8), { x: 0, y: 0 }, "格内右下沿仍属第 0 格")
+    assert.deepEqual(pointToCellClamped(v, 10, 10, 8, 8), { x: 1, y: 1 }, "恰好跨边界属第 1 格")
+  })
+})
 
 describe('导出与序列化', () => {
   it('PNG 编解码往返：像素逐位一致、放大倍数是最近邻复制', () => {
@@ -1062,6 +1610,106 @@ describe('色板条目编辑（core/palette-edit.ts）', () => {
 })
 
 describe('色板与 .hex', () => {
+  /*
+   * 内建预置卡的自证。
+   *
+   * 为什么值得一条：`resolvePalette` 现在对超限的预置卡**直接抛错**（不再静默截断），
+   * 所以"内建卡全都 ≤ PALETTE_MAX"从一个隐含假设变成了**运行前提**——
+   * 将来谁加一张 300 色的品牌卡，线上会当场炸，而不是悄悄少几十色。
+   * 这条断言把问题拦在测试阶段，并给出是人话的原因。
+   */
+  it('内建预置卡全都不超过色板上限（否则 resolvePalette 会当场抛错）', () => {
+    for (const p of PRESETS) {
+      assert.ok(
+        p.colors.length <= PALETTE_MAX,
+        `预置卡「${p.name}」有 ${p.colors.length} 色，超过 PALETTE_MAX=${PALETTE_MAX}；` +
+          `索引是 Uint8Array，超限会回绕出错误颜色。要么删色，要么走索引位宽迁移（需单独一轮）`,
+      )
+      if (p.codes) {
+        assert.equal(p.codes.length, p.colors.length, `预置卡「${p.name}」的号色必须与颜色等长（靠下标对齐）`)
+      }
+    }
+    assert.ok(PRESETS.length > 0, '预置卡表不该为空')
+  })
+
+  /*
+   * 下面四组守的是**加品牌色卡时最容易出的四类静默缺陷**（2026-09-17 接入 13 个品牌时补）。
+   *
+   * 共同点：它们全都"不报错、只出错结果"，而且现有代码原本
+   * **一条检查都没有**——靠人眼看数据是挡不住的，必须机器守。
+   */
+
+  it('号色在每张卡内必须唯一（重复号色会让用户买错色）', () => {
+    /*
+     * 为什么这条值得单独一条：图纸与清单是按号色标注的，同一张卡里两个不同颜色共用
+     * 一个号色时，用户照着"B03"买到的是哪个色完全取决于运气。而代码里**没有任何**唯一性检查
+     * （`paletteCodes` 只补 C1/C2，`parseHexPalette` 只按颜色去重），所以只能靠断言拦。
+     */
+    for (const p of PRESETS) {
+      if (!p.codes) continue
+      const seen = new Set<string>()
+      for (const c of p.codes) {
+        assert.ok(!seen.has(c), `预置卡「${p.name}」的号色「${c}」重复出现——图纸上会印出两个同号不同色的标记`)
+        seen.add(c)
+      }
+    }
+  })
+
+  it('号色不得为空（空号色会在 PDF 上被静默跳过）', () => {
+    // bead-pdf.ts 对空 code 是 `if (!code) continue` —— 静默不画那一格的号色，用户只会看到一片空白
+    for (const p of PRESETS) {
+      if (!p.codes) continue
+      for (const c of p.codes) {
+        assert.ok(c.trim().length > 0, `预置卡「${p.name}」里有空号色——PDF 上那一格的编号会被静默跳过`)
+      }
+    }
+  })
+
+  it('每张卡内颜色必须唯一（同一颜色出现两次会让用量统计合并、图纸印重号）', () => {
+    /*
+     * 与生成脚本的"按颜色去重"策略对应：源数据里存在号色不同而 RGB 完全相同的行
+     * （实测 mard 291 行 → 290 个唯一色），脚本会去重。这条守两件事：
+     * ① 生成脚本的去重没被改坏；② 手写卡（beads16/24）没被引入重复色。
+     * 颜色在卡内重复的后果是 `palette.indexOf` 返回多个下标、用量按 hex 合并且图纸上印两个号。
+     */
+    for (const p of PRESETS) {
+      const seen = new Set<string>()
+      for (const c of p.colors) {
+        const norm = c.toLowerCase()
+        assert.ok(!seen.has(norm), `预置卡「${p.name}」的颜色 ${norm} 出现两次——用量会合并、图纸会印重号`)
+        seen.add(norm)
+      }
+    }
+  })
+
+  it('色卡来源声明必须与内容相符（三类各自双向锁住）', () => {
+    /*
+     * `source` 决定界面与文档怎么向用户交代色号可信度，所以它**不能被宽松推导**。
+     * 这条按 `canDecodeInNode` 那套范式写：不只断言"该 true 的 true"，
+     * 也断言"该 false 的 false"——防止将来有人把它写成 `hasCodes ? 'community' : 'approximate'`
+     * 之类看着合理、实则与事实脱钩的推导。
+     */
+    const byId = (id: string) => PRESETS.find((p) => p.id === id)
+    // 硬件色表是公开规范，必须是 official；写成其他两类就是把权威性说低了
+    for (const id of ['pico8', 'gameboy', 'nes', 'cga']) {
+      assert.equal(byId(id)?.source, 'official', `${id} 是公开硬件色表，必须标 official`)
+    }
+    // 自造近似色绝不是官方，也不是任何品牌
+    for (const id of ['beads16', 'beads24']) {
+      assert.equal(byId(id)?.source, 'approximate', `${id} 是自造的通用近似色，必须标 approximate`)
+    }
+    // 品牌卡来自社区整理仓库，**不是**厂商官方 —— 标成 official 就是在撒谎
+    const brands = PRESETS.filter((p) => p.source === 'community')
+    assert.ok(brands.length >= 13, `品牌色卡应有 13 张，实际 ${brands.length}`)
+    for (const b of brands) {
+      assert.ok(!b.codes || b.codes.length > 0, `品牌卡「${b.id}」应带号色（没有号色就无法印图纸）`)
+    }
+    // 三类必须都存在，否则说明分类逻辑被写坏了（例如全部退化成同一类）
+    for (const s of ['official', 'community', 'approximate'] as const) {
+      assert.ok(PRESETS.some((p) => p.source === s), `没有一张卡是 ${s} —— 来源分类被写坏了`)
+    }
+  })
+
   it('解析 Lospec 风格 .hex（忽略空行与注释、去重、截断到 256）', () => {
     const parsed = parseHexPalette(['#112233', '', '// 注释', '#445566', '#112233', 'not-a-color'].join('\n'))
     assert.deepEqual(parsed.colors, ['#112233', '#445566'])

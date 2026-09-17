@@ -12,6 +12,7 @@
  */
 import { DEFAULT_PARAMS, STYLE_PRESETS, TOOLS, coerceParams, sanitizeParams, type ConvertParams, type PixelArt } from '../core/types.ts'
 import { PRESETS, codesForParams, serializeHexPalette } from '../core/palettes.ts'
+import { qualityReport, type QualityReport } from '../core/quality.ts'
 import { applyOps, blankArt, type EditOp } from '../core/ops.ts'
 import { runPipeline } from '../core/pipeline.ts'
 import { artHash, decodePixBin, encodePixBin, layoutSheet, parseProjectFile, pixelJSONString, projectJSONString } from '../core/export.ts'
@@ -161,7 +162,7 @@ export function installAutomationApi(deps: AutomationDeps): void {
       return preset ? { ...preset.params } : null
     },
     defaultParams: (): ConvertParams => ({ ...DEFAULT_PARAMS }),
-    presetPalettes: () => PRESETS.map((p) => ({ id: p.id, name: p.name, desc: p.desc, colors: [...p.colors] })),
+    presetPalettes: () => PRESETS.map((p) => ({ id: p.id, name: p.name, desc: p.desc, colors: [...p.colors], codes: p.codes ? [...p.codes] : undefined, source: p.source })),
     /** 通过 URL / dataURL / File 导入并转换 */
     importImage: async (src: File | Blob | string): Promise<{ name: string; width: number; height: number }> => {
       const file = await toFile(src)
@@ -225,6 +226,33 @@ export function installAutomationApi(deps: AutomationDeps): void {
     countTransparent: (): number => {
       const art = requireArt()
       return countTransparent(art.indices, art.alphaMask)
+    },
+    /**
+     * 图纸质量报告：把"原图 ↔ 产物"的差距量化（保真误差 / 色号数 / 珠子数 / 抖动代价）。
+     *
+     * 需要原图才能算——没有原图就没有"参考真值"。这里用 `requireSource()` 抛出明确原因，
+     * 而不是返回一份全是 0 的报告：那会让人读成"质量满分"，与事实相反。
+     */
+    quality: (opts?: { blockSize?: number }): QualityReport => {
+      const art = requireArt()
+      const src = requireSource()
+      const params = deps.getParams()
+      // 抖动代价需要"同参数关抖动"作对照；关抖动时没有可比对象，如实不传（报告里 ditherExtraColors 为 0）
+      let noDitherBaseline
+      if (params.dither !== 'none') {
+        const base = runPipeline({ width: src.width, height: src.height, data: src.data }, { ...params, dither: 'none' })
+        noDitherBaseline = { usedColors: new Set([...base.art.indices]).size }
+      }
+      return qualityReport(
+        { width: src.width, height: src.height, data: src.data },
+        art,
+        {
+          paletteMode: params.paletteMode,
+          presetPaletteId: params.presetPaletteId,
+          customPaletteCodes: params.customPaletteCodes,
+        },
+        { blockSize: opts?.blockSize, noDitherBaseline },
+      )
     },
     /** 画布指纹：跨运行比对（同图同参应得到同一个值） */
     artHash: (): string => artHash(requireArt()),

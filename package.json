@@ -29,6 +29,8 @@
     "probe": "node tool/probe.mjs",
     "verify:sections": "node tool/verify-sections.mjs",
     "bench": "node tool/bench.mjs",
+    "palettes:gen": "node tool/bead-palettes.mjs",
+    "palettes:check": "node tool/bead-palettes.mjs --check",
     "icons:sync": "node tool/icons/pixel-sync.mjs && node tool/icons/svg-sync.mjs",
     "icons:check": "node tool/icons/pixel-sync.mjs --check && node tool/icons/svg-sync.mjs --check",
     "icons:gen": "node tool/icons/pixel-gen.mjs",

@@ -18,8 +18,10 @@ import {
   buildPaletteLabs,
   hexToRgb,
   nearestColorIndex,
+  oklabToRgb,
   rgbToHex,
   rgbToOklab,
+  type Lab,
   type Rgb,
 } from './color.ts'
 import { dedupePalette, getPreset } from './palettes.ts'
@@ -199,25 +201,58 @@ interface Box {
   to: number
 }
 
-/** 通道是否"有内容"：范围小于 1 视为纯色，切它没有意义 */
-function channelRange(colors: Rgb[], from: number, to: number, ch: 'r' | 'g' | 'b'): number {
-  let min = 255
-  let max = 0
+/**
+ * 通道跨度。**在 OKLab 空间里量**（见 medianCut 的说明）。
+ *
+ * 初值必须是 `Infinity / -Infinity` 而不是 0–255 量纲的 `255 / 0`——
+ * OKLab 的 L∈[0,1]、a/b 约 ±0.4，用 `min=255,max=0` 起手会让每个通道都算出负数跨度，
+ * 于是"最大跨度通道"永远选不出来、盒子一次都切不动。
+ */
+function channelRange(colors: Pt[], from: number, to: number, ch: 'L' | 'a' | 'b'): number {
+  let min = Infinity
+  let max = -Infinity
   for (let i = from; i < to; i++) {
-    const v = colors[i][ch]
+    const v = colors[i].lab[ch]
     if (v < min) min = v
     if (v > max) max = v
   }
   return max - min
 }
 
+/** 排序单位：**把原始 sRGB 与它的 OKLab 绑在一起**。
+ *
+ * 为什么不并排放两个数组（一个 Lab 用于排序、一个 Rgb 用于取原色）：
+ * `work` 会被 `sort` **就地重排**，而平行数组不会跟着重排——那样按 `box.from` 去取
+ * 原始颜色就会取到**另一个位置**的颜色。这个错很隐蔽：颜色看着仍是"合法的色板项"，
+ * 只是不对应盒内内容；实测在"小色集重复排列"的输入上会让整幅图塌成 1 色。
+ * 绑成一个对象就没有"两个数组必须同步重排"这个隐患了。
+ */
+interface Pt {
+  lab: Lab
+  src: Rgb
+}
+
 /**
  * Median Cut 取色：把像素集合装进盒子，反复按"跨度最大的通道"从中间切开，直到得到 K 个盒子。
  *
- * 两个刻意设计：
+ * **全程在 OKLab 感知空间里做决策**（选盒 / 排序 / 代表色质心）。为什么必须这样：
+ * 调色板构造正是"决定用户要用几个色号"的一步，而 sRGB 的体积与人眼感知严重不成比例
+ * （绿色通道权重大、暗部过采样）——在该空间里切分会让"该分开的暗部被合成一个色号 /
+ * 该合开的亮部占了好几个色号"，对拼豆就是直接的买豆成本。匹配阶段（`quantize`）一直用 OKLab，
+ * 这里统一之后，**取色与映射首次处在同一个感知空间**。
+ *
+ * 两个刻意设计（保留，别当成优化对象）：
  *  - **抽样**：超过 MEDIAN_CUT_SAMPLE_LIMIT 格时按固定步长（乘法散列）抽样。切分是统计性聚类，
  *    几百万像素只会让盒内排序白白变慢；固定散列保证"同图同参 → 同色板"。
- *  - **换轴而非排序**：每轮只按目标通道排序一次（O(n log n) 而非全通道扫描），把排序键缓存进临时数组。
+ *    抽样**按下标**进行，与本函数用的色彩空间无关。
+ *  - **换轴而非排序**：每轮只按一个目标通道排序一次（O(n log n) 而非全通道扫描）。
+ *
+ * ⚠️ 改色彩空间时最容易踩的两个坑（都踩过，都有断言守着）：
+ *  1. 下面循环里的"最小可切跨度"阈值必须跟着换量纲。它曾是按 0–255 写死的 `1`，
+ *     而 OKLab 三个通道的跨度只有约 0.4–1.0——阈值不换会让"有内容的盒子"全被判成纯色，
+ *     **整张图静默退化成 1 个色号**（不报错）。
+ *  2. 排序会就地重排 `work`，所以**任何按位置回查原始数据的地方都必须与排序同步**
+ *     （见 `Pt` 的说明）。
  */
 export function medianCut(colors: Rgb[], k: number): string[] {
   if (colors.length === 0) return []
@@ -229,24 +264,35 @@ export function medianCut(colors: Rgb[], k: number): string[] {
     const step = Math.max(1, Math.floor(colors.length / MEDIAN_CUT_SAMPLE_LIMIT))
     const picked: Rgb[] = []
     for (let i = 0, j = 0; i < colors.length; i += 1, j += 1) {
-      // 乘法散列：0.618… 的整数近似，保证样本在整幅图上均匀散布
-      if ((j * 2654435761) % step === 0) picked.push(colors[i])
+      // 乘法散列：0.618… 的整数近似，保证样本在整幅图上均匀散布。
+      // 用 `Math.imul`（32 位乘法）而不是 `j * 2654435761`：后者在 j 超过约 2^53/2654435761 ≈ 3.39M
+      // 之后会超出双精度整数精确表示范围（2048² = 4.19M 会命中），抽样分布随之退化。
+      // imul 依然是确定性的，只是把乘法钉在 32 位内。
+      if ((Math.imul(j, 2654435761) >>> 0) % step === 0) picked.push(colors[i])
       if (picked.length >= MEDIAN_CUT_SAMPLE_LIMIT) break
     }
     sample = picked.length > 0 ? picked : colors.slice(0, MEDIAN_CUT_SAMPLE_LIMIT)
   }
 
-  const work = sample.slice()
+  // 抽样之后一次性转 OKLab：之后所有距离/排序都在感知空间里算
+  const work: Pt[] = sample.map((c) => ({ lab: rgbToOklab(c.r, c.g, c.b), src: c }))
   const boxes: Box[] = [{ from: 0, to: work.length }]
+
+  /*
+   * 最小可切跨度。OKLab 量纲下取 1e-4：
+   * L 满量程才 1，a/b 约 ±0.4，8 位色深下相邻色的感知差在 1e-3 量级——
+   * 1e-4 已经小到"只挡住真正无内容的纯色盒"，同时不会像 `1` 那样把所有盒子都判成不可切。
+   */
+  const MIN_SPLITTABLE_RANGE = 1e-4
 
   while (boxes.length < target) {
     let bestIdx = -1
-    let bestRange = 1
-    let bestCh: 'r' | 'g' | 'b' = 'r'
+    let bestRange = MIN_SPLITTABLE_RANGE
+    let bestCh: 'L' | 'a' | 'b' = 'L'
     for (let i = 0; i < boxes.length; i++) {
       const box = boxes[i]
       if (box.to - box.from < 2) continue
-      for (const ch of ['r', 'g', 'b'] as const) {
+      for (const ch of ['L', 'a', 'b'] as const) {
         const range = channelRange(work, box.from, box.to, ch)
         if (range > bestRange) {
           bestRange = range
@@ -259,7 +305,9 @@ export function medianCut(colors: Rgb[], k: number): string[] {
 
     const box = boxes[bestIdx]
     const slice = work.slice(box.from, box.to)
-    slice.sort((p, q) => p[bestCh] - q[bestCh])
+    // 排序键是浮点了，但 `Array.prototype.sort` 自 ES2019 起保证稳定，
+    // 且 work 来自确定性抽样，所以"同图同参 → 同色板"仍然成立
+    slice.sort((p, q) => p.lab[bestCh] - q.lab[bestCh])
     for (let i = 0; i < slice.length; i++) work[box.from + i] = slice[i]
 
     const mid = box.from + ((box.to - box.from) >> 1)
@@ -269,29 +317,84 @@ export function medianCut(colors: Rgb[], k: number): string[] {
   const out: string[] = []
   for (const box of boxes) {
     if (box.to <= box.from) continue
-    let r = 0
-    let g = 0
+    /*
+     * 盒内**全是同一个颜色**时直接用它，不走 OKLab 往返。
+     *
+     * 为什么必须留这条短路：`rgbToOklab → oklabToRgb` 有 ≤1/255 的取整误差，
+     * 而"盒内同色"时 sRGB 算术平均**精确等于**该色。少了这条短路，
+     * 对已经量化好的输入（像素画源图——**拼豆与像素素材的常见形态**）
+     * 会凭空引入 1/255 的偏色。加了它之后这类输入与旧实现严格一致（误差 0），
+     * 而暗部密集的图仍拿到 OKLab 的收益。
+     */
+    let same = true
+    for (let i = box.from + 1; i < box.to; i++) {
+      const p = work[i].lab
+      const q = work[box.from].lab
+      if (p.L !== q.L || p.a !== q.a || p.b !== q.b) {
+        same = false
+        break
+      }
+    }
+    if (same) {
+      const only = work[box.from].src
+      out.push(rgbToHex(only.r, only.g, only.b))
+      continue
+    }
+    // 代表色 = **盒内 OKLab 质心**再转回 sRGB。
+    // 不用 sRGB 逐通道平均：那正是"暗部被过度合并"的来源——sRGB 的数值中位
+    // 与感知中位不是一回事。`oklabToRgb` 内部已 clamp 到 0–255 并取整，无需再夹。
+    let L = 0
+    let a = 0
     let b = 0
     for (let i = box.from; i < box.to; i++) {
-      r += work[i].r
-      g += work[i].g
-      b += work[i].b
+      L += work[i].lab.L
+      a += work[i].lab.a
+      b += work[i].lab.b
     }
     const n = box.to - box.from
-    out.push(rgbToHex(r / n, g / n, b / n))
+    const rgb = oklabToRgb(L / n, a / n, b / n)
+    out.push(rgbToHex(rgb.r, rgb.g, rgb.b))
   }
   return dedupePalette(out)
 }
 
-/** 按参数确定工作色板（自动取色 / 预置色卡 / 自定义） */
-export function resolvePalette(data: Uint8ClampedArray, alpha: Uint8Array | null, params: ConvertParams): string[] {
+/**
+ * 按参数确定工作色板（自动取色 / 预置色卡 / 自定义）。
+ *
+ * 返回 `note` 用于**如实报告兜底**：未知预置 id 会退回自动取色而不是报错
+ * （一个坏 id 不该让整批任务失败），但必须说出来——否则调用方以为用的是那张预置卡。
+ * `sanitizeParams` 只校验 `presetPaletteId` 是非空字符串、不校验 id 是否存在，
+ * 所以 `setParams({ presetPaletteId: 'nope' })` 真的会走到这里。
+ */
+export function resolvePalette(
+  data: Uint8ClampedArray,
+  alpha: Uint8Array | null,
+  params: ConvertParams,
+): { palette: string[]; note: string | null } {
   if (params.paletteMode === 'preset') {
     const preset = getPreset(params.presetPaletteId)
-    if (preset) return preset.colors.slice(0, PALETTE_MAX).map((c) => c.toLowerCase())
-    // 未知预置 id：退回自动取色而不是报错 —— 参数已被 sanitize 过一次，这里只做兜底
+    if (preset) {
+      /*
+       * **超限即报错，不静默截断。**
+       *
+       * 内建色卡由我们保证 ≤ PALETTE_MAX（单测 + selftest 双重自证），所以走到这里
+       * 就说明是**数据错误**（有人加了一张超限的卡）——那必须当场炸出来：
+       * 静默截断的后果是"图纸少了几十色而没人知道"，比直接失败糟得多。
+       * 用户自己导入的超限色卡走 customPalette 分支，那条已在 sanitizeParams 里封顶并上报。
+       */
+      if (preset.colors.length > PALETTE_MAX) {
+        throw new Error(
+          `预置色卡 "${preset.id}" 有 ${preset.colors.length} 色，超过色板上限 ${PALETTE_MAX}——` +
+            `该卡数据有问题（索引是 Uint8Array，超限会让颜色回绕出错误结果）`,
+        )
+      }
+      return { palette: preset.colors.map((c) => c.toLowerCase()), note: null }
+    }
+    return { palette: [], note: `未知预置色卡 id "${params.presetPaletteId}"，已退回自动取色` }
   }
   if (params.paletteMode === 'custom' && params.customPalette.length > 0) {
-    return params.customPalette.map((c) => (normalizeHex(c) ?? '#000000')).slice(0, PALETTE_MAX)
+    // customPalette 已由 sanitizeParams 封顶并上报截断，这里不再二次截断（避免两处口径不一致）
+    return { palette: params.customPalette.map((c) => (normalizeHex(c) ?? '#000000')), note: null }
   }
 
   const colors: Rgb[] = []
@@ -299,7 +402,7 @@ export function resolvePalette(data: Uint8ClampedArray, alpha: Uint8Array | null
     if (alpha && alpha[p] === 0) continue // 透明格不参与取色
     colors.push({ r: data[i], g: data[i + 1], b: data[i + 2] })
   }
-  return medianCut(colors, params.paletteK)
+  return { palette: medianCut(colors, params.paletteK), note: null }
 }
 
 /** Bayer 4×4 有序抖动阈值矩阵（归一化到 -0.5..0.5 的偏移） */
@@ -308,6 +411,64 @@ const BAYER4 = [
   [12, 4, 14, 6],
   [3, 11, 1, 9],
   [15, 7, 13, 5],
+]
+
+/**
+ * Bayer 8×8 有序抖动阈值矩阵（值域 0..63）。
+ *
+ * 与 4×4 的差别不是"更大"而是**阈值层次多两级**（64 级 vs 16 级）：
+ * 大面积渐变里 4×4 容易出现可见的阶梯带，8×8 把它磨得更细。
+ * 代价是同色像素的分布更"碎"——拼豆用户如果只想要大色块，4×4 反而更省珠子。
+ *
+ * 值由标准递归构造得出（Bayer2 → 4Bayer2+1 的经典递推），不是手抄的魔数。
+ */
+const BAYER8 = (() => {
+  const b2 = [
+    [0, 2],
+    [3, 1],
+  ]
+  const step = (m: number[][]): number[][] => {
+    const n = m.length
+    const out = Array.from({ length: n * 2 }, () => new Array<number>(n * 2).fill(0))
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        // 经典递推：四象限各放 4*m+偏移，偏移决定阈值递增的走位
+        out[y][x] = 4 * m[y][x] + 0
+        out[y][x + n] = 4 * m[y][x] + 2
+        out[y + n][x] = 4 * m[y][x] + 3
+        out[y + n][x + n] = 4 * m[y][x] + 1
+      }
+    }
+    return out
+  }
+  return step(step(b2)) // 2 → 4 → 8
+})()
+
+/**
+ * 按坐标取有序抖动的阈值偏移（已归一化到 -0.5..0.5 再乘 255）。
+ * `size` 只能是 4 或 8，矩阵在编译期就定好了。
+ */
+function orderedThreshold(x: number, y: number, size: 4 | 8, strength: number): number {
+  const m = size === 4 ? BAYER4 : BAYER8
+  const max = size * size - 1
+  return (m[y & (size - 1)][x & (size - 1)] / max - 0.5) * 255 * strength
+}
+
+/**
+ * Atkinson 误差扩散的权值（x/y 偏移 → 比例）。
+ *
+ * 与 Floyd–Steinberg 的关键差别：**六个邻居各拿 1/8，总共只扩散 6/8 = 3/4**，
+ * 剩下 1/4 误差**主动丢弃**。这正是它的性格来源——
+ * 对比度保持得更好、色点更干净（不会像 F-S 那样把误差一路带到画面另一头），
+ * 代价是高光与暗部细节会丢一些。在有限色板（拼豆）上常常比 F-S 更耐看。
+ */
+const ATKINSON_WEIGHTS: [number, number, number][] = [
+  [1, 0, 1 / 8],
+  [2, 0, 1 / 8],
+  [-1, 1, 1 / 8],
+  [0, 1, 1 / 8],
+  [1, 1, 1 / 8],
+  [0, 2, 1 / 8],
 ]
 
 export interface QuantizeResult {
@@ -322,7 +483,35 @@ export interface QuantizeResult {
  * - 关抖动时启用 RGB→索引的直接映射缓存（≤2^20 槽）：照片里大量重复色能省掉重复的 OKLab 比对。
  * - 开抖动时**必须关闭缓存**：F-S 扩散后每格的实际输入色带累计误差，缓存会算出错误结果。
  */
-export function quantize(
+/**
+ * 色号上限的实现：**两遍法**（第二遍才带上限）。
+ *
+ * ## 为什么不能一遍搞定（第一版两种做法都实测失败）
+ *
+ * 目标是"抖动后实际用到的色号 ≤ N"，但抖动是**在线**过程：每个像素的输入色取决于
+ * 前面已经扩散过来的误差，而误差又取决于前面选了哪些色。于是：
+ *
+ * 1. **压制误差扩散**（超限就衰减扩散幅度）——实测色号反而**变多**（14 → 16）：
+ *    扩散被压小后，早期像素各自量化到不同色号，色号更早、更密地出现。
+ * 2. **在线的"只用已用色"贪心**（达上限后只在已用色里选，除非新色明显更近）——
+ *    实测**不可靠且非单调**：上限 4→11 色、6→14 色、8→9 色、12→12 色。
+ *    根因是"早期偶然引入的颜色"无法撤销：一次早早的误判会永久占掉一个名额，
+ *    而后面真正需要的颜色被挤掉。
+ *
+ * ## 两遍法：先知道"该用哪 N 个色"，再带着这个约束量化
+ *
+ * - **第一遍**：正常跑一遍量化（含抖动），统计每个色号被用了多少格；
+ *   取用量最大的 N 个作为**候选色板**（这就是"该用哪 N 个色"的依据，
+ *   它来自真实用量而非在线误判，因此稳定）。
+ * - **第二遍**：把调色板限制到那 N 个色重跑一次。此时色号数**天然 ≤ N**，
+ *   因为可选项就只有 N 个——不需要任何启发式，约束是硬的。
+ *
+ * 代价是量化跑两遍（O(2n)），换来"上限一定守得住"与单调性（N 越小色号越少）。
+ * 这个取舍值得：设了上限却守不住，比慢一点糟得多——用户会按"我只有 8 种豆子"去下单。
+ *
+ * 返回的 `colorCapReport` 如实报告：是否启用、请求几个、实际几个、有没有被换掉。
+ */
+function quantizeOnce(
   data: Uint8ClampedArray,
   w: number,
   h: number,
@@ -370,8 +559,8 @@ export function quantize(
       let g = work[o + 1]
       let b = work[o + 2]
 
-      if (!isTransparent && dither === 'bayer') {
-        const t = (BAYER4[y & 3][x & 3] / 15 - 0.5) * 255 * strength
+      if (!isTransparent && (dither === 'bayer' || dither === 'bayer8')) {
+        const t = orderedThreshold(x, y, dither === 'bayer' ? 4 : 8, strength)
         r += t
         g += t
         b += t
@@ -406,8 +595,15 @@ export function quantize(
       }
       indices[p] = idx
 
-      if (!isTransparent && dither === 'floyd' && strength > 0) {
-        // F-S 误差扩散：按扫描序把量化误差分给右、左下、下、右下四个邻居
+      if (!isTransparent && (dither === 'floyd' || dither === 'atkinson') && strength > 0) {
+        /*
+         * 误差扩散：把量化误差按权值分给**尚未量化**的邻居。
+         *
+         * 两种模式的差别只在权值表：F-S 扩散 16/16（全量），Atkinson 只扩散 6/8 = 3/4
+         * 并主动丢弃其余 1/4（见 ATKINSON_WEIGHTS 的说明）。共用同一段循环，
+         * 避免"两份几乎一样的扩散代码"——那正是本项目反复避免的那种重复。
+         *
+         */
         const target = rgbs[idx]
         const er = (r - target.r) * strength
         const eg = (g - target.g) * strength
@@ -421,15 +617,72 @@ export function quantize(
           work[no + 1] += eg * f
           work[no + 2] += eb * f
         }
-        spread(1, 0, 7 / 16)
-        spread(-1, 1, 3 / 16)
-        spread(0, 1, 5 / 16)
-        spread(1, 1, 1 / 16)
+        if (dither === 'floyd') {
+          spread(1, 0, 7 / 16)
+          spread(-1, 1, 3 / 16)
+          spread(0, 1, 5 / 16)
+          spread(1, 1, 1 / 16)
+        } else {
+          for (const [dx, dy, f] of ATKINSON_WEIGHTS) spread(dx, dy, f)
+        }
       }
     }
   }
 
   return { indices, overflow }
+}
+
+/**
+ * 量化映射（对外入口）。抖动在这一步内完成（见文件头约束 2）。
+ *
+ * 不做色号上限时就是一遍 `quantizeOnce`；启用上限（`ditherMaxColors > 0` 且开了抖动）
+ * 时走**两遍法**：先正常量化一遍看哪些色号真被用上，取用量最大的 N 个作候选色板，
+ * 再带着这个缩小的色板重跑一遍。见文件头 `ditherMaxColors` 的说明。
+ */
+export function quantize(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+  palette: string[],
+  params: ConvertParams,
+  alpha: Uint8Array | null,
+): QuantizeResult {
+  const cap = params.ditherMaxColors
+  // `cap >= 2` 而不是 `> 0`：1 色时抖动毫无意义（全图同色），按"不限制"处理更安全
+  const capEnabled = cap >= 2 && params.dither !== 'none'
+  if (!capEnabled) return quantizeOnce(data, w, h, palette, params, alpha)
+
+  /*
+   * 第一遍：不限色号地量化，统计每个色号用了多少格。
+   *
+   * "用量最大的 N 个"这个判据来自**真实用量**，而不是在线贪心里的"先到先得"——
+   * 后者实测不可靠（早期偶然引入的颜色占住名额无法撤销，上限 4→11 色、6→14 色）。
+   */
+  const first = quantizeOnce(data, w, h, palette, params, alpha)
+  const usedCounts = new Uint32Array(palette.length)
+  for (let i = 0; i < first.indices.length; i++) usedCounts[first.indices[i]]++
+
+  const ranked: number[] = []
+  for (let i = 0; i < palette.length; i++) if (usedCounts[i] > 0) ranked.push(i)
+  // 并列时按下标升序——保证确定性（同图同参必须同结果）
+  ranked.sort((a, b) => usedCounts[b] - usedCounts[a] || a - b)
+
+  if (ranked.length <= cap) {
+    // 本来就没超上限：直接用第一遍的结果，避免无意义地重跑
+    return first
+  }
+
+  /*
+   * 第二遍：只保留用量最大的 N 个色作候选，重跑。
+   *
+   * 这一遍的色号数**天然 ≤ N**（可选项就只有 N 个），约束是硬的——
+   * 不需要任何启发式，也就不会出现"设了 8 却出 9 色"这种守不住的情况。
+   * 代价是量化跑两遍（O(2n)）；这个取舍值得：用户会按"我只有 8 种豆子"去下单。
+   */
+  const keep = new Set(ranked.slice(0, cap))
+  const cappedPalette = palette.filter((_, i) => keep.has(i))
+  const second = quantizeOnce(data, w, h, cappedPalette, params, alpha)
+  return { indices: second.indices, overflow: second.overflow }
 }
 
 /**
@@ -529,6 +782,13 @@ export interface RunPipelineResult {
   overflow: number
   /** 实际使用的色板来源，便于日志与复现 */
   paletteSource: 'preset' | 'custom' | 'auto'
+  /**
+   * 色板相关的**兜底说明**；正常情况下为 null。
+   * 目前只有一种：`paletteMode: 'preset'` 但 id 不认识 → 已退回自动取色。
+   * 存在的理由是"静默兜底 = 撒谎"：调用方从 `paletteSource` 只会看到 `'preset'`，
+   * 不额外说一句它就以为那张色卡生效了。
+   */
+  paletteNote: string | null
   /** 杂色清理的实际改动；未启用清理时为 null */
   cleanup: CleanupReport | null
 }
@@ -574,7 +834,8 @@ export function runPipeline(src: SourceImage, params: ConvertParams): RunPipelin
 
   preprocess(data, params.brightness, params.contrast, params.saturation)
 
-  const palette = resolvePalette(data, alpha, params)
+  const resolved = resolvePalette(data, alpha, params)
+  const palette = resolved.palette
   // 如实报告色板来源：custom 模式但色板为空时会退回自动取色（resolvePalette 的兜底），
   // 此时必须报 'auto'——否则日志与 --json 会声称用了自定义色板，排查时被误导。
   const paletteSource: RunPipelineResult['paletteSource'] =
@@ -601,6 +862,7 @@ export function runPipeline(src: SourceImage, params: ConvertParams): RunPipelin
     },
     overflow,
     paletteSource,
+    paletteNote: resolved.note,
     cleanup: willClean ? measureCleanup(indices, finalIndices, palette) : null,
   }
 }
