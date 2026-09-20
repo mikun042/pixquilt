@@ -6,7 +6,7 @@
   "description": "像素画工作台（重写版）：图片→像素画转换、逐格精修、拼豆图纸与游戏资产批量导出；agent 可直接通过 CLI 与页内 API 驱动",
   "license": "MIT",
   "engines": {
-    "node": ">=22.6"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "build": "node tool/build.mjs",

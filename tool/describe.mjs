@@ -328,6 +328,8 @@ export function build() {
   lines.push('await ps.renderBlank({ width: 32, height: 32, transparent: true, ops: [...] }, params, scale, { transparentBg })')
   lines.push('//   renderBlank = 「空白画布 + 算子 + 导出」的无副作用一站式（无需原图、不碰工作区状态），')
   lines.push('//   CLI 的 --blank 走的是同一条链路；返回形状与 render() 一致')
+  lines.push('//   options 只认 width / height / color / transparent / ops；拼错的字段名、或非正的宽高')
+  lines.push('//   都会**当场报错**（不会静默退化成一张 0×0 的坏画布）。ops 也必须给在这个参数里')
   lines.push('```')
   lines.push('')
   lines.push('### 编辑器状态写入')

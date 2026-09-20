@@ -400,6 +400,28 @@ export function installAutomationApi(deps: AutomationDeps): void {
             '放在第 4 个会被静默忽略，所以这里直接报错。',
         )
       }
+      /*
+       * 字段名校验：与上面那条同一个立场——**宁可当场报错，也不要让调用方拿到一张坏画布**。
+       *
+       * 此前没有任何校验，于是 `renderBlank({ w: 16, h: 16, ops: [...] })`（把 width/height
+       * 拼成 w/h）会把尺寸读成 undefined，一路走到 `new ImageData(0, 0)` 才炸：报的是
+       * `IndexSizeError`，栈指向压缩后的 HTML，而真正的原因只是一个拼错的字段名。
+       * 拼错键名在 agent 场景里很常见，值得一条点名报错。
+       */
+      const BLANK_KEYS = ['width', 'height', 'color', 'transparent', 'ops']
+      const unknown = Object.keys(opts ?? {}).filter((k) => !BLANK_KEYS.includes(k))
+      if (unknown.length) {
+        throw new Error(
+          `renderBlank 的 options 里有未知字段：${unknown.join('、')}。` +
+            `可用字段只有 ${BLANK_KEYS.join(' / ')}——拼错的字段名不会被静默忽略，` +
+            '而是会让画布尺寸变成 0（报错栈指向压缩后的 HTML，很难查）。',
+        )
+      }
+      if (!(opts.width > 0) || !(opts.height > 0)) {
+        throw new Error(
+          `renderBlank 需要正整数 width / height，实际 width=${String(opts.width)} height=${String(opts.height)}`,
+        )
+      }
       const p = coerceParams({ ...DEFAULT_PARAMS, ...(params ?? {}) })
       const base = blankArt(opts.width, opts.height, opts.color ?? '#000000', !!opts.transparent)
       // 无副作用路径**不继承主色**：绘画类算子必须显式给 color，结果才与工作区状态无关

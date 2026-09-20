@@ -79,7 +79,7 @@ node tool/quickstart.mjs        # 一条命令跑通全链路，产出落在 .qu
 > ```
 >
 > 也可以直接自建 `PixelArt`（`{ width, height, indices, palette, alphaMask }`）逐格填像素——
-> 需要精确控制每一格时用这条（本仓库 `output/` 下的程序化素材生成器就是这么做）。
+> 需要精确控制每一格时用这条。
 > 查"有哪些 core 导出可用"：`node tool/artc.mjs --describe` 的 `programmaticApi` 字段。
 
 

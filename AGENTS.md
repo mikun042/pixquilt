@@ -44,7 +44,7 @@ node tool/quickstart.mjs        # 产出落在 .quickstart/，看完可以直接
 
 | 你要做的事 | 需要什么 |
 |---|---|
-| **出图**（CLI 批量、算子作画） | **只要 Node ≥ 22.6。仅此而已。** |
+| **出图**（CLI 批量、算子作画） | **只要 Node ≥ 22.18。仅此而已。**（22.18 起 `node` 默认开启 TS 类型剥离，而本项目正是让 `node` 直接 import `.ts` 的；更早的版本会报 `ERR_UNKNOWN_FILE_EXTENSION: Unknown file extension ".ts"`） |
 | 读 `src/core/` 里的纯逻辑并 import | 同上（`src/` 零第三方依赖） |
 | `npm run build` / `npm run typecheck` | 先 `npm install`（3 个 devDependencies） |
 | `npm run e2e*`（端到端验证） | 本机有 Chrome / Edge / Chromium |

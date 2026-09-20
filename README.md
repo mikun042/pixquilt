@@ -168,7 +168,7 @@ npm run verify
 | `e2e` | 36 项端到端 | **是** |
 | `e2e:picker` / `e2e:slider` | 取色器 18 项 / 滑条 12 项 | **是** |
 | `e2e:palette` | 色板编辑 14 项（右键微调 / 替换 / Esc 放弃） | **是** |
-| `e2e:regressions` | 36 项已修缺陷的回归防线 | **是** |
+| `e2e:regressions` | 37 项已修缺陷的回归防线 | **是** |
 | `e2e:pdf` | 10 项：PDF 在真实浏览器里的压缩格式 + 吸管图标几何 | **是** |
 
 > 数字会过期，**以命令输出为准**。需要浏览器的那几步会自己找 Chrome / Edge / Chromium

@@ -24,7 +24,10 @@ import { argValue, createChecker, sleep, startBrowser } from './cdp.mjs'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 
-const app = argValue('app', join(ROOT, 'dist', 'index.html'))
+// 默认与其余 e2e 脚本一致，指向**根目录那份已入库的交付物**——
+// 此前默认 `dist/index.html`（构建产物、gitignore），于是新克隆下直接跑本脚本会报
+// "找不到产物"，而交付物明明就在根目录。要测构建产物请显式 `--app dist/index.html`。
+const app = argValue('app', join(ROOT, '像素画工作台.html'))
 if (!existsSync(app)) {
   console.error(`找不到产物：${app}（先跑 npm run build）`)
   process.exit(2)

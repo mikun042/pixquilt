@@ -1470,6 +1470,39 @@ await check('剪贴板：Esc 之后 Ctrl+V 不再粘贴选区（否则图片粘�
   return '复制→粘贴生效；Esc 后 Ctrl+V 不再改动画布，状态栏也不再声称「已复制选区」'
 })
 
+/* ---------------------------------------------- renderBlank 的 options 校验 */
+
+/*
+ * 曾经的缺陷：`renderBlank` 完全不校验 options。把字段名拼错（`{ w, h }` 而不是
+ * `{ width, height }`）会把尺寸读成 undefined，一路走到 `new ImageData(0, 0)` 才炸：
+ * 报的是 `IndexSizeError`，栈指向压缩后的 HTML，而真正的原因只是一个拼错的键名。
+ * 同一个函数对"ops 放错位置"已经有一流的报错文案（见下一个断言），这里把标准补齐。
+ *
+ * 断言分三段：拼错键名要点名、非正宽高要点名、**合法调用必须照常成功**——
+ * 少了第三段，一个"永远抛错"的实现也能让前两段全绿。
+ */
+await check('renderBlank 的 options：拼错字段名 / 非正宽高必须当场报错，合法调用照常', async () => {
+  const r = JSON.parse(
+    await cdp.eval(`(async () => {
+      const ps = window.pixelArtStudio
+      // 返回值与"抛没抛"都要带出来——只记"抛没抛"的话，第三段（合法调用）就没法判
+      const grab = async (fn) => { try { return { ok: true, val: await fn() } } catch (e) { return { ok: false, msg: e.message } } }
+      return JSON.stringify({
+        typo: await grab(() => ps.renderBlank({ w: 16, h: 16 })),
+        zero: await grab(() => ps.renderBlank({ width: 0, height: 16 })),
+        ok: await grab(async () => { const b = await ps.renderBlank({ width: 8, height: 8 }); return b.width + 'x' + b.height }),
+      })
+    })()`),
+  )
+  assert(r.typo.ok === false, `拼错字段名（w / h）必须报错，实际却成功了：${JSON.stringify(r.typo)}`)
+  assert(/未知字段/.test(r.typo.msg) && /w、h/.test(r.typo.msg), `报错应点名「未知字段：w、h」，实际：${r.typo.msg}`)
+  assert(r.zero.ok === false, `宽度为 0 必须报错，实际却成功了：${JSON.stringify(r.zero)}`)
+  assert(/正整数/.test(r.zero.msg), `宽度为 0 应报「需要正整数 width / height」，实际：${r.zero.msg}`)
+  assert(r.ok.ok === true, `合法调用必须照常成功，实际报错：${r.ok.msg}`)
+  assert(r.ok.val === '8x8', `合法调用应产出 8×8，实际：${r.ok.val}`)
+  return '拼错键名与非正宽高都被点名拒绝；合法调用正常（8×8）'
+})
+
 /* ---------------------------------------------- 结果 */
 
 await session.close()

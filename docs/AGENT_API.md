@@ -430,6 +430,8 @@ ps.render(fileOrDataURL, params, scale, { transparentBg, ops })      // 无副�
 await ps.renderBlank({ width: 32, height: 32, transparent: true, ops: [...] }, params, scale, { transparentBg })
 //   renderBlank = 「空白画布 + 算子 + 导出」的无副作用一站式（无需原图、不碰工作区状态），
 //   CLI 的 --blank 走的是同一条链路；返回形状与 render() 一致
+//   options 只认 width / height / color / transparent / ops；拼错的字段名、或非正的宽高
+//   都会**当场报错**（不会静默退化成一张 0×0 的坏画布）。ops 也必须给在这个参数里
 ```
 
 ### 编辑器状态写入
