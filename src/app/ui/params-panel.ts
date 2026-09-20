@@ -31,7 +31,7 @@ export interface ParamsPanelDeps {
   /**
    * 「显示」区的两个开关（它们存在 store 里，不属于转换参数）。
    * `setFlag` 的实现**必须顺带重绘画布**：画布是在 `draw()` 里读这两个值的，
-   * 只改 store 的话勾选框会"没反应"（曾经如此，见 ARCHITECTURE §8.10 ④）。
+   * 只改 store 的话勾选框会"没反应"（曾经如此，见 docs/架构.md §8.10 ④）。
    */
   getFlag: (key: 'showGrid' | 'showMag') => boolean
   setFlag: (key: 'showGrid' | 'showMag', value: boolean) => void
@@ -90,7 +90,7 @@ const sessionOpen = new Map<string, boolean>()
  *
  * 取值优先级：
  *  1. 本次会话当场改过 → 听用户的（保证点击立即生效）
- *  2. 其余 → 用持久化值；没有则用代码里的默认值（现在 8 组统一默认收起）
+ *  2. 其余 → 用持久化值；没有则用代码里的默认值（除"预设"外，其余 9 组默认收起）
  */
 function isSectionOpen(id: string, defaultOpen: boolean): boolean {
   if (sessionOpen.has(id)) return sessionOpen.get(id) === true
@@ -447,7 +447,7 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
   }
 
   /**
-   * 参数面板：预设区 → 转换参数（按用途分组，避免把 19 个参数堆成一个长列表）→ 显示开关。
+   * 参数面板：预设区 → 转换参数（按用途分组，避免把 23 个参数堆成一个长列表）→ 显示开关。
    *
    * 全部 10 个分组统一走 `section()`（含预设）：同一套标题栏、同一条 localStorage 折叠状态。
    * 只有**预设默认展开**（主入口 + 最高频动作），其余默认收起。
@@ -742,7 +742,7 @@ export function createParamsPanel(deps: ParamsPanelDeps): ParamsPanelApi {
         /*
          * 这两个开关必须**让画面跟上**（`setFlag` 的实现里含一次 `canvasApi.redraw()`）：
          * `store` 只通知关心该 key 的订阅者，而画布是在 `draw()` 里读它们的，
-         * 少了这一跳就会"勾了没反应"，直到下一次无关重绘才突然生效。见 ARCHITECTURE §8.10 ④。
+         * 少了这一跳就会"勾了没反应"，直到下一次无关重绘才突然生效。见 docs/架构.md §8.10 ④。
          *
          * ⚠️ 勾选框上挂 `data-testid` 是必需的：断言原先靠"勾选框的下一个兄弟元素文本含网格线"
          * 定位（`nextElementSibling`），那是绑死在 DOM 顺序上的写法——把这两个勾选框

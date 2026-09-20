@@ -294,5 +294,5 @@ export async function beadPdfAsync(art: PixelArt, options: BeadPdfOptions = {}):
  * 这里曾有一个本地 `needsLightText(hex)`，注释写着"与 core/color.ts 的 colorTextOn 同一判据思路"，
  * 但**实际用的是 BT.601 系数**（`(r*299+g*587+b*114)/1000`），而 colorTextOn 用 BT.709。
  * 两套系数在纯黑白上一致、中间调分歧——后果是同一张图纸的 SVG 与 PDF 里，
- * 同一个色块的编号可能一个白字一个黑字。现在直接 import 共享实现（`needsLightText`）。
+ * 同一个色块的编号可能一个白字一个黑字。现在直接 import 共享实现（`colorTextOn`）。
  */

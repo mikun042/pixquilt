@@ -59,7 +59,7 @@ export function build() {
   lines.push('node tool/artc.mjs --in 素材目录 --out 输出 --palette gameboy --size 32x32 --alpha --sheet 4')
   lines.push('')
   lines.push('# ② 自检与自省（先确认环境与能力，再写脚本）')
-  lines.push('node tool/artc.mjs --selftest      # 44 项链路自检，无需任何素材')
+  lines.push('node tool/artc.mjs --selftest      # 链路自检，无需任何素材（以它自己打印的 N/N 为准）')
   lines.push('node tool/artc.mjs --describe     # 打印完整的算子/参数/能力 JSON')
   lines.push('')
   lines.push('# ③ 页内 API（浏览器自动化 / Playwright / CDP evaluate）')

@@ -136,7 +136,8 @@ export function parseProjectFile(text: string): { params: ConvertParams; art: Pi
  *   [6..7]  width  uint16 BE  （画布单边上限 2048，uint16 足够，且不会与相邻字段重叠）
  *   [8..9]  height uint16 BE
  *   [10..11] 保留（写 0，便于将来扩展时不必改版本号）
- * 大画布走这条通道比 base64 项目 JSON 快一个量级（无 4/3 膨胀、无字符串解析）。
+ * 大画布走这条通道比像素 JSON（`pixelJSONString`）快**两个数量级**
+ * （无 4/3 膨胀、无字符串解析）。见 `docs/架构.md` §6 的实测。
  */
 export const PIXBIN_MAGIC = 'PIXB1'
 export const PIXBIN_HEADER = 12

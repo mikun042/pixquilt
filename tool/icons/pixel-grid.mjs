@@ -8,8 +8,9 @@
 //   **注意**：清晰度来自"最终笔画 ≥1.5px"，不是画布大本身——所以本文件的
 //   `stroke >= 3 格` 是硬要求，画得细一样会糊。
 //
-// 校验沿用 tool/e2e-pdf.mjs 对图标的 4 条断言（viewBox / 落在画布内 / ≥12×12 / 无退化笔画），
+// 校验沿用 tool/e2e-pdf.mjs 对图标的两条几何断言（落在画布内 / ≥12×12），
 // 并额外锁住"笔画够粗"——这是本方案能否清晰的关键，必须由工具保证而不是靠画的人自觉。
+// （viewBox 在本文件里是常量 `VIEW_BOX`，不逐图断言；"无退化笔画"那条只在 e2e-pdf 里查。）
 export const VIEW_BOX = 24
 export const GRID = 32
 /** 1 格在 viewBox 里占多少单位 */
@@ -195,7 +196,7 @@ export function maxInscribedRadius(grid) {
   return best
 }
 /**
- * 几何校验：镜像 `tool/e2e-pdf.mjs` 的 4 条断言，另加"笔画够粗"。
+ * 几何校验：镜像 `tool/e2e-pdf.mjs` 的两条几何断言（落在画布内 / ≥12×12），另加"笔画够粗"。
  *
  * 签名接收 `grid`（不只是 path）：因为"笔画粗细"必须从网格的连通区域量，
  * path 里量不到（每段都是 v{UNIT}，那是行高）。

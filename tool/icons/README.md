@@ -5,7 +5,7 @@
 
 ```
 形状定义（本目录）  ──npm run icons:sync──▶  src/app/ui/icons.ts
-   pixel-shapes.mjs  ─▶ PIXEL_PATHS      12 个像素格图标（实际渲染）
+   pixel-shapes.mjs  ─▶ PIXEL_PATHS      20 个定义（其中 8 个同名者被 SVG 版遮蔽 → 实际渲染 12 个）
    svg-shapes.mjs    ─▶ SVG_PATHS         8 个 SVG 描边图标（并遮蔽同名像素版）
 ```
 
@@ -15,7 +15,7 @@
 
 | 产线 | 图标 | 画法 | 源文件 |
 |---|---|---|---|
-| **像素格** | 12 个：矩形 / 椭圆 / 选区 / 新建 / 转换 / 像素 / 齿轮 / 折叠箭头 / 栏开关 / 最大化 | 在 32×32 网格上堆格子 | `pixel-shapes.mjs` |
+| **像素格** | 20 个定义、**实际渲染 12 个**：矩形 / 椭圆 / 选区 / 新建 / 转换 / 像素 / 齿轮 / 折叠箭头（上下 2 个）/ 栏开关（左右 2 个）/ 最大化 | 在 32×32 网格上堆格子 | `pixel-shapes.mjs` |
 | **SVG 描边** | 8 个：画笔 / 填充 / 撤销 / 重做 / 重新转换 / 调色盘 / 快捷键 / 滑杆 | 直接写 `<path>`（含弧与箭头，堆格子画不准） | `svg-shapes.mjs` |
 
 渲染优先级在 `iconEl()` 里：**先查 `SVG_PATHS`、再查 `PIXEL_PATHS`**。

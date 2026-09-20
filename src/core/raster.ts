@@ -21,7 +21,7 @@ export interface RasterOptions {
    *
    * 为什么要 `border`：像素画主体内部常有与底色同色的像素（白底 + 白色高光/眼白），
    * `global` 会把它们一起挖穿成洞（实测：主体内 4×4 的白高光被打成 16 像素空洞）。
-   * 生图去背（见 docs/开发.md A1）要的正是 `border`。
+   * 生图去背要的正是 `border`（`keyMode` 的数据模型见 `docs/架构.md` §2；键控导出见 §8.10 ⑦）。
    */
   keyMode?: 'global' | 'border'
   /**

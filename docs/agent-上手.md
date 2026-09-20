@@ -13,15 +13,15 @@ node tool/quickstart.mjs        # 一条命令跑通全链路，产出落在 .qu
 它会依次做六件事并把每步结论打印出来（我在本机实测通过）：
 
 ```
-1. 自省           apiLevel 2 · 画布上限 2048 格 / 色板 256 色 · 算子 13 类 · 参数 22 项
+1. 自省           apiLevel 2 · schema v4 · 画布上限 2048 格 / 色板 256 色 · 算子 13 类 · 参数 23 项
                   预置色卡：19 张（4 官方硬件色表 / 13 品牌拼豆社区整理 / 2 通用近似），
                   带号色的卡会把号色印进图纸与清单（如 hama_midi 的 H55）
-                  自检：49/49 通过
+                  自检：54/54 通过
 2. 造素材         自己生成 hero.png / slime.png（96×96，带透明背景）——不依赖仓库里有没有图
 3. 批量出资产     2 张 → 每张精确 32×32、同一套 16 色、透明 484 格；_sheet.json 帧互不相交
 4. 拼豆图纸       缺口清单 14 行（号色 B01/B05/P01… 全部来自色卡）；图纸 SVG 606 KB
                   守恒校验：合计 3364 + 透明 0 = 画布 3364
-5. 页内 API       47 个方法（API 共 49 个成员）；renderBlank 无副作用出图（18×18 / 3 条算子改动）；PNG 落盘
+5. 页内 API       48 个方法（API 共 50 个成员）；renderBlank 无副作用出图（18×18 / 3 条算子改动）；PNG 落盘
 6. 产出清单       列出所有产物路径与体积（全部落在 .quickstart/，已 gitignore）
 ```
 
@@ -33,7 +33,7 @@ node tool/quickstart.mjs        # 一条命令跑通全链路，产出落在 .qu
 
 | 层 | 入口 | 适用场景 | 需要浏览器吗 |
 |---|---|---|---|
-| **L1 页内 API** | `window.pixelArtStudio`（49 个成员：47 个方法 + `version` / `apiLevel` 两个常量） | 操作**已打开的工作台**；Playwright / CDP `evaluate` | 是 |
+| **L1 页内 API** | `window.pixelArtStudio`（50 个成员：48 个方法 + `version` / `apiLevel` 两个常量） | 操作**已打开的工作台**；Playwright / CDP `evaluate` | 是 |
 | **L2 批处理 CLI** | `node tool/artc.mjs` | 整套素材批量出图；agent 主力入口 | **否** |
 | **L3 库内直调** | `src/core/pipeline.ts` 的 `runPipeline` + `src/io/node-*.ts` 的编解码器 | 自己写脚本、CI、无头批处理（同一份 core 算法） | 否 |
 | **L4 自省/预演** | `--describe` / `ps.describe()` / `ps.validateParams()` | 冷启动时确认能力、改参前预演 | 否 / 是 |
@@ -321,7 +321,7 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 | `docs/AGENT_API.md` | **完整接口契约**（由 `src/core/spec.ts` 生成：`npm run describe`；改元数据后要重跑；有 `describe-freshness` 断言守着）） |
 | `docs/使用手册.md` | 用户向：界面、参数表、快捷键、FAQ |
 | `docs/开发.md` | 贡献者向：铁律、验证链、结构规则、踩过的坑、路线图 |
-| `docs/架构.md` | 分层、数据模型、决策记录、缺陷复盘（含 17 类静默失效复盘） |
+| `docs/架构.md` | 分层、数据模型、决策记录、缺陷复盘（§8 共 19 节，都是"没有报错、只有错误结果"那一类） |
 
 ---
 

@@ -203,7 +203,7 @@ await check('「微调此颜色…」：取色器就地展开在左栏色板列�
   const title = await cdp.eval(`document.querySelector('.swatch-editor-title').textContent`)
   assert(title.includes('#ff0000'), `标题应写明正在改哪个色，实际「${title}」`)
   /*
-   * 「点得动」不等于「看得见结果」（DEVELOPMENT §3.2 第 5 条，本项目真实踩过）：
+   * 「点得动」不等于「看得见结果」（docs/开发.md §3.2 第 5 条，本项目真实踩过）：
    * 断言标题行与「完成」按钮**真的落在视口里**。取色器本体近 900px 高，左栏又是滚动容器——
    * 把操作头放在取色器下方时，它会整条掉到屏幕外，用户点完只看到色轮、找不到怎么结束。
    */
@@ -512,7 +512,7 @@ await check('参数滑条：拖动中按右键不改变数值（右键已不是�
 
   /*
    * 定位滑条用 `data-testid`（`num-slider-<标签的码点>`），不靠类名或文本：
-   * 面板重排时文本匹配会**静默指错元素**（DEVELOPMENT §3.2 的教训）。
+   * 面板重排时文本匹配会**静默指错元素**（docs/开发.md §3.2 的教训）。
    * `u4eaeu5ea6` = 「亮度」的码点编号。
    */
   const trackSel = '[data-testid="num-slider-u4eaeu5ea6"] .num-slider-track'

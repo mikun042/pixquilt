@@ -12,7 +12,7 @@
  * `parse` → `apply` 两条出口：拖动与手动输入是**同一个 `apply`**，
  * 不会出现"拖出来的值"与"输入的值"刻度不一致。
  *
- * 预算是 400 行（DEVELOPMENT §4.2），这个文件按"标签行 / 轨道 / 指针 / 数值输入"分段，
+ * 预算是 400 行（docs/开发.md §4.2），这个文件按"标签行 / 轨道 / 指针 / 数值输入"分段，
  * 每段只做一件事。
  */
 import { el } from '../store.ts'
@@ -148,7 +148,7 @@ export function createNumSlider(opts: NumSliderOptions): NumSliderApi {
   /**
    * 每个实例一个稳定 id / testid。
    * `for` 与 `id` 必须成对（标签可点即聚焦数值框），而 `data-testid` 让断言不必靠
-   * DOM 顺序或文本匹配定位——面板重排时后者会**静默指错元素**（DEVELOPMENT §3.2 的教训）。
+   * DOM 顺序或文本匹配定位——面板重排时后者会**静默指错元素**（docs/开发.md §3.2 的教训）。
    */
   function id(): string {
     return `num-slider-${slug(opts.label)}`

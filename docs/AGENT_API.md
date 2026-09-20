@@ -14,7 +14,7 @@ node tool/artc.mjs --in 素材目录 --out 输出 --palette beads16 --long-edge 
 node tool/artc.mjs --in 素材目录 --out 输出 --palette gameboy --size 32x32 --alpha --sheet 4
 
 # ② 自检与自省（先确认环境与能力，再写脚本）
-node tool/artc.mjs --selftest      # 44 项链路自检，无需任何素材
+node tool/artc.mjs --selftest      # 链路自检，无需任何素材（以它自己打印的 N/N 为准）
 node tool/artc.mjs --describe     # 打印完整的算子/参数/能力 JSON
 
 # ③ 页内 API（浏览器自动化 / Playwright / CDP evaluate）
@@ -152,7 +152,7 @@ node tool/artc.mjs --ops '[{"op":"eraseColor","color":"#ffffff"},{"op":"trim"}]'
 | `customPaletteCodes` | string | — | `[]` | 自定义色板的号色数组，与 customPalette 按下标一一对应（如 ["S12","S31"]）；缺项留空串，下游会自动编号 C1/C2…。**拼豆用户靠它让自己的色卡编号印在图纸上**（paletteMode=custom（与 customPalette 等长）） |
 | `dither` | enum | `none` / `floyd` / `atkinson` / `bayer` / `bayer8` | `"none"` | 抖动方式（开启时自动关闭杂色清理）。floyd=误差扩散；atkinson=误差扩散但只扩散 3/4、对比度更高更干净（有限色板友好）；bayer/bayer8=有序抖动（8×8 层次更细） |
 | `ditherStrength` | number | 0 … 100 | `100` | 抖动强度（dither!=none） |
-| `ditherMaxColors` | number | 0 … 64 | `0` | 抖动时允许实际用到的最大色号数（0=不限制）。抖动会增加色号数与珠子总数，拼豆场景可用它约束到"我手上只有这么多种豆子"；超出时按色号使用情况递减压制误差扩散（dither!=none && ditherMaxColors>0） |
+| `ditherMaxColors` | number | 0 … 64 | `0` | 抖动时允许实际用到的最大色号数（0=不限制）。抖动会增加色号数与珠子总数，拼豆场景可用它约束到"我手上只有这么多种豆子"；超出时先按真实用量取用量最大的 N 个作候选色板，再带着这个缩小的色板重跑一遍量化，因此色号数一定 ≤ N（dither!=none && ditherMaxColors>0） |
 | `cleanup` | boolean | — | `true` | 杂色清理：把孤立小色块并入邻域主色。注意它**只改颜色归属，不删除脱离主体的小碎片**（不减少连通块数）——去碎片请在上游处理或用 --no-cleanup 自行保留 |
 | `cleanupMinSize` | number | 1 … 10 | `2` | 小于该格数的连通色块会被并入（cleanup=true） |
 | `brightness` | number | -100 … 100 | `0` | 亮度调整（转换前） |

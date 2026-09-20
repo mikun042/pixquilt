@@ -44,7 +44,8 @@ export function needsBrowserDecode(file: string): boolean {
  *  - 不需要给页面开文件输入（批量时逐张注入即可）；
  *  - 解码用的是浏览器原生实现，**格式覆盖与工作台里"导入图片"完全一致**。
  *
- * 一次调用开一次浏览器、**批量复用同一个会话**（见 `decodeManyInBrowser`）——
+ * 一次调用开一次浏览器、**批量复用同一个会话**（会话由调用方持有，逐张调
+ * `decodeOneToPng`；见 `tool/artc.mjs` 的调用处）——
  * 每张都起一次浏览器会慢到不可用（启动约 1–2 秒）。
  */
 /**

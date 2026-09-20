@@ -7,7 +7,7 @@
  *
  * 侧栏开关的两个布尔量也放在这里：它们必须跨 renderAll 存活，且**两侧各自独立**——
  * 早先用单个 'none'|'tools'|'panel' 三值状态，四个组合里有一个不可达（收起工具列再收参数列时，
- * 赋值顺手把 no-rail 摘掉，第一个又弹回来）。见 ARCHITECTURE §8.9。
+ * 赋值顺手把 no-rail 摘掉，第一个又弹回来）。见 docs/架构.md §8.9。
  */
 import { EXPORT_SCALES } from '../../core/limits.ts'
 import { clear, el } from '../store.ts'

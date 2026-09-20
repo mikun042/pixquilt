@@ -200,7 +200,7 @@ async function selftest() {
 
   check('质量度量：块平均与逐格是两个不同的数，且抖动下块平均更小（指标陷阱守卫）', () => {
     /*
-     * 守的是"指标算错会把人带向错误决策"那一类问题（ARCHITECTURE §8.10 ⑦）。
+     * 守的是"指标算错会把人带向错误决策"那一类问题（docs/架构.md §8.10 ⑦）。
      * 抖动**故意**让单格偏离、靠空间混合让观感更接近原图，所以：
      *   逐格误差 floyd > none（看着更差）  但  块平均 floyd < none（实际更好）。
      * 若 blockFidelity 被实现成逐格的别名（退化），这条立刻红——
@@ -404,6 +404,34 @@ async function selftest() {
     // 色板未满时允许新增颜色，因此这里应当**成功**（锁色板只影响"满了之后"与近似色退化）
     assert(!threw, '色板未满时新增颜色应被允许')
     return '未满时允许新增（符合设计）'
+  })
+
+  /*
+   * 无副作用路径（页内 API 的 `render` / `renderBlank`）**不继承当前主色**：
+   * 算子省略 `color` 时必须报错，否则同一份算子数组在不同主色下产出不同结果、
+   * 也就不可复现——而"agent 拿到的结果可复现"是本项目的立身之本。
+   *
+   * 这条防线此前是**缺的**（本文档早期还误称有），唯一保障是 `ops.ts` 里那个 throw
+   * 没有任何断言看着。变异方式：让 `applyOps` 在既无 `color` 也无 `fallbackColor` 时
+   * 兜一个默认色（即"继承主色"），第一条断言立刻变红。
+   */
+  check('算子：省略 color 且无 fallbackColor 必须报错（无副作用路径不得继承主色）', () => {
+    const art = blankArt(8, 8, '#ffffff', false)
+    let msg = ''
+    try {
+      applyOps(art, [{ op: 'rect', x0: 1, y0: 1, x1: 3, y1: 3 }])
+    } catch (err) {
+      msg = err?.message ?? String(err)
+    }
+    assert(msg !== '', '省略 color 时必须报错，而不是悄悄用一个默认色（那等于继承主色）')
+    assert(msg.includes('color'), `报错信息必须点名 color（使用者才知道怎么改），实际：${msg}`)
+
+    // 反向：显式给了 fallbackColor 就必须能正常出图——否则"报错"可能只是别的原因
+    const ok = applyOps(blankArt(8, 8, '#ffffff', false), [{ op: 'rect', x0: 1, y0: 1, x1: 3, y1: 3 }], {
+      fallbackColor: '#123456',
+    })
+    eq(ok.applied, true, '显式给了 fallbackColor 时应正常产出改动')
+    return `省略即报错；显式 fallbackColor 可用（${msg}）`
   })
 
   check('导出：PNG 编解码往返（像素逐位一致）', () => {
@@ -843,14 +871,14 @@ async function selftest() {
    * 为什么**不在这里跑基准**：绝对耗时随机器浮动，把它当断言会变成"在慢机器上永远红"的假警报。
    * 这里只守两件不会因机器而异的事：
    *  ① `tool/bench.mjs` 还在，且 package.json 里有 `npm run bench`（否则会像"文档提到但不存在
-   *     的文件"那样静默腐坏——本项目已有 `tool/bench.mjs` 曾被 ARCHITECTURE 引用却不存在的前例）；
+   *     的文件"那样静默腐坏——本项目已有 `tool/bench.mjs` 曾被 docs/架构.md 引用却不存在的前例）；
    *  ② 它**声明了自己的用法与取舍**（`--quick` 与"耗时不当断言"的说明），
    *     免得后来者把它当成"跑一次就能判定性能好坏"的测试。
    * 真正的性能结论由 `npm run bench` 自己断言（比值类，与机器无关）。
    */
   check('工程：性能基准脚本存在、已接线，且声明了"耗时不当断言"', () => {
     const benchPath = join(dirname(fileURLToPath(import.meta.url)), 'bench.mjs')
-    assert(existsSync(benchPath), 'tool/bench.mjs 不见了——ARCHITECTURE「性能」一节的结论就没有可复现依据了')
+    assert(existsSync(benchPath), 'tool/bench.mjs 不见了——docs/架构.md「性能」一节的结论就没有可复现依据了')
     const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'))
     assert(pkg.scripts && pkg.scripts.bench, 'package.json 里没有 bench 脚本（npm run bench）')
     const src = readFileSync(benchPath, 'utf8')

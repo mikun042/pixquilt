@@ -61,7 +61,7 @@ export interface CanvasApi {
    * 另外 `setArt` 在**尺寸变化**时会调一次 `fitView`（否则换图后视图停在旧缩放上）。
    * 外部（UI / 页内 API）**没有调用者**；留在接口里是因为它们与 `redraw` 同属"视图控制"这一组，
    * 将来若加回视图浮层或做自动化视图断言就直接可用
-   * （曾经的视图工具栏因从未接线而被删除，见 ARCHITECTURE §8.10 ②）。
+   * （曾经的视图工具栏因从未接线而被删除，见 docs/架构.md §8.10 ②）。
    */
   fitView: () => void
   zoomBy: (factor: number, atCenter?: boolean) => void
@@ -749,6 +749,12 @@ export function createCanvas(container: HTMLElement, canvasEl: HTMLCanvasElement
     if (k === 'Escape') {
       selection = new Set()
       callbacks.onSelectionChange(0)
+      // 已复制的那片也一起丢掉：`Ctrl+V` 的分支只看 clipboard 非空，而它此前从不置空，
+      // 于是"复制过一次"就等于永久占住了 `Ctrl+V`——图片粘贴（window 的 paste 监听）
+      // 再也轮不到，且没有任何办法退出，只能刷新页面。Esc 是本项目统一的"放弃"手势
+      // （取色器、色板微调都是它），把剪贴板纳入同一语义。
+      clipboard = null
+      store.set('clipboardHas', false)
       scheduleDraw()
       return
     }

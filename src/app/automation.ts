@@ -276,7 +276,7 @@ export function installAutomationApi(deps: AutomationDeps): void {
     },
     exportPixelJSON: (): string => pixelJSONString(requireArt()),
     exportProject: (): string => projectJSONString(requireArt(), deps.getParams()),
-    /** 二进制像素数据（大画布往返比 base64 快一个量级）；第三个参数给出色板以便回读 */
+    /** 二进制像素数据（大画布往返比像素 JSON 快两个数量级，见 `docs/架构.md` §6） */
     exportPixBin: (): string => {
       const art = requireArt()
       return bytesToBase64(encodePixBin(art))
@@ -510,7 +510,7 @@ export function installAutomationApi(deps: AutomationDeps): void {
   ;(window as unknown as { pixelArtStudio?: unknown }).pixelArtStudio = api
 }
 
-/** 图集布局与色板常量转发：让 UI/文档从同一处读取，避免各写一遍 */
+/** 校验 `#rrggbb`（`#` 可省），返回小写；不合法就抛出带 `what` 的错 */
 function coerceHex(hex: string, what: string): string {
   const m = String(hex).trim().match(/^#?([0-9a-fA-F]{6})$/)
   if (!m) throw new Error(`${what}格式不对：${hex}（应为 #rrggbb）`)

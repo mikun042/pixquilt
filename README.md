@@ -56,7 +56,7 @@ npm run build        # 生成 / 刷新 像素画工作台.html
 
 ```bash
 node tool/quickstart.mjs         # 一条命令跑通全链路（自省 → 造素材 → 批量 → 拼豆 → 页内 API）
-node tool/artc.mjs --selftest    # 42 项链路自检，不需要素材、不需要装依赖
+node tool/artc.mjs --selftest    # 链路自检，不需要素材、不需要装依赖（项数随版本变，以它打印的 N/N 为准）
 node tool/artc.mjs --describe    # 打印全部能力 / 算子 / 参数（JSON，冷启动先读这个）
 ```
 
@@ -162,13 +162,13 @@ npm run verify
 | 步骤 | 内容 | 需要浏览器 |
 |---|---|---|
 | `typecheck` | `tsc --noEmit` | 否 |
-| `test` | 181 项单元测试 | 否 |
+| `test` | 184 项单元测试 | 否 |
 | `build` | 单文件产物 + 核对两份 HTML 哈希一致 | 否 |
-| `selftest` | 50 项链路自检（不需要素材） | 否 |
+| `selftest` | 54 项链路自检（不需要素材） | 否 |
 | `e2e` | 36 项端到端 | **是** |
 | `e2e:picker` / `e2e:slider` | 取色器 18 项 / 滑条 12 项 | **是** |
 | `e2e:palette` | 色板编辑 14 项（右键微调 / 替换 / Esc 放弃） | **是** |
-| `e2e:regressions` | 35 项已修缺陷的回归防线 | **是** |
+| `e2e:regressions` | 36 项已修缺陷的回归防线 | **是** |
 | `e2e:pdf` | 10 项：PDF 在真实浏览器里的压缩格式 + 吸管图标几何 | **是** |
 
 > 数字会过期，**以命令输出为准**。需要浏览器的那几步会自己找 Chrome / Edge / Chromium

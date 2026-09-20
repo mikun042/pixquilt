@@ -362,7 +362,7 @@ await check('幽灵引用：文档提到的页内 API 方法必须真的存在�
 })
 
 /*
- * 上一条只查 6 个**写死**的方法名，而契约面远大于此——`docs/AGENT_API.md` 里列了 46 个。
+ * 上一条只查 6 个**写死**的方法名，而契约面远大于此——`docs/AGENT_API.md` 里列了 47 个。
  * 这条把它变成**全量**核对：从手册正文里抓出所有 `ps.<name>(` 提到的方法，逐个确认
  * `window.pixelArtStudio` 上真的存在。文档多写一个名字、或实现改名后忘了改文档，都会变红。
  *
@@ -1195,7 +1195,7 @@ await check('色卡向导：导入带号色的 .hex，号色进参数、能改�
 
 /*
  * 自动草稿是**唯一一条会在后台偷偷写、并在启动时抢先读**的路径，而 `app.art` 与画布副本
- * 之间原本只有三条同步路径（ARCHITECTURE §2.1）——它是第四条。这类"少写一条同步"的缺陷
+ * 之间原本只有四条同步路径（docs/架构.md §2.1）——它是第五条。这类"少写一条同步"的缺陷
  * 在本项目的历史上全是**静默丢数据**，所以这里必须把关键不变量钉死。
  *
  * 形态是用户拍板的"提示后由用户决定"，不是静默恢复：
@@ -1404,6 +1404,70 @@ await check('自动草稿：存储不可用时静默降级（不弹提示条、�
     await s2.close?.()
   }
   return '无提示条、无报错、新建与编辑照常'
+})
+
+/* ---------------------------------------------- 剪贴板：Esc 必须能放下已复制的内容 */
+
+/*
+ * 曾经的缺陷：`clipboard` 从被赋值到文件结束**从不置空**，而 `Ctrl+V` 的分支只看它非空，
+ * 于是"复制过一次选区"就等于**永久占住 `Ctrl+V`**——图片粘贴（window 的 paste 监听）
+ * 再也轮不到，而且没有任何操作能退出，唯一出路是刷新页面。手册里那条
+ * "先按 Esc 取消选区"的建议当时也是无效的（Esc 只清选区、不清剪贴板）。
+ *
+ * 断言刻意做成**成对**的：先证明粘贴路径本身通（否则"没变化"可能只是因为压根没生效），
+ * 再证明 Esc 之后它不再改动画布。把 Esc 里那两行删掉即可让第二条变红。
+ */
+await check('剪贴板：Esc 之后 Ctrl+V 不再粘贴选区（否则图片粘贴永远轮不到）', async () => {
+  await cdp.eval(`(() => {
+    const ps = window.pixelArtStudio
+    ps.newCanvas({ width: 32, height: 32, color: '#ffffff' })
+    ps.edit([{ op: 'rect', x0: 2, y0: 2, x1: 5, y1: 5, color: '#cc0000' }])
+    ps.setTool('selection')
+  })()`)
+  await sleep(300)
+
+  // 框选那块 4×4，再 Ctrl+C
+  const a = await cellToScreen(2, 2)
+  const b = await cellToScreen(5, 5)
+  await mouse('mousePressed', a.x, a.y)
+  await mouse('mouseMoved', b.x, b.y)
+  await mouse('mouseReleased', b.x, b.y)
+  await sleep(250)
+  await key('c', { modifiers: 2, code: 'KeyC' })
+  await sleep(250)
+  const afterCopy = await cdp.eval("document.getElementById('statusbar').textContent")
+  assert(/已复制选区/.test(afterCopy), `Ctrl+C 后状态栏应显示「已复制选区」，实际：${afterCopy}`)
+
+  /** 把鼠标移到目标格（粘贴锚点=鼠标格）再按 Ctrl+V */
+  const pasteAt = async (cx, cy) => {
+    const p = await cellToScreen(cx, cy)
+    await mouse('mouseMoved', p.x, p.y)
+    await sleep(150)
+    await key('v', { modifiers: 2, code: 'KeyV' })
+    await sleep(300)
+  }
+
+  // 第一遍：证明粘贴确实生效（这一步不变的话，下面的"没变"就没有说服力）
+  const before1 = await state()
+  await pasteAt(20, 20)
+  const after1 = await state()
+  assert(after1.hash !== before1.hash, 'Ctrl+V 应把选区粘到鼠标所在格（画布内容应当变化）')
+
+  // Esc：必须同时放下选区与已复制的内容
+  await key('Escape', { code: 'Escape' })
+  await sleep(300)
+  const afterEsc = await cdp.eval("document.getElementById('statusbar').textContent")
+  assert(!/已复制选区/.test(afterEsc), `Esc 之后状态栏不应再显示「已复制选区」，实际：${afterEsc}`)
+
+  // 第二遍：剪贴板已空，Ctrl+V 必须什么都不做
+  const before2 = await state()
+  await pasteAt(28, 28)
+  const after2 = await state()
+  assert(
+    after2.hash === before2.hash,
+    'Esc 之后 Ctrl+V 不应再改动画布（改了就说明 clipboard 没被清空）',
+  )
+  return '复制→粘贴生效；Esc 后 Ctrl+V 不再改动画布，状态栏也不再声称「已复制选区」'
 })
 
 /* ---------------------------------------------- 结果 */

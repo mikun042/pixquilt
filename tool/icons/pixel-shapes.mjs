@@ -5,7 +5,7 @@
 //   2. 画满画框（包围盒 ≥18 格 = 13.5 单位），避免"图标过小"；
 //   3. 有机形状用 ASCII（所见即所得），几何形状用图元（rect/disc/ring/line）。
 //
-// 前 4 个（pencil/bucket/selection/rect/ellipse 等）在 `_icontest` 里做过试作并对照
+// 前 5 个（pencil/bucket/selection/rect/ellipse）在 `_icontest` 里做过试作并对照
 // 「32×32 放大」与「实机 16px」两种尺寸确认过观感，其余沿用同一套规范。
 import { Grid } from './pixel-grid.mjs'
 

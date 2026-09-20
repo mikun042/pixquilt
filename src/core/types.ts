@@ -1,5 +1,5 @@
 /**
- * 数据模型与参数 Schema（v3）。
+ * 数据模型与参数 Schema（v4）。
  * 这里定义 core / UI / 页内 API / CLI 四方共用的契约，因此它是"改动要慎重"的文件：
  * 任何字段的增删都必须同步 SCHEMA_VERSION、sanitize、spec.ts 与 docs/AGENT_API.md。
  */
@@ -79,8 +79,10 @@ export interface ConvertParams {
    * 抖动时允许实际用到的最大色号数；**0 = 不限制**（默认，保持既有行为）。
    *
    * 存在的理由：抖动会增加色号数与珠子总数，对拼豆用户常常是负面的
-   * （"我手上只有 14 种豆子"）。设了它之后，量化会按色号使用情况递减地压制误差扩散，
-   * 把超出上限的色号让回去。见 `pipeline.ts` 的 `capDitherColors`。
+   * （"我手上只有 14 种豆子"）。设了它之后，量化走**两遍法**——先正常量化一遍统计
+   * 各色号的真实用量，取用量最大的 N 个作候选色板，再带着这个缩小的色板重跑一遍，
+   * 于是色号数天然 ≤ N。见 `pipeline.ts` 的 `quantize`。
+   * （第一版试过"递减压制误差扩散"，实测色号反而变多，已废弃。）
    */
   ditherMaxColors: number
   cleanup: boolean

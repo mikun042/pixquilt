@@ -4,7 +4,7 @@
  *
  * ## 为什么要有它
  *
- * `ARCHITECTURE.md` §6 列了四条性能取舍（抽样取色、量化缓存、离屏画布缓存、pixbin 往返），
+ * `docs/架构.md` §6 列了四条性能取舍（抽样取色、量化缓存、离屏画布缓存、pixbin 往返），
  * 但它们此前**只是文字断言**——没有可复现数字，也就无法判断"某次改动是不是把它变慢了"。
  * 这个脚本把每一条都变成一个可测量的场景，并**顺带验证该优化确实在起作用**
  * （不只是"跑得快"，而是"用对比证明快的来源是它"）。
@@ -476,7 +476,7 @@ for (const [w, h] of [
   rows.push({ name: '8 条算子链（256² 画布）', ms, note: 'setAll/rect/ellipse/outline/mirror/rotate/trim/fit' })
 }
 
-/* ⑥ pixbin vs 项目 JSON：文档说"快一个量级" ------------------------------- */
+/* ⑥ pixbin vs 像素 JSON：文档说"快两个数量级" ------------------------------- */
 {
   const w = QUICK ? 512 : 1024
   const h = w
@@ -507,7 +507,7 @@ for (const [w, h] of [
   rows.push({ name: `解码 pixbin（${w}²）`, ms: tPixRound, note: '回读路径' })
   const ratio = tJson / tPix
   assert(
-    'pixbin 比 base64 项目 JSON 快（文档称"快一个量级"）',
+    'pixbin 比 base64 像素 JSON 快（文档称"快两个数量级"）',
     ratio >= 2,
     `JSON ${tJson.toFixed(1)}ms vs pixbin ${tPix.toFixed(1)}ms（快 ${ratio.toFixed(1)}×）`,
   )

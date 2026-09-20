@@ -73,7 +73,8 @@ export function createExportActions(deps: ExportDeps) {
   }
 
   /**
-   * 可打印的拼豆图纸 PDF（A4 分页，每块板一页）。
+   * 可打印的拼豆图纸 PDF（A4）。默认真幅缩放进**一页**；只有格子缩到印不清时才退回
+   * **按板分页**（每页一块板）。见 `bead-pdf.ts` 的排版策略。
    *
    * 浏览器侧用 `CompressionStream('deflate')` 提供压缩——与 Node 侧注入 `node:zlib`
    * 是同一个契约（见 `core/pdf.ts` 与 `io/node-pdf.ts`）。**没有它就不能静默降级成

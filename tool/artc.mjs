@@ -282,7 +282,7 @@ export function resolvePaletteFlag(value) {
  * （它们是拼豆选项，不属于 `ConvertParams`），因此没有自动的 NaN/越界兜底。
  * 实测过的真实行为（修之前）：`--bead-gram abc` → 重量 `NaN g`、
  * `--board abc` → 分板数 `null`，而命令**照常成功退出**。
- * 那正是本项目最忌讳的"接受了但没生效"（DEVELOPMENT §3 第 4 条）。
+ * 那正是本项目最忌讳的"接受了但没生效"（`AGENTS.md` §5 第 1 条）。
  *
  * 放在 `buildParams` 旁边、`main` 之外，好处是自检能直接调它，
  * 而不必起子进程（`execFileSync` 的 stdout 在本机会漏到父进程，见 §6 第 6 条）。

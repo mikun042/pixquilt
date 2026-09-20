@@ -48,7 +48,8 @@ export const MEDIAN_CUT_SAMPLE_LIMIT = 250_000
  * 的 `numP` 会把越界值夹到 `[min, max]`——下限若写 2，用户传 0（或省略，默认值就是 0）
  * 会被静默夹成 2，等于**默认把画面限成 2 色**。这个坑在实现时真实踩到过
  * （实测 `ditherMaxColors: 0` 解析出来是 2，全图只剩 2 色）。
- * 真正的"启用时的最小上限"由 applyCap 里的 `Math.max(2, cap)` 保证。
+ * 真正的"启用时的最小上限"由 `pipeline.ts` 的 `quantize` 保证：那里的判据是
+ * `cap >= 2`（1 色时抖动毫无意义，按"不限制"处理），不是把参数值本身夹成 2。
  */
 export const DITHER_MAX_COLORS_MIN = 0
 export const DITHER_MAX_COLORS_MAX = PALETTE_K_MAX

@@ -23,7 +23,8 @@
 node tool/artc.mjs --selftest
 ```
 
-预期输出 `自检：42/42 通过`。**不需要 `npm install`、不需要素材、不需要浏览器。**
+预期最后一行是 `自检：N/N 通过`（N = 当前项数，会随版本增长），且**没有任何 `✘`**。
+**不需要 `npm install`、不需要素材、不需要浏览器。**
 
 不确定有哪些能力时，读这个（机器可读的 JSON，冷启动第一件事）：
 
@@ -68,7 +69,7 @@ node tool/quickstart.mjs        # 产出落在 .quickstart/，看完可以直接
 | **图集元数据要喂给引擎** | `--sheet --engine godot\|unity\|tiled`（Unity 需 `--texture-guid`）。页内 API 是 `ps.exportSheetMeta()` |
 | **自己的拼豆色卡要印上图纸** | 导入 `编号 #rrggbb` 两列的 `.hex`，号色会进参数并出现在图纸/清单/PDF 上 |
 | **操作已打开的页面**（Playwright / CDP 驱动） | 看 [`docs/agent-上手.md`](docs/agent-上手.md) 的页内 API 一节 |
-| **理解代码为什么长成这样** | [`docs/架构.md`](docs/架构.md)（含 8 类静默失效缺陷的完整复盘） |
+| **理解代码为什么长成这样** | [`docs/架构.md`](docs/架构.md)（§8 共 19 节缺陷复盘，都是静默失效类） |
 | **改本项目代码** | [`docs/开发.md`](docs/开发.md)（**先读「铁律」与「验证链」两节**） |
 | **改工具条/顶栏图标** | [`tool/icons/README.md`](tool/icons/README.md)（改形状定义 → `npm run icons:sync`；**不要手改 `icons.ts` 的 path 数据**） |
 | **怀疑性能变慢** | `npm run bench`（`--quick` 更快）。**只信它报的比值**，绝对耗时随机器浮动 |
@@ -141,6 +142,10 @@ docs/                现行文档
 - **屏幕吸管未实现**（`eyeDropper: false`）。
 - **Node 端只直接解码 PNG**（其余格式见第 4 节的 `--browser-decode`）。
 - **单画布模型**：一次一张，批量由 CLI 逐张跑。
-- **拼豆内建色卡是通用近似色**，不是任何品牌官方色号。
+- **拼豆内建色卡分三类来源**（`--describe` 的 `presets[].source`）：`official` 主机硬件色表
+  （PICO-8 / GameBoy / NES / CGA，权威）；`community` **社区整理**的 13 张品牌色卡
+  （Hama / Perler / Artkal / Nabbi / Yant 等，**色值有据可查但与实物可能有偏差，以实物为准**）；
+  `approximate` 自造的通用近似色（`beads16` / `beads24`，不属任何品牌）。
+  **这 13 张品牌卡不是厂商官方色号**——界面与文档都必须这么写；要严格对应手上的号色请导入自己的 `.hex`。
 
 这些是**用户明确的"后续再加"**，不要顺手实现。

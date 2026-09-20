@@ -228,7 +228,8 @@ export const PARAM_SPECS: ParamSpec[] = [
     type: 'number',
     desc:
       '抖动时允许实际用到的最大色号数（0=不限制）。抖动会增加色号数与珠子总数，' +
-      '拼豆场景可用它约束到"我手上只有这么多种豆子"；超出时按色号使用情况递减压制误差扩散',
+      '拼豆场景可用它约束到"我手上只有这么多种豆子"；超出时先按真实用量取用量最大的 N 个' +
+      '作候选色板，再带着这个缩小的色板重跑一遍量化，因此色号数一定 ≤ N',
     min: DITHER_MAX_COLORS_MIN,
     max: DITHER_MAX_COLORS_MAX,
     default: 0,
