@@ -7,7 +7,20 @@
 - **AI agent 可以不打开浏览器直接批量出图**：命令行（CLI）+ 页内 API 两条路。
 - **刷新不丢编辑**：自动草稿兜底，重开时问你要不要恢复。
 
+**格式**：浏览器内可直接导入 `PNG` / `JPG` / `WebP` / `GIF` / `BMP` / `AVIF` / `ICO` / `SVG`
+（含矢量光栅化）；导出 `PNG`（1x–20x 共 9 档整数倍）、拼豆图纸 `SVG`、可打印 `PDF`、
+缺口清单 `CSV`、像素 `JSON`、色板 `.hex`、项目 `JSON`、二进制 `.pixbin`、
+图集坐标表与三引擎元数据。命令行端 Node 只直接解 PNG，其余格式走 `--browser-decode`
+（借浏览器原生解码器，**需本机有浏览器**）——跳过与失败都会如实报告，不会静默忽略。
+
 运行期 **0 依赖**；只有 3 个构建期依赖（esbuild / typescript / @types/node）。
+
+**English** — Turn photos or illustrations into pixel art, hand-tune them cell by cell, then export
+either perler **bead charts** (color codes, shopping list, printable A4 PDF) or **game art assets**
+(exact sizes, true alpha, sprite sheets + Godot/Unity/Tiled metadata). The deliverable is one
+self-contained HTML file: double-click to run, zero dependencies, offline, images never uploaded —
+plus a zero-dependency CLI and an in-page API so AI agents can batch-generate without a browser.
+Imports `PNG/JPG/WebP/GIF/BMP/AVIF/ICO/SVG` in-app; exports `PNG/SVG/PDF/CSV/JSON` and more.
 
 ---
 
