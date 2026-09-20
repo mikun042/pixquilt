@@ -1,4 +1,4 @@
-# 像素画工作台 · Agent 接口手册
+# pixquilt（像素画工作台） · Agent 接口手册
 
 > **本文件由 `node tool/describe.mjs --write` 从 `src/core/spec.ts` 生成，请勿手改。**
 > 改了 `src/core/spec.ts` 里的算子 / 参数元数据后，必须重跑 `npm run describe` 再提交。

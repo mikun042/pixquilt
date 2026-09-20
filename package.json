@@ -1,9 +1,9 @@
 {
-  "name": "pixel-art-studio",
+  "name": "pixquilt",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "像素画工作台（重写版）：图片→像素画转换、逐格精修、拼豆图纸与游戏资产批量导出；agent 可直接通过 CLI 与页内 API 驱动",
+  "description": "pixquilt（像素画工作台）：图片→像素画转换、逐格精修、拼豆图纸与游戏资产批量导出；agent 可直接通过 CLI 与页内 API 驱动",
   "license": "MIT",
   "engines": {
     "node": ">=22.18.0"

@@ -33,7 +33,7 @@
  */
 
 /** IndexedDB 库名与存储名。改结构时**必须**同时升 DRAFT_VERSION，否则读回旧结构会静默错位 */
-const DB_NAME = 'pixel-art-studio'
+const DB_NAME = 'pixquilt'
 const STORE = 'draft'
 /** 画布记录的主键（单画布模型，一条就够） */
 const KEY_ART = 'art'

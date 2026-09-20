@@ -162,9 +162,9 @@ for (const [bgName, bg, fg] of bgList) {
 
 const catTitle = { tool: '工具图标', action: '顶栏动作', category: '面板分类', chrome: '折叠与控件' }
 const lines = []
-lines.push('# 画工作台 · UI 图标素材（32×32 版）')
+lines.push('# pixquilt · UI 图标素材（32×32 版）')
 lines.push('')
-lines.push('> 由本仓库的像素画工作台生成：像素网格画形状 → 转**单色 SVG** → 几何校验。')
+lines.push('> 由本仓库的 pixquilt（像素画工作台）生成：像素网格画形状 → 转**单色 SVG** → 几何校验。')
 lines.push('')
 lines.push('## 为什么改用 32×32 画布')
 lines.push('')

@@ -1,5 +1,5 @@
 /**
- * 像素画工作台 · 界面入口
+ * pixquilt（像素画工作台） · 界面入口
  *
  * 这一层只做三件事：**装配 UI、把用户动作翻译成 core 调用、把 core 结果写回界面**。
  * 算法一律在 src/core，页内 API 在 src/app/automation.ts；这里不实现任何像素逻辑。
@@ -1342,7 +1342,7 @@ function boot(): void {
     },
   })
 
-  console.log('[像素画工作台] 已就绪。agent 可调用 window.pixelArtStudio.describe() 自省接口。')
+  console.log('[pixquilt] 已就绪。agent 可调用 window.pixelArtStudio.describe() 自省接口。')
 }
 
 function readPrefs(): EditorPrefs | null {

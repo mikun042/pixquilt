@@ -1206,7 +1206,7 @@ await check('色卡向导：导入带号色的 .hex，号色进参数、能改�
  */
 const draftRead = () =>
   cdp.eval(`(async () => {
-    const db = await new Promise((res, rej) => { const r = indexedDB.open('pixel-art-studio', 1); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error) })
+    const db = await new Promise((res, rej) => { const r = indexedDB.open('pixquilt', 1); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error) })
     const rec = await new Promise((res) => { const tx = db.transaction('draft', 'readonly'); const q = tx.objectStore('draft').get('art'); q.onsuccess = () => res(q.result); q.onerror = () => res(null) })
     db.close()
     if (!rec) return JSON.stringify({ present: false })
@@ -1226,7 +1226,7 @@ const draftBarShown = () => cdp.eval(`!!document.querySelector('[data-testid="dr
 
 /** 清干净：删库 → 重载，确保用例从"完全没有草稿"开始 */
 const draftReset = async () => {
-  await cdp.eval(`indexedDB.deleteDatabase('pixel-art-studio')`).catch(() => {})
+  await cdp.eval(`indexedDB.deleteDatabase('pixquilt')`).catch(() => {})
   await sleep(300)
   await draftReload()
 }
