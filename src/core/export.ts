@@ -71,7 +71,7 @@ export class ProjectParseError extends Error {}
 
 /**
  * 解析项目 JSON。**严格校验**：尺寸上限、base64 长度、色板合法性都要过，
- * 宁可明确报错，也不要还原出一张错画布（旧项目在这条上踩过坑）。
+ * 宁可明确报错，也不要还原出一张错画布（这条上踩过坑）。
  */
 export function parseProjectFile(text: string): { params: ConvertParams; art: PixelArt; savedAt: string } {
   let raw: unknown

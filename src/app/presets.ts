@@ -50,7 +50,7 @@ interface StoredState {
 const EMPTY: StoredState = { v: 1, overrides: {}, custom: [] }
 
 /**
- * 读盘。**坏数据一律丢弃而不是抛错**：localStorage 可能被手改、被旧版本写过，
+ * 读盘。**坏数据一律丢弃而不是抛错**：localStorage 可能被手改、被早期版本写过，
  * 一个坏字段不该让整个界面起不来（这与 `sanitizePrefs` 的态度一致）。
  */
 function load(): StoredState {

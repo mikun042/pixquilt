@@ -56,7 +56,7 @@ export function zoomAtPoint(v: ViewState, mx: number, my: number, factor: number
 /**
  * 屏幕坐标 → 格子坐标，**越界时夹到边界**。
  * 框选与形状拖拽需要它：用户从画布外的面板空白处按下去、一路拖进画布是常见操作，
- * 直接返回 null 会让"从外面起手"失效（旧项目为此返工过两次）。
+ * 直接返回 null 会让"从外面起手"失效（为此返工过两次）。
  * 因此这里只做夹紧、不判空——"指针是否还在画布元素内"由调用方用元素事件决定。
  */
 export function pointToCellClamped(v: ViewState, mx: number, my: number, cols: number, rows: number): { x: number; y: number } | null {

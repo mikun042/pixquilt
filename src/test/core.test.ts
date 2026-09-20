@@ -1175,7 +1175,7 @@ describe('视口数学（core/viewport.ts）', () => {
   it('pointToCellClamped：越界**夹到边界**而不是返回 null（从画布外起手拖拽）', () => {
     /*
      * 守住 docblock 里写明的设计决定：用户从面板空白处按下去、一路拖进画布是常见操作，
-     * 若在这里返 null，"从外面起手"就失效（旧项目为此返工过两次）。
+     * 若在这里返 null，"从外面起手"就失效（为此返工过两次）。
      * 变异验证：把夹紧改成 return null，这条立刻红。
      */
     const v = { cell: 10, ox: 0, oy: 0 }
@@ -1533,7 +1533,7 @@ describe('键控（透明底导出）', () => {
     assert.equal(countTransparentPx(t7), 2, '差 7 ≤ 容差 7，两格都该键掉')
   })
 
-  it('不传 keyMode/keyTolerance 时行为与旧版完全一致（默认 global + 零容差）', () => {
+  it('不传 keyMode/keyTolerance 时行为与早期版本完全一致（默认 global + 零容差）', () => {
     const art = bodyWithWhiteHighlight()
     const legacy = artToImageData(art, 1, { transparentBg: true, bgHex: '#ffffff' })
     const explicit = artToImageData(art, 1, { transparentBg: true, bgHex: '#ffffff', keyMode: 'global', keyTolerance: 0 })

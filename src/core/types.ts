@@ -93,7 +93,7 @@ export interface ConvertParams {
   saturation: number
   /** 透明处理：不透明（合成到 matteColor）/ 单色键控（导出时该色变透明）/ 真 alpha */
   transparent: TransparentMode
-  /** alpha 合成与键控用的底色（旧项目叫 flattenBg） */
+  /** alpha 合成与键控用的底色（早期字段名 `flattenBg`，`sanitizeParams` 会迁移） */
   matteColor: string
   /**
    * 键控范围：`global` 全图同色都透明；`border` 只键掉与四边连通的底色区域。
@@ -486,7 +486,7 @@ export function sanitizePrefs(raw: unknown): EditorPrefs {
   const d = DEFAULT_PREFS
   if (!raw || typeof raw !== 'object') return { ...d }
   const p = raw as Record<string, unknown>
-  // 旧版本有独立的橡皮工具（tool: 'eraser'）：迁移成「画笔 + 选中透明色」
+  // 早期版本有独立的橡皮工具（tool: 'eraser'）：迁移成「画笔 + 选中透明色」
   const wasEraser = p.tool === 'eraser'
   const tool = !wasEraser && typeof p.tool === 'string' && (TOOLS as readonly string[]).includes(p.tool) ? (p.tool as Tool) : 'pencil'
   return {

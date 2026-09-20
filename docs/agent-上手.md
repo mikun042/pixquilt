@@ -299,7 +299,7 @@ const r = await page.evaluate(() => window.pixelArtStudio.renderBlank(
 | 现象 | 原因 / 处理 |
 |---|---|
 | `renderBlank 不是函数` | 已修复（0.1.0 之后）。请确认产物/代码是当前版本：`git log --oneline -1` |
-| 图纸上的编号是 `C1/C2…` 而不是 `B01/R01…` | 已修复。旧版会丢预置卡号色；用 `--preset beads16` 或 `--palette beads16` |
+| 图纸上的编号是 `C1/C2…` 而不是 `B01/R01…` | 已修复。早期版本会丢预置卡号色；用 `--preset beads16` 或 `--palette beads16` |
 | JPG 报"Node 端只能直接解码 PNG" | 正常限制。先转 PNG，或用浏览器路径 |
 | 一批图配色不统一 | 你用了 `--palette auto`；改成固定色板（`--palette <预设 id 或 .hex>`） |
 | 算子报"必须显式给 color" | 无副作用路径不继承主色；给每个绘画算子补 `color` |

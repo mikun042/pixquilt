@@ -6,7 +6,7 @@
  *    才通过 store 通知面板。
  *  - **工作副本**：笔画期间改的是本地 `indices/alpha` 副本，抬笔才 commit 一次（= 一条撤销）。
  *  - 选区是 `Set<number>`（格索引），不在 store 里：每次点选都进 store 会让状态栏抖动。
- *  - 悬停坐标走回调，不触发 store（旧项目为此专门做了一个事件总线，这里一个入参就够了）。
+ *  - 悬停坐标走回调，不触发 store（为此专门做事件总线是多余的，这里一个入参就够了）。
  */
 import { ALPHA_THRESHOLD, type PixelArt } from '../../core/types.ts'
 import { PALETTE_MAX } from '../../core/limits.ts'

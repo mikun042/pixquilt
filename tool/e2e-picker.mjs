@@ -77,8 +77,8 @@ check('取色器结构：色轮 + 明度竖条 + 透明度行 + RGB/HSV 两段 +
 
 check('布局：色轮 + 明度条不溢出取色器内容盒', () => {
   const f = S.fit
-  assert(f.wheelLeft >= -1, `色轮左边越出内容盒 ${f.wheelLeft}px（旧版溢出 38px 的回归守卫）`)
-  assert(f.barRight <= f.innerW + 1, `明度条右边越出内容盒 ${f.barRight - f.innerW}px（旧版溢出 38px 的回归守卫）`)
+  assert(f.wheelLeft >= -1, `色轮左边越出内容盒 ${f.wheelLeft}px（早期版本溢出 38px 的回归守卫）`)
+  assert(f.barRight <= f.innerW + 1, `明度条右边越出内容盒 ${f.barRight - f.innerW}px（早期版本溢出 38px 的回归守卫）`)
   return `内容宽 ${f.innerW}：轮左 ${f.wheelLeft} + 轮 ${f.wheelW} + 间隙/明度条 ${f.innerW - f.wheelLeft - f.wheelW}`
 })
 
@@ -107,7 +107,7 @@ async function dragWheel(offsetFromCenterX, offsetFromCenterY) {
 
 /*
  * 方位断言按**参考图实测**的映射：色相 0°(红) 在色轮正下方、顺时针递增
- * （下 0° / 左 90° / 上 180° / 右 270°）。旧版是"0° 在正右"，与参考图差 90°。
+ * （下 0° / 左 90° / 上 180° / 右 270°）。早期版本是"0° 在正右"，与参考图差 90°。
  */
 const bottomRaw = await dragWheel(0, 60) // 圆下方 → 色相 0°（红）
 const bottomInfo = JSON.parse(bottomRaw)

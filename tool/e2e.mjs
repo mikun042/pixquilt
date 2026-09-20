@@ -229,7 +229,7 @@ async function main() {
       assert(!u.hasDeadViewToolbar, '画布右下角的视图工具栏已删除（曾是无绑定的死按钮）；缩放请走快捷键')
       assert(u.presetChips >= 6, `预设 chip 至少应有 6 个出厂预设，实际 ${u.presetChips}`)
       assert(u.hasSavePreset, '预设区应提供「＋ 存为预设」入口')
-      // 「尺寸方式」与「锁定色板」对三种用途都成立，必须常显（旧版按模式把锁定色板藏起来过）
+      // 「尺寸方式」与「锁定色板」对三种用途都成立，必须常显（早期版本按模式把锁定色板藏起来过）
       assert(u.panelHasSizeMode, '参数面板应有「尺寸方式」控件')
       assert(u.panelHasLock, '参数面板应始终显示「锁定色板」')
       return `${u.tools} 工具 / 右上角 ${u.rightActions} 个动作 + 导入 + 导出 / 预设 ${u.presetChips} 个`
@@ -688,7 +688,7 @@ async function main() {
 
     /*
      * 「尺寸方式」切回长边时必须把 exactWidth/Height **删掉**。
-     * 这是旧版的实际缺陷：残留的精确尺寸会让"长边"控件看起来调了却没效果
+     * 这是早期版本的实际缺陷：残留的精确尺寸会让"长边"控件看起来调了却没效果
      * （computeGridSize 里 exact 优先于 longEdge），而界面上没有任何提示。
      */
     const sizeMode = await cdp.eval(`(async () => {
