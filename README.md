@@ -191,34 +191,6 @@ npm run verify
 
 ---
 
-## 已知边界（如实声明，不做半成品）
-
-- **多帧动画未实现**（`capabilities().animation === false`）。逐帧出图后用 `--sheet` 拼图集。
-- **Node 端只直接解码 PNG**。JPEG/WebP/GIF/BMP/AVIF/ICO/SVG 有三条出路：
-  CLI 加 `--browser-decode`（借无头浏览器原生解码器批量转 PNG，**需本机有浏览器**）、
-  走页内 API 的浏览器通道、或先用图像工具转成 PNG。
-- **单画布模型**：一次处理一张图（批量由 CLI 逐张跑）。
-- **`--auto-tune` 不会自动挑尺寸**：它只在你指定的尺寸下搜抖动/清理，尺寸由 `--long-edge` 决定。
-  这是刻意的——跨尺寸没有可靠判据，两个候选指标（块平均误差、色号数）**都随画布变小而变小**，
-  拿它们排序会一致地选出最糊的方案。宁可老实不选，也不假装"观感最优"（见 [docs/架构.md](docs/架构.md) §8.17）。
-- **内建色卡分三类来源**（`source`）：
-  - `official` —— 主机硬件色表（PICO-8 / GameBoy / NES / CGA），权威；
-  - `community` —— **社区整理**的品牌拼豆色卡（Hama / Perler / Artkal / Nabbi / Yant 等，来自
-    [beadcolors](https://github.com/maxcleme/beadcolors) 的 MIT 数据）。
-    **有据可查，但与实物可能有偏差，以实物为准**；
-  - `approximate` —— 自造的通用近似色（`beads16` / `beads24`）。
-
-  要严格对应手上的号色，请导入自己的 `.hex`。
-  - **Mard（290 色）与 Diamond Dotz（461 色）未收录**：色板数组上限是 256
-    （索引存成 `Uint8Array`，超限会让颜色回绕出错误结果），这两张卡超了。
-    要用它们走 `--palette 我的色卡.hex`（支持带号色）；要内置则需先把索引位宽迁到
-    `Uint16Array` —— 那会牵动 pixbin 字节布局等多处，属独立一轮的结构性改动。
-- **自动草稿只保"最近一次"**（刷新后弹「恢复 / 放弃」提示条）：它防手滑，不是归档；
-  很大的原图可能因浏览器配额存不进去（此时画布照常恢复，只是不能重新转换）。
-  要长期保存请导出项目 JSON。
-
-其余"还没做但值得做"的项见 [docs/开发.md](docs/开发.md) 的路线图。
-
 ## 许可
 
 MIT，全文见 [LICENSE](LICENSE)。
